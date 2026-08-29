@@ -1,0 +1,42 @@
+# Runtime + dev dependencies for the e-commerce platform (Step 0).
+# Single file covering every environment: development, test, production, and
+# the Docker/CI toolchain.
+
+# Django 6.x (the platform plan names 5.x; pinned to the installed 6.1 — see
+# README).
+Django==6.1
+
+# REST API framework — used from Step 1 onward.
+djangorestframework
+
+# Faceted search/filtering (§8) — used by catalog/collections.
+django-filter
+
+# Environment-driven settings (.env loading).
+python-decouple
+
+# PostgreSQL driver — used for the production database engine.
+psycopg[binary]
+
+# Redis client + Celery (background tasks, hot-data cache).
+redis
+celery[redis]
+
+# CORS — API served separately (Next.js storefront / React dashboard).
+django-cors-headers
+
+# Production ASGI/WSGI servers (used by the Dockerfile CMD).
+uvicorn[standard]
+gunicorn
+
+# Sentry error tracking (§11 monitoring).
+sentry-sdk[django]
+
+# WhiteNoise — serve collected static files without a separate server
+# (retain behind the CDN).
+whitenoise[brotli]
+
+# Lint / formatting (AGENTS.md mandates black + isort; ruff for linting).
+ruff
+black
+isort

@@ -1,0 +1,18 @@
+[tool.black]
+line-length = 88
+target-version = ["py314"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.ruff]
+line-length = 88
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "W"]
+# E501 is disabled because black is the formatter and owns line length; black
+# never splits string literals (e.g. long dotted validator names), so enforcing
+# E501 alongside black would produce unavoidable violations.
+ignore = ["E501"]

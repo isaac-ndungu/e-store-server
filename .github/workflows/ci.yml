@@ -1,0 +1,62 @@
+# CI pipeline skeleton for the e-commerce platform (Step 0).
+#
+# Currently: lint + Django system checks + tests.
+# Later Steps add migrations checks, coverage gates, and image builds here.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Lint
+        run: ruff check .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ecommerce
+          POSTGRES_PASSWORD: ecommerce
+          POSTGRES_DB: ecommerce
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ecommerce -d ecommerce"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DEBUG: "False"
+      SECRET_KEY: ci-only-non-prod-key
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ecommerce
+      DB_USER: ecommerce
+      DB_PASSWORD: ecommerce
+      DB_HOST: localhost
+      DB_PORT: "5432"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Django system check
+        run: python manage.py check
+      - name: Run migrations check (no pending changes)
+        run: python manage.py makemigrations --check --dry-run
+      - name: Run tests
+        run: python manage.py test

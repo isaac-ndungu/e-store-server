@@ -1,0 +1,116 @@
+# Local dev / orchestration for the e-commerce platform (Step 0).
+#
+# Services:
+#   db       — PostgreSQL 16 (the platform's production database engine)
+#   redis    — Redis for cache + Celery broker/result backend (§9, §11)
+#   web      — Django dev server
+#   worker   — Celery worker
+#   beat     — Celery Beat periodic scheduler
+#
+# Bring everything up with:  docker compose up
+# The backend is reachable at http://localhost:8000
+# Postgres is reachable at localhost:5432, Redis at localhost:6379 (both
+# published so local tooling / Postman can reach them directly).
+
+services:
+  db:
+    image: postgres:16
+    container_name: ecommerce_db
+    environment:
+      POSTGRES_USER: ecommerce
+      POSTGRES_PASSWORD: ecommerce
+      POSTGRES_DB: ecommerce
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecommerce -d ecommerce"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ecommerce_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    container_name: ecommerce_web
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/code
+    ports:
+      - "8000:8000"
+    environment:
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ecommerce
+      DB_USER: ecommerce
+      DB_PASSWORD: ecommerce
+      DB_HOST: db
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+      CACHE_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    container_name: ecommerce_worker
+    command: celery -A config worker --loglevel=info
+    volumes:
+      - .:/code
+    environment:
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ecommerce
+      DB_USER: ecommerce
+      DB_PASSWORD: ecommerce
+      DB_HOST: db
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+      CACHE_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: .
+    container_name: ecommerce_beat
+    command: celery -A config beat --loglevel=info
+    volumes:
+      - .:/code
+    environment:
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ecommerce
+      DB_USER: ecommerce
+      DB_PASSWORD: ecommerce
+      DB_HOST: db
+      DB_PORT: 5432
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      REDIS_URL: redis://redis:6379/0
+      CACHE_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  pgdata:

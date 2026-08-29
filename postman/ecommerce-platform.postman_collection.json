@@ -1,0 +1,66 @@
+{
+  "info": {
+    "_postman_id": "ecommerce-platform-step0",
+    "name": "E-Commerce Platform (e-store)",
+    "description": "API collection for the e-commerce backend. Built incrementally per the implementation roadmap (docs/ecommerce-platform-plan.md §12) — one folder per app/step, each added and Postman-tested before the next. Currently at Step 0 (infrastructure): no app-specific endpoints yet; only setup and health/status checks.\n\nCollection variables below (baseUrl, tokens, test phones) stand in for a separate environment — set them once when importing.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "apiVersion",
+      "value": "v1",
+      "type": "string"
+    },
+    {
+      "key": "customerToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "adminToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "testPhone",
+      "value": "254700000000",
+      "type": "string"
+    },
+    {
+      "key": "testEmail",
+      "value": "test@example.com",
+      "type": "string"
+    },
+    {
+      "key": "testMpesaPhone",
+      "value": "254708374149",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Step 0 — Infrastructure",
+      "item": [
+        {
+          "name": "Health check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Liveness/readiness probe provided in Step 0 — confirms the backend is reachable before any app-specific endpoint exists. App-specific endpoints are added in Step 1 onward."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
