@@ -41,10 +41,12 @@ THIRD_PARTY_APPS = [
     "corsheaders",
 ]
 
-LOCAL_APPS = []
 # Local apps live under apps/ and are referenced as 'apps.<name>' (e.g.
-# 'apps.core', 'apps.accounts'). One is added at a time as each Step is
-# implemented — never before the app is built.
+# 'apps.core', 'apps.accounts'). Apps are added to this list as they are built —
+# never before the app exists.
+LOCAL_APPS = [
+    "apps.core",
+]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
@@ -137,6 +139,13 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
+    # Endpoints opt into throttling by declaring a throttle_scope; the shared
+    # scopes below carry concrete limits. Auth/OTP/STK endpoints add stricter
+    # scopes when those endpoints are implemented.
+    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
+    "DEFAULT_THROTTLE_RATES": {
+        "public": "100/min",
+    },
 }
 
 # Redis backs the hot-data cache (effective prices, smart-collection snapshots,

@@ -1,42 +1,51 @@
 # Runtime + dev dependencies for the e-commerce platform (Step 0).
 # Single file covering every environment: development, test, production, and
 # the Docker/CI toolchain.
+#
+# All packages are pinned to the current latest stable release (verified
+# against PyPI) so local, CI, and Docker builds stay reproducible.
 
-# Django 6.x (the platform plan names 5.x; pinned to the installed 6.1 — see
+# Django 6.1 (the platform plan names 5.x; pinned to the installed 6.1 — see
 # README).
 Django==6.1
 
 # REST API framework — used from Step 1 onward.
-djangorestframework
+djangorestframework==3.18.0
 
 # Faceted search/filtering (§8) — used by catalog/collections.
-django-filter
+django-filter==26.1
 
 # Environment-driven settings (.env loading).
-python-decouple
+python-decouple==3.8
 
 # PostgreSQL driver — used for the production database engine.
-psycopg[binary]
+psycopg[binary]==3.3.4
 
 # Redis client + Celery (background tasks, hot-data cache).
-redis
-celery[redis]
+# 6.4.0 is the newest redis Celery supports today: kombu[redis] (shipped by
+# celery[redis]==5.6.3) requires redis>=4.5.2,<6.5, so redis 8.x can't be used.
+# Bump both together when a Celery release drops the <6.5 cap.
+redis==6.4.0
+celery[redis]==5.6.3
 
 # CORS — API served separately (Next.js storefront / React dashboard).
-django-cors-headers
+django-cors-headers==4.9.0
 
 # Production ASGI/WSGI servers (used by the Dockerfile CMD).
-uvicorn[standard]
-gunicorn
+uvicorn[standard]==0.52.4
+gunicorn==26.2.0
 
-# Sentry error tracking (§11 monitoring).
-sentry-sdk[django]
+# Sentry error tracking (monitoring).
+sentry-sdk[django]==2.68.1
 
-# WhiteNoise — serve collected static files without a separate server
-# (retain behind the CDN).
-whitenoise[brotli]
+
+whitenoise[brotli]==6.12.0
+
+# Python imaging library — required by Django ImageField (SiteConfig logo,
+# favicon; later product/banner images) and the plan's resize/WebP pipeline.
+Pillow==12.3.0
 
 # Lint / formatting (AGENTS.md mandates black + isort; ruff for linting).
-ruff
-black
-isort
+ruff==0.16.5
+black==26.5.1
+isort==9.0.1

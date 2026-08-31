@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "ecommerce-platform-step0",
     "name": "E-Commerce Platform (e-store)",
-    "description": "API collection for the e-commerce backend. Built incrementally per the implementation roadmap (docs/ecommerce-platform-plan.md §12) — one folder per app/step, each added and Postman-tested before the next. Currently at Step 0 (infrastructure): no app-specific endpoints yet; only setup and health/status checks.\n\nCollection variables below (baseUrl, tokens, test phones) stand in for a separate environment — set them once when importing.",
+    "description": "API collection for the e-commerce backend, organized by application area — infrastructure, then one folder per app. Currently only infrastructure and core/site-config endpoints exist.\n\nCollection variables below (baseUrl, tokens, test phones) stand in for a separate environment — set them once when importing.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -44,7 +44,7 @@
   ],
   "item": [
     {
-      "name": "Step 0 — Infrastructure",
+      "name": "Infrastructure — Health checks",
       "item": [
         {
           "name": "Health check",
@@ -56,7 +56,40 @@
               "host": ["{{baseUrl}}"],
               "path": ["health"]
             },
-            "description": "Liveness/readiness probe provided in Step 0 — confirms the backend is reachable before any app-specific endpoint exists. App-specific endpoints are added in Step 1 onward."
+            "description": "Liveness/readiness probe — confirms the backend is reachable before any app-specific endpoint exists."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Core — Site Config",
+      "item": [
+        {
+          "name": "Get site configuration",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/site-config/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "site-config"]
+            },
+            "description": "Public site configuration for the storefront — branding, theme, currency/payment settings, and the standard VAT rate. Confirms the SiteConfig singleton is created on first request and returns its defaults."
+          },
+          "response": []
+        },
+        {
+          "name": "Get legal / trust information",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/site-config/legal/",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "site-config", "legal"]
+            },
+            "description": "Legal and trust copy — KRA PIN, business registration number, physical address, return policy, and cooling-off period. Confirms only legal fields are returned (theme/settings omitted)."
           },
           "response": []
         }

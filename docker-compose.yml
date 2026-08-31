@@ -1,8 +1,8 @@
-# Local dev / orchestration for the e-commerce platform (Step 0).
+# Local dev / orchestration for the e-commerce platform.
 #
 # Services:
 #   db       — PostgreSQL 16 (the platform's production database engine)
-#   redis    — Redis for cache + Celery broker/result backend (§9, §11)
+#   redis    — Redis for cache + Celery broker/result backend
 #   web      — Django dev server
 #   worker   — Celery worker
 #   beat     — Celery Beat periodic scheduler
