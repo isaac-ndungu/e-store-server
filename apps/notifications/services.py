@@ -19,6 +19,7 @@ import logging
 
 from decouple import config
 
+from apps.accounts.services import validate_phone_number
 from apps.notifications.models import NotificationLog
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,7 @@ def send_sms(
     purpose="transactional",
     sent_by=None,
     sender_id=None,
+    log_message=None,
 ):
     """Send an SMS and persist the audit log.
 
@@ -131,22 +133,31 @@ def send_sms(
 
     Args:
         recipient (str): E.164 phone number to send to.
-        message (str): the SMS body text.
+        message (str): the SMS body text sent to the provider.
         purpose (str): one of the ``NotificationLog.PURPOSE_CHOICES`` values.
         sent_by (User | None): the staff user who triggered this send, if any.
         sender_id (str | None): override sender ID; falls back to the
             ``SMS_SENDER_ID`` environment variable.
+        log_message (str | None): text to persist in the audit log; defaults
+            to ``message``. Pass a redacted value for secret-bearing sends.
 
     Returns:
         NotificationLog: the persisted audit record for this send.
+
+    Raises:
+        serializers.ValidationError: if ``recipient`` is not a valid E.164
+            phone number (raised before any provider call).
     """
+    recipient = validate_phone_number(recipient)
+    if log_message is None:
+        log_message = message
     effective_sender_id = sender_id if sender_id is not None else SMS_SENDER_ID
 
     log = NotificationLog.objects.create(
         channel="sms",
         purpose=purpose,
         recipient=recipient,
-        message=message,
+        message=log_message,
         sent_by=sent_by,
     )
 
@@ -171,10 +182,12 @@ def send_sms(
 def send_otp_sms(recipient, otp_code, sent_by=None):
     """Send a one-time password SMS.
 
-    Composes a standard OTP message and delegates to ``send_sms()``.
-    The OTP value is never logged in plaintext in the ``message`` field
-    of ``NotificationLog`` for security — only the provider sees the
-    full text.
+    Composes a standard OTP message and delegates to ``send_sms()``. The
+    provider receives the full text containing the OTP, but the value
+    persisted to ``NotificationLog.message`` is masked (``******``) so a
+    live OTP never lands in the database or the audit-log endpoints. The
+    masked placeholder is not a usable credential, so a DB read or a future
+    report over ``NotificationLog`` cannot leak the code.
 
     Args:
         recipient (str): E.164 phone number.
@@ -188,7 +201,10 @@ def send_otp_sms(recipient, otp_code, sent_by=None):
         f"Your verification code is {otp_code}. "
         "It expires in 10 minutes. Do not share this code."
     )
-    return send_sms(recipient, message, purpose="otp", sent_by=sent_by)
+    masked_message = message.replace(otp_code, "******")
+    return send_sms(
+        recipient, message, purpose="otp", sent_by=sent_by, log_message=masked_message
+    )
 
 
 def send_test_sms(recipient, message, sent_by=None):

@@ -1,9 +1,11 @@
 """Tests for the notifications app.
 
 Covers the SMS service abstraction (success/failure logging through the
-provider mock), the staff-only test-send endpoint (permissions, throttle,
-validation, idempotent audit logging), notification-log retrieval with
-filters, and masking of internal error details from non-staff callers.
+provider mock, the failure contract, provider-exception propagation, OTP
+redaction from the stored message, and pre-dispatch phone validation), the
+staff-only test-send endpoint (permissions, throttle, validation, audit
+logging), notification-log retrieval with filters, and masking of internal
+error details from non-staff callers.
 """
 
 from unittest import mock
@@ -104,17 +106,21 @@ class SendSmsServiceTests(APITestCase):
             "error": "",
         },
     )
-    def test_send_otp_sms_composes_and_sends(self, mock_provider):
-        """OTP SMS includes the code and uses the ``otp`` purpose."""
+    def test_send_otp_sms_redacts_otp_from_stored_message(self, mock_provider):
+        """The provider gets the full text, but the log never stores the OTP."""
         log = send_otp_sms("+254712345678", "482913")
         self.assertEqual(log.purpose, "otp")
-        self.assertIn("482913", log.message)
-        self.assertIn("Do not share this code", log.message)
         self.assertEqual(log.status, "sent")
-        mock_provider.assert_called_once()
-        # The OTP value must not appear as a standalone plaintext credential
-        # in the persisted log beyond the composed message.
-        self.assertNotIn("Secret", log.provider_response)
+
+        # The provider receives the full rendered body including the code.
+        provider_message = mock_provider.call_args[0][1]
+        self.assertIn("482913", provider_message)
+        self.assertIn("Do not share this code", provider_message)
+
+        # The audit log stores a masked body, so the live OTP is never in the DB.
+        self.assertNotIn("482913", log.message)
+        self.assertIn("******", log.message)
+        self.assertIn("Do not share this code", log.message)
 
     def test_africastalking_returns_bad_phone_error(self):
         """Africa's Talking failure status is parsed into a failed result."""
@@ -140,6 +146,60 @@ class SendSmsServiceTests(APITestCase):
         """An unexpected provider exception propagates rather than being swallowed."""
         with self.assertRaises(SMSSendFailure):
             send_sms("+254712345678", "Hi", "test")
+
+    @mock.patch("apps.notifications.services._send_via_provider")
+    def test_garbage_number_never_reaches_provider(self, mock_provider):
+        """A malformed phone is rejected before any provider call is made.
+
+        Validating pre-dispatch avoids wasting an SMS credit on a call
+        that would fail anyway, and leaves no audit log row behind.
+        """
+        from rest_framework import serializers
+
+        with self.assertRaises(serializers.ValidationError):
+            send_sms("not-a-phone", "Hi", "test")
+        mock_provider.assert_not_called()
+        self.assertEqual(NotificationLog.objects.count(), 0)
+
+    @mock.patch("apps.notifications.services._send_via_provider")
+    def test_local_phone_is_normalized_before_provider_call(self, mock_provider):
+        """A local-format number is normalized to E.164 before dispatch."""
+        mock_provider.return_value = {
+            "success": True,
+            "message_id": "",
+            "response": {},
+            "error": "",
+        }
+        send_sms("0712345678", "Hi", "test")
+        # The provider receives the normalized E.164 form.
+        sent_to = mock_provider.call_args[0][0]
+        self.assertEqual(sent_to, "+254712345678")
+
+    def test_failure_contract_returns_failed_log_not_exception(self):
+        """A provider-reported failure returns a ``failed`` log, not an error.
+
+        This is the contract Step 11's checkout relies on: a failed or
+        timed-out send is reported via ``log.status == 'failed'`` so the
+        caller can tell the customer the code could not be sent, rather
+        than raising an exception and losing the audit trail.
+        """
+
+        def _fail(recipient, message, sender_id=""):
+            return {
+                "success": False,
+                "message_id": "",
+                "response": {},
+                "error": "Request timed out",
+            }
+
+        with mock.patch(
+            "apps.notifications.services._send_via_provider", side_effect=_fail
+        ):
+            log = send_sms("+254712345678", "Hi", "test")
+
+        self.assertEqual(log.status, "failed")
+        self.assertEqual(log.error_message, "Request timed out")
+        self.assertEqual(NotificationLog.objects.get().status, "failed")
 
 
 class SendTestSMSEndpointTests(APITestCase):
