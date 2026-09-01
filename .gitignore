@@ -32,5 +32,9 @@ htmlcov/
 .idea/
 .vscode/
 
+# Local project guidance (read by AI tools; never committed)
+AGENTS.md
+AGENTS.*.md
 
+# Planning / docs (plan document tracked outside the repo)
 docs/

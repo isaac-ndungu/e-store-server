@@ -8,6 +8,7 @@ external services.
 """
 
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 from decouple import Csv, config
@@ -37,6 +38,7 @@ DJANGO_CORE_APPS = [
 
 THIRD_PARTY_APPS = [
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "django_filters",
     "corsheaders",
 ]
@@ -46,6 +48,7 @@ THIRD_PARTY_APPS = [
 # never before the app exists.
 LOCAL_APPS = [
     "apps.core",
+    "apps.accounts",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -60,6 +63,11 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+
+# The platform's own User model (email + password login, see apps/accounts).
+# Set before any migration runs against a real database — swapping this after
+# migrate is not possible without a fresh database.
+AUTH_USER_MODEL = "accounts.User"
 
 ROOT_URLCONF = "config.urls"
 
@@ -132,6 +140,18 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        # JWT authenticates the API via the email + password credential from the
+        # accounts app; SessionAuthentication supports the browsable API and the
+        # admin during development.
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+    ],
+    # Every view must declare an explicit permission class; fail-closed by
+    # default so a view that forgets one is not accidentally public.
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
     "DEFAULT_FILTER_BACKENDS": [
         "django_filters.rest_framework.DjangoFilterBackend",
         "rest_framework.filters.SearchFilter",
@@ -145,7 +165,26 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
     "DEFAULT_THROTTLE_RATES": {
         "public": "100/min",
+        # Login and registration carry concrete brute-force/abuse limits, not
+        # the framework default. STK Push and OTP scopes get stricter scopes
+        # once those endpoints are implemented.
+        "auth_login": "3/min",
+        "auth_reauth": "10/min",
+        "auth_write": "10/min",
     },
+}
+
+# JWT access/refresh token pair issued on email + password login. Access tokens
+# are short-lived. Refresh tokens are shorter-lived than before to bound the
+# window a stolen one stays valid, and are rotated on every use — each refresh
+# mints a new refresh and blacklists the old one, so a replayed token is
+# rejected. Logout blacklists the presented refresh token.
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
 }
 
 # Redis backs the hot-data cache (effective prices, smart-collection snapshots,
@@ -179,6 +218,26 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = TESTING
 CELERY_TASK_EAGER_PROPAGATES = TESTING
+
+# Email used for the password-reset flow. Tests and local development use
+# offline backends (in-memory / console); real SMTP is configured via env vars
+# for production. ``RESET_LINK_BASE`` is the frontend URL the reset links point
+# to, since the storefront renders the reset form, not this API.
+EMAIL_BACKEND = config(
+    "EMAIL_BACKEND",
+    default=(
+        "django.core.mail.backends.locmem.EmailBackend"
+        if TESTING
+        else "django.core.mail.backends.console.EmailBackend"
+    ),
+)
+EMAIL_HOST = config("EMAIL_HOST", default="")
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="no-reply@estore.local")
+RESET_LINK_BASE = config("RESET_LINK_BASE", default="http://localhost:3000/reset/")
 
 # STORAGES placeholders for object storage (Cloudflare R2 / AWS S3). Until the
 # AWS_* credentials are set in the environment the local filesystem is used for

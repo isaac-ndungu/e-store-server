@@ -1,18 +1,13 @@
-# Runtime + dev dependencies for the e-commerce platform (Step 0).
-# Single file covering every environment: development, test, production, and
-# the Docker/CI toolchain.
-#
-# All packages are pinned to the current latest stable release (verified
-# against PyPI) so local, CI, and Docker builds stay reproducible.
 
-# Django 6.1 (the platform plan names 5.x; pinned to the installed 6.1 — see
-# README).
 Django==6.1
 
-# REST API framework — used from Step 1 onward.
+# REST API framework for the DRF-based API.
 djangorestframework==3.18.0
 
-# Faceted search/filtering (§8) — used by catalog/collections.
+# JWT auth (email + password -> access/refresh token pair) for the accounts app.
+djangorestframework-simplejwt==5.5.0
+
+# Faceted search/filtering — used by catalog/collections.
 django-filter==26.1
 
 # Environment-driven settings (.env loading).
@@ -42,7 +37,7 @@ sentry-sdk[django]==2.68.1
 whitenoise[brotli]==6.12.0
 
 # Python imaging library — required by Django ImageField (SiteConfig logo,
-# favicon; later product/banner images) and the plan's resize/WebP pipeline.
+# favicon; later product/banner images) and the resize/WebP image pipeline.
 Pillow==12.3.0
 
 # Lint / formatting (AGENTS.md mandates black + isort; ruff for linting).

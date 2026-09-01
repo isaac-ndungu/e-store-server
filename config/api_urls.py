@@ -14,4 +14,5 @@ router = DefaultRouter()
 urlpatterns = [
     path("v1/", include(router.urls)),
     path("v1/", include(("apps.core.urls", "core"), namespace="core")),
+    path("v1/", include(("apps.accounts.urls", "accounts"), namespace="accounts")),
 ]
