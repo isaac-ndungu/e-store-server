@@ -21,7 +21,6 @@ TESTING = "test" in sys.argv
 SECRET_KEY = config("SECRET_KEY", default="")
 DEBUG = config("DEBUG", default=True, cast=bool)
 
-# Production (DEBUG=False) must never run with a placeholder or empty key.
 if not DEBUG and not SECRET_KEY:
     raise ImproperlyConfigured("SECRET_KEY must be set when DEBUG is False")
 
@@ -31,6 +30,7 @@ DJANGO_CORE_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
+    "django.contrib.postgres",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
@@ -43,13 +43,12 @@ THIRD_PARTY_APPS = [
     "corsheaders",
 ]
 
-# Local apps live under apps/ and are referenced as 'apps.<name>' (e.g.
-# 'apps.core', 'apps.accounts'). Apps are added to this list as they are built —
-# never before the app exists.
+
 LOCAL_APPS = [
     "apps.core",
     "apps.accounts",
     "apps.notifications",
+    "apps.catalog",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -65,9 +64,6 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-# The platform's own User model (email + password login, see apps/accounts).
-# Set before any migration runs against a real database — swapping this after
-# migrate is not possible without a fresh database.
 AUTH_USER_MODEL = "accounts.User"
 
 ROOT_URLCONF = "config.urls"
@@ -90,9 +86,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# PostgreSQL is the sole database for dev/prod. Empty DB_HOST/DB_PORT use the
-# local Unix socket / peer auth. Tests run in-memory SQLite for speed and
-# isolation (the Postgres role lacks CREATEDB for a test database).
+# PostgreSQL is the sole database for dev/prod. Tests run in-memory SQLite for speed and
 DATABASES = {
     "default": {
         "ENGINE": config("DB_ENGINE", default="django.db.backends.postgresql"),
@@ -142,14 +136,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        # JWT authenticates the API via the email + password credential from the
-        # accounts app; SessionAuthentication supports the browsable API and the
-        # admin during development.
         "rest_framework_simplejwt.authentication.JWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ],
-    # Every view must declare an explicit permission class; fail-closed by
-    # default so a view that forgets one is not accidentally public.
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
@@ -160,29 +149,18 @@ REST_FRAMEWORK = {
     ],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
-    # Endpoints opt into throttling by declaring a throttle_scope; the shared
-    # scopes below carry concrete limits. Auth/OTP/STK endpoints add stricter
-    # scopes when those endpoints are implemented.
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
     "DEFAULT_THROTTLE_RATES": {
         "public": "100/min",
-        # Login and registration carry concrete brute-force/abuse limits, not
-        # the framework default. STK Push and OTP scopes get stricter scopes
-        # once those endpoints are implemented.
         "auth_login": "3/min",
         "auth_reauth": "10/min",
         "auth_write": "10/min",
-        # The staff-only test-SMS endpoint costs real money (SMS charges), so
-        # it gets a concrete limit rather than the framework default.
         "notification_send": "5/min",
+        "public_catalog": "100/min",
     },
 }
 
-# JWT access/refresh token pair issued on email + password login. Access tokens
-# are short-lived. Refresh tokens are shorter-lived than before to bound the
-# window a stolen one stays valid, and are rotated on every use — each refresh
-# mints a new refresh and blacklists the old one, so a replayed token is
-# rejected. Logout blacklists the presented refresh token.
+
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=30),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
@@ -191,9 +169,7 @@ SIMPLE_JWT = {
     "UPDATE_LAST_LOGIN": True,
 }
 
-# Redis backs the hot-data cache (effective prices, smart-collection snapshots,
-# warehouse-selection lookups, view counters). Tests use a local-memory cache
-# to stay offline.
+
 CACHES = {
     "default": {
         "BACKEND": (
@@ -209,9 +185,6 @@ CACHES = {
     }
 }
 
-# Background tasks (eTIMS retry, M-Pesa callbacks, reservation/OTP sweep,
-# smart-collection refresh, overdue-invoice sweep) run via Celery. Tests
-# execute tasks eagerly so they never hit a broker.
 CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://localhost:6379/0")
 CELERY_RESULT_BACKEND = config(
     "CELERY_RESULT_BACKEND", default="redis://localhost:6379/0"
@@ -223,10 +196,6 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = TESTING
 CELERY_TASK_EAGER_PROPAGATES = TESTING
 
-# Email used for the password-reset flow. Tests and local development use
-# offline backends (in-memory / console); real SMTP is configured via env vars
-# for production. ``RESET_LINK_BASE`` is the frontend URL the reset links point
-# to, since the storefront renders the reset form, not this API.
 EMAIL_BACKEND = config(
     "EMAIL_BACKEND",
     default=(
@@ -243,9 +212,7 @@ EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="no-reply@estore.local")
 RESET_LINK_BASE = config("RESET_LINK_BASE", default="http://localhost:3000/reset/")
 
-# STORAGES placeholders for object storage (Cloudflare R2 / AWS S3). Until the
-# AWS_* credentials are set in the environment the local filesystem is used for
-# both static and media.
+
 STORAGES = {
     "default": {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
@@ -258,11 +225,8 @@ STORAGES = {
 # CDN domain placeholder (e.g. a Cloudflare distribution fronting S3/R2).
 CDN_DOMAIN = config("CDN_DOMAIN", default="")
 
-# Allow origins for the separate storefront (Next.js) and admin dashboard
-# (React) front-ends. Never wildcard in production.
 CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default=[], cast=Csv())
 
-# Object storage placeholders, activated once credentials are provisioned.
 AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="")
 AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="")
 AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME", default="")

@@ -21,4 +21,5 @@ urlpatterns = [
             ("apps.notifications.urls", "notifications"), namespace="notifications"
         ),
     ),
+    path("v1/", include(("apps.catalog.urls", "catalog"), namespace="catalog")),
 ]
