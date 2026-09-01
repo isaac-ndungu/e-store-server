@@ -9,8 +9,10 @@ as an interim implementation. Full-text search with autocomplete and typo
 tolerance (Meilisearch/Typesense) is planned for a later step.
 """
 
+from django.db.models import Count, Prefetch
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -40,6 +42,7 @@ from apps.catalog.serializers import (
     CategoryListSerializer,
     CategoryWriteSerializer,
     FacetDefinitionSerializer,
+    PricingTierSerializer,
     PricingTierWriteSerializer,
     ProductDetailSerializer,
     ProductImageSerializer,
@@ -73,13 +76,22 @@ class CategoryListView(generics.ListAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        """Return active categories, filtered by parent if specified."""
+        """Return active categories, filtered by parent if specified.
+
+        Raises:
+            ValidationError: if the ``parent`` param is not a valid id or
+                the ``null`` marker.
+        """
         qs = get_active_categories()
         parent = self.request.query_params.get("parent")
         if parent is not None:
             if parent == "" or parent == "null":
                 qs = qs.filter(parent__isnull=True)
             else:
+                if not parent.isdigit():
+                    raise DRFValidationError(
+                        {"parent": "parent must be a category id or 'null'."}
+                    )
                 qs = qs.filter(parent_id=parent)
         return qs
 
@@ -97,8 +109,20 @@ class CategoryDetailView(generics.RetrieveAPIView):
     lookup_field = "slug"
 
     def get_queryset(self):
-        """Return only active categories."""
-        return Category.objects.filter(is_active=True).select_related("parent")
+        """Return active categories with product counts, or 404."""
+        return (
+            Category.objects.filter(is_active=True)
+            .select_related("parent")
+            .annotate(product_count=Count("products"))
+            .prefetch_related(
+                Prefetch(
+                    "children",
+                    queryset=Category.objects.filter(is_active=True).annotate(
+                        product_count=Count("products")
+                    ),
+                )
+            )
+        )
 
 
 class BrandListView(generics.ListAPIView):
@@ -160,14 +184,7 @@ class ProductListView(generics.ListAPIView):
         aggregate counts for all active facets.
         """
         queryset = self.filter_queryset(self.get_queryset())
-
-        facet_filters = validate_facet_params(request.query_params)
-        if facet_filters:
-            for lookup, value in facet_filters.items():
-                if "attributes" in lookup or "specs" in lookup:
-                    queryset = queryset.filter(**{lookup: value})
-                else:
-                    queryset = queryset.filter(**{lookup: value})
+        queryset = queryset.filter(validate_facet_params(request.query_params))
 
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -232,13 +249,11 @@ class ProductPriceView(APIView):
 
             raise Http404
 
-        variants = ProductVariant.objects.filter(
-            product=product, is_active=True
-        ).prefetch_related("pricing_tiers")
+        variants = product.variants.all()
 
         data = []
         for variant in variants:
-            tiers = variant.pricing_tiers.all().order_by("min_quantity")
+            tiers = variant.pricing_tiers.all()
             data.append(
                 {
                     "id": variant.id,
@@ -278,7 +293,11 @@ class AdminCategoryListCreateView(generics.ListCreateAPIView):
         return CategoryWriteSerializer
 
     def get_queryset(self):
-        return Category.objects.select_related("parent").order_by("name")
+        return (
+            Category.objects.select_related("parent")
+            .annotate(product_count=Count("products"))
+            .order_by("name")
+        )
 
 
 class AdminCategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -415,6 +434,25 @@ class AdminProductImageDeleteView(generics.DestroyAPIView):
     queryset = ProductImage.objects.all()
 
 
+class AdminProductImageDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Retrieve, update, or delete an image of a product (admin only).
+
+    Scoped to the parent product in the URL so an image can only be
+    addressed through its own product.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return ProductImageSerializer
+        return ProductImageWriteSerializer
+
+    def get_queryset(self):
+        """Return images belonging to the parent product."""
+        return ProductImage.objects.filter(product_id=self.kwargs["product_pk"])
+
+
 class AdminPricingTierListCreateView(generics.ListCreateAPIView):
     """List or create pricing tiers for variants of a specific product (admin only).
 
@@ -452,6 +490,33 @@ class AdminPricingTierDeleteView(generics.DestroyAPIView):
     queryset = PricingTier.objects.all()
 
 
+class AdminPricingTierDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Retrieve, update, or delete a pricing tier (admin only).
+
+    Scoped so a tier can only be addressed through the product that owns
+    its variant.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return PricingTierSerializer
+        return PricingTierWriteSerializer
+
+    def get_queryset(self):
+        """Return tiers for variants belonging to the parent product."""
+        return PricingTier.objects.filter(variant__product_id=self.kwargs["product_pk"])
+
+    def get_serializer_context(self):
+        """Inject the parent product for variant-ownership validation."""
+        context = super().get_serializer_context()
+        context["parent_product"] = get_object_or_404(
+            Product, pk=self.kwargs["product_pk"]
+        )
+        return context
+
+
 class AdminRelatedProductListCreateView(generics.ListCreateAPIView):
     """List or create related products for a specific product (admin only).
 
@@ -486,11 +551,30 @@ class AdminRelatedProductListCreateView(generics.ListCreateAPIView):
         serializer.save(product=product)
 
 
-class AdminRelatedProductDeleteView(generics.DestroyAPIView):
-    """Delete a related-product link (admin only)."""
+class AdminRelatedProductDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Retrieve, update, or delete a related-product link (admin only).
+
+    Scoped to the parent product in the URL.
+    """
 
     permission_classes = [permissions.IsAdminUser]
-    queryset = RelatedProduct.objects.all()
+
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return RelatedProductSerializer
+        return RelatedProductWriteSerializer
+
+    def get_queryset(self):
+        """Return related-product links from the parent product."""
+        return RelatedProduct.objects.filter(product_id=self.kwargs["product_pk"])
+
+    def get_serializer_context(self):
+        """Pass the parent product for self-referential and duplicate checks."""
+        context = super().get_serializer_context()
+        context["parent_product"] = get_object_or_404(
+            Product, pk=self.kwargs["product_pk"]
+        )
+        return context
 
 
 class AdminFacetDefinitionListCreateView(generics.ListCreateAPIView):

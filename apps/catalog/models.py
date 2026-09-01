@@ -14,7 +14,7 @@ from django.contrib.postgres.indexes import GinIndex
 from django.core.exceptions import ValidationError
 from django.db import models
 
-from apps.catalog.validators import validate_image_upload
+from apps.catalog.validators import validate_image_upload, validate_pdf_upload
 
 
 class Category(models.Model):
@@ -31,7 +31,9 @@ class Category(models.Model):
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True)
     description = models.TextField(blank=True)
-    image = models.ImageField(upload_to="categories/", blank=True)
+    image = models.ImageField(
+        upload_to="categories/", blank=True, validators=[validate_image_upload]
+    )
     meta_title = models.CharField(max_length=255, blank=True)
     meta_description = models.TextField(blank=True)
     is_active = models.BooleanField(default=True)
@@ -42,6 +44,12 @@ class Category(models.Model):
         indexes = [
             models.Index(fields=["slug"], name="cat_slug_idx"),
             models.Index(fields=["is_active"], name="cat_active_idx"),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(parent=models.F("pk")),
+                name="category_no_self_parent",
+            ),
         ]
 
     def __str__(self):
@@ -57,7 +65,9 @@ class Brand(models.Model):
 
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True)
-    logo = models.ImageField(upload_to="brands/", blank=True)
+    logo = models.ImageField(
+        upload_to="brands/", blank=True, validators=[validate_image_upload]
+    )
     description = models.TextField(blank=True)
     is_authorized_dealer = models.BooleanField(default=True)
 
@@ -139,9 +149,15 @@ class Product(models.Model):
         max_digits=10, decimal_places=2, null=True, blank=True
     )
     manufacturer_model_number = models.CharField(max_length=100, blank=True)
-    manual_pdf = models.FileField(upload_to="products/manuals/", blank=True)
-    installation_guide_pdf = models.FileField(upload_to="products/guides/", blank=True)
-    datasheet_pdf = models.FileField(upload_to="products/datasheets/", blank=True)
+    manual_pdf = models.FileField(
+        upload_to="products/manuals/", blank=True, validators=[validate_pdf_upload]
+    )
+    installation_guide_pdf = models.FileField(
+        upload_to="products/guides/", blank=True, validators=[validate_pdf_upload]
+    )
+    datasheet_pdf = models.FileField(
+        upload_to="products/datasheets/", blank=True, validators=[validate_pdf_upload]
+    )
     tracks_serial_numbers = models.BooleanField(default=False)
     warranty_duration_months = models.PositiveIntegerField(null=True, blank=True)
     warranty_type = models.CharField(
@@ -184,10 +200,15 @@ class Product(models.Model):
         indexes = [
             models.Index(fields=["slug"], name="prod_slug_idx"),
             models.Index(fields=["sku"], name="prod_sku_idx"),
+            models.Index(fields=["name"], name="prod_name_idx"),
             models.Index(fields=["is_active"], name="prod_active_idx"),
             models.Index(fields=["is_featured"], name="prod_featured_idx"),
             models.Index(fields=["category"], name="prod_category_idx"),
             models.Index(fields=["brand"], name="prod_brand_idx"),
+            models.Index(fields=["product_type"], name="prod_ptype_idx"),
+            models.Index(fields=["tax_class"], name="prod_taxclass_idx"),
+            models.Index(fields=["average_rating"], name="prod_rating_idx"),
+            models.Index(fields=["review_count"], name="prod_review_idx"),
             models.Index(fields=["-created_at"], name="prod_created_idx"),
             GinIndex(
                 name="prod_specs_gin_idx",
@@ -205,7 +226,10 @@ class ProductImage(models.Model):
 
     ``is_primary`` marks the hero/thumbnail image. ``sort_order`` controls
     display sequence. Images are validated on upload for format (JPEG, PNG,
-    WebP, AVIF) and size (max 10 MB).
+    WebP, AVIF) and size (max 10 MB), then resized/re-encoded into the
+    responsive variant set recorded in ``image_sources`` (AVIF/WebP at fixed
+    widths). Storefront URLs come from ``image_sources``; the original byte
+    stream in ``image`` is not served to browsers.
     """
 
     product = models.ForeignKey(
@@ -218,6 +242,11 @@ class ProductImage(models.Model):
     alt_text = models.CharField(max_length=255, blank=True)
     is_primary = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0)
+    image_sources = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Processed variant metadata: width, format, and URL per image.",
+    )
 
     class Meta:
         ordering = ["sort_order"]
@@ -318,6 +347,16 @@ class RelatedProduct(models.Model):
         indexes = [
             models.Index(
                 fields=["product", "relation_type"], name="relprod_prod_type_idx"
+            ),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product", "related_product"],
+                name="unique_related_product_link",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(product=models.F("related_product")),
+                name="related_product_no_self_link",
             ),
         ]
 

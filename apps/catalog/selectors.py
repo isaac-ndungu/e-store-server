@@ -2,71 +2,53 @@
 
 Optimized read-only query helpers that keep views thin and give a single
 reference for how catalog data is fetched. Every queryset uses
-``select_related`` / ``prefetch_related`` to prevent N+1 queries.
+``select_related`` / ``prefetch_related`` / ``annotate`` to prevent N+1
+queries.
 """
 
-from django.db.models import Prefetch
+from django.db.models import Count, Prefetch
 
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product, ProductImage, ProductVariant
 
 
 def get_active_categories():
     """Return active categories for public browsing.
 
+    Annotates each category with its product count so list serialization
+    does not fire a count query per row.
+
     Returns:
-        QuerySet: active ``Category`` rows with a product count annotation.
+        QuerySet: active ``Category`` rows with a ``product_count``
+            annotation.
     """
     return (
         Category.objects.filter(is_active=True)
         .select_related("parent")
+        .annotate(product_count=Count("products"))
         .order_by("name")
     )
 
 
-def get_category_by_slug(slug):
-    """Return an active category by slug, or ``None``.
+def get_active_brands():
+    """Return all brands for browsing and management.
 
-    Args:
-        slug (str): the category slug.
+    Annotates each brand with its product count to avoid a count query per
+    row during list serialization.
 
     Returns:
-        Category | None: the matching category, or None.
+        QuerySet: ``Brand`` rows with a ``product_count`` annotation,
+            ordered by name.
     """
     return (
-        Category.objects.filter(slug=slug, is_active=True)
-        .select_related("parent")
-        .first()
+        Brand.objects.all().annotate(product_count=Count("products")).order_by("name")
     )
-
-
-def get_active_brands():
-    """Return all brands for public browsing.
-
-    The ``Brand`` model has no ``is_active`` flag — every brand is shown.
-
-    Returns:
-        QuerySet: ``Brand`` rows ordered by name.
-    """
-    return Brand.objects.all().order_by("name")
-
-
-def get_brand_by_slug(slug):
-    """Return an active brand by slug, or ``None``.
-
-    Args:
-        slug (str): the brand slug.
-
-    Returns:
-        Brand | None: the matching brand, or None.
-    """
-    return Brand.objects.filter(slug=slug).first()
 
 
 def get_product_list_queryset():
     """Return the base queryset for the public product list.
 
-    Pre-fetches category and brand to avoid N+1 on list serialization.
-    Only returns active, non-discontinued products.
+    Pre-fetches category, brand, and the primary image to avoid N+1 on list
+    serialization. Only returns active, non-discontinued products.
 
     Returns:
         QuerySet: optimised product queryset.
@@ -74,6 +56,13 @@ def get_product_list_queryset():
     return (
         Product.objects.filter(is_active=True, is_discontinued=False)
         .select_related("category", "brand")
+        .prefetch_related(
+            Prefetch(
+                "images",
+                queryset=ProductImage.objects.filter(is_primary=True),
+                to_attr="primary_images",
+            )
+        )
         .only(
             "id",
             "name",
@@ -125,54 +114,20 @@ def get_product_by_slug(slug, include_inactive=False):
     return qs.filter(slug=slug).first()
 
 
-def get_product_by_pk(pk):
-    """Return a product by PK for admin endpoints (includes inactive).
-
-    Args:
-        pk (int): the product primary key.
-
-    Returns:
-        Product | None: the matching product.
-    """
-    qs = Product.objects.select_related(
-        "category",
-        "brand",
-        "replacement_product",
-    ).prefetch_related(
-        "variants",
-        "images",
-    )
-    return qs.filter(pk=pk).first()
-
-
-def get_products_for_category(category_id):
-    """Return active products in a category.
-
-    Args:
-        category_id (int): the category PK.
-
-    Returns:
-        QuerySet: optimised product queryset for the category.
-    """
-    return get_product_list_queryset().filter(category_id=category_id)
-
-
-def get_products_for_brand(brand_id):
-    """Return active products for a brand.
-
-    Args:
-        brand_id (int): the brand PK.
-
-    Returns:
-        QuerySet: optimised product queryset for the brand.
-    """
-    return get_product_list_queryset().filter(brand_id=brand_id)
-
-
 def get_all_products_admin():
     """Return all products for admin management (includes inactive).
 
     Returns:
         QuerySet: all products with prefetched relations.
     """
-    return Product.objects.select_related("category", "brand").order_by("-created_at")
+    return (
+        Product.objects.select_related("category", "brand")
+        .prefetch_related(
+            Prefetch(
+                "images",
+                queryset=ProductImage.objects.filter(is_primary=True),
+                to_attr="primary_images",
+            )
+        )
+        .order_by("-created_at")
+    )

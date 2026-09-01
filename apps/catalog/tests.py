@@ -9,9 +9,12 @@ callers.
 """
 
 import io
+from decimal import Decimal
 
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils.text import slugify
 from PIL import Image
@@ -163,6 +166,20 @@ def _make_variant(product, **kwargs):
     )
 
 
+def _png_upload(width=1200, height=900, name="photo.png", color=(255, 0, 0)):
+    """Return an in-memory PNG of the given dimensions as an upload."""
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    buffer.seek(0)
+    return SimpleUploadedFile(name, buffer.read(), content_type="image/png")
+
+
+def _pdf_upload(name="manual.pdf"):
+    """Return a minimal in-memory PDF as an upload."""
+    content = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< >>\n%%EOF"
+    return SimpleUploadedFile(name, content, content_type="application/pdf")
+
+
 class CategoryBrowseTests(APITestCase):
     """Exercises the public category list/detail endpoints."""
 
@@ -220,6 +237,37 @@ class CategoryBrowseTests(APITestCase):
         response = self.client.get(URLS["categories"])
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
+    def test_non_numeric_parent_param_rejected(self):
+        """A non-numeric ``parent`` param returns 400, not a 500."""
+        response = self.client.get(URLS["categories"], {"parent": "abc"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_numeric_parent_param_accepted(self):
+        """A numeric ``parent`` param filters to that category's children."""
+        parent = _make_category()
+        child = _make_category(name="Two Door", slug="two-door-child")
+        child.parent = parent
+        child.save()
+        response = self.client.get(URLS["categories"], {"parent": parent.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["slug"], "two-door-child")
+
+    def test_null_parent_param_lists_top_level(self):
+        """The ``null`` parent marker lists only root categories."""
+        _make_category(name="Root One", slug="root-one")
+        root_two = _make_category(name="Root Two", slug="root-two")
+        Category.objects.create(
+            name="Child",
+            slug="nested-child",
+            parent=root_two,
+            is_active=True,
+        )
+        response = self.client.get(URLS["categories"], {"parent": "null"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        slugs = {c["slug"] for c in response.data}
+        self.assertEqual(slugs, {"root-one", "root-two"})
+
 
 class BrandBrowseTests(APITestCase):
     """Exercises the public brand list/detail endpoints."""
@@ -247,6 +295,37 @@ class BrandBrowseTests(APITestCase):
         url = reverse("api:catalog:brand-detail", args=["no-such-brand"])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class QueryCountTests(APITestCase):
+    """Guards against N+1 regressions in public list endpoints."""
+
+    def setUp(self):
+        cache.clear()
+        self.category = _make_category()
+        self.brand = _make_brand()
+        for i in range(6):
+            Product.objects.create(
+                name=f"Product {i}",
+                slug=f"qcount-{i}",
+                sku=f"QCOUNT-{i}",
+                category=self.category,
+                brand=self.brand,
+            )
+
+    def test_category_list_uses_single_query(self):
+        """The category list renders without a count query per row."""
+        _make_category(name="Second", slug="qcount-second")
+        with self.assertNumQueries(1):
+            response = self.client.get(URLS["categories"])
+        self.assertEqual(len(response.data), 2)
+        self.assertEqual(response.data[0]["product_count"], 6)
+
+    def test_brand_list_uses_single_query(self):
+        """The brand list renders without a count query per row."""
+        with self.assertNumQueries(1):
+            response = self.client.get(URLS["brands"])
+        self.assertEqual(response.data[0]["product_count"], 6)
 
 
 class ProductListBrowseTests(APITestCase):
@@ -339,6 +418,22 @@ class ProductListBrowseTests(APITestCase):
         names = [p["name"] for p in response.data["results"]]
         self.assertEqual(names, sorted(names))
 
+    def test_primary_image_included_in_list(self):
+        """The product list exposes the primary image for each product."""
+        product = Product.objects.get(slug="fridge-200l")
+        ProductImage.objects.create(
+            product=product,
+            image="products/images/hero.png",
+            is_primary=True,
+            sort_order=0,
+        )
+        response = self.client.get(URLS["products"])
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        result = next(r for r in response.data["results"] if r["slug"] == "fridge-200l")
+        self.assertTrue(result["primary_image"].endswith("hero.png"))
+        other = next(r for r in response.data["results"] if r["slug"] == "washer")
+        self.assertIsNone(other["primary_image"])
+
 
 class ProductDetailBrowseTests(APITestCase):
     """Exercises the public product detail and pricing endpoints."""
@@ -405,6 +500,20 @@ class ProductDetailBrowseTests(APITestCase):
         url = reverse("api:catalog:product-price", args=[inactive.slug])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_price_endpoint_query_bound(self):
+        """Variant and tier data are prefetched, not queried per variant."""
+        product = _make_product(
+            name="Price Bound", slug="price-bound", sku="PR-BND", with_variant=True
+        )
+        variant = product.variants.get()
+        PricingTier.objects.create(
+            variant=variant, min_quantity=5, unit_price="41000.00"
+        )
+        url = reverse("api:catalog:product-price", args=[product.slug])
+        with self.assertNumQueries(4):
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
 class FacetSearchTests(APITestCase):
@@ -481,6 +590,23 @@ class FacetSearchTests(APITestCase):
         response = self.client.get(URLS["products"], {"not_a_facet": "x"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 2)
+
+    def test_facet_counts_query_bound(self):
+        """Facet counts cost one aggregate query per facet, not one per value."""
+        for i in range(12):
+            Product.objects.create(
+                name=f"Bulk Fridge {i}",
+                slug=f"fac-bulk-{i}",
+                sku=f"FAC-BULK-{i}",
+                specs={"capacity": f"{600 + i}L"},
+            )
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get(URLS["products"])
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Main query, image prefetch, pagination count, facet-definition
+        # lookup, and one grouped aggregate per active facet (3 here).
+        self.assertLessEqual(len(ctx.captured_queries), 10)
+        self.assertEqual(response.data["facets"]["Capacity"]["611L"], 1)
 
 
 class CategoryAdminTests(APITestCase):
@@ -1023,3 +1149,456 @@ class ModelValidationTests(APITestCase):
         )
         with self.assertRaises(DjangoValidationError):
             facet.clean()
+
+
+class NumericAndRangeFacetTests(APITestCase):
+    """Exercises numeric JSON facet matching and range facet filtering."""
+
+    def setUp(self):
+        cache.clear()
+        FacetDefinition.objects.create(
+            name="Capacity",
+            key="capacity",
+            source_field="product_specs",
+            facet_type="choice",
+            is_active=True,
+        )
+        FacetDefinition.objects.create(
+            name="Loading",
+            key="load_kg",
+            source_field="product_specs",
+            facet_type="range",
+            is_active=True,
+        )
+        FacetDefinition.objects.create(
+            name="Wattage",
+            field_name="wattage",
+            source_field="product_field",
+            facet_type="range",
+            is_active=True,
+        )
+        FacetDefinition.objects.create(
+            name="Price",
+            field_name="price",
+            source_field="variant_field",
+            facet_type="range",
+            is_active=True,
+        )
+        _make_product(
+            name="Small Fridge",
+            slug="num-fridge-small",
+            sku="NUM-200",
+            specs={"capacity": 200, "load_kg": 50},
+            with_variant=True,
+        )
+        Product.objects.filter(sku="NUM-200").update(wattage="500.00")
+        _make_variant(
+            Product.objects.get(sku="NUM-200"), sku="NUM-200-V", price="30000.00"
+        )
+        _make_product(
+            name="Big Fridge",
+            slug="num-fridge-big",
+            sku="NUM-400",
+            specs={"capacity": 400, "load_kg": 120},
+            with_variant=True,
+        )
+        Product.objects.filter(sku="NUM-400").update(wattage="1500.00")
+        _make_variant(
+            Product.objects.get(sku="NUM-400"), sku="NUM-400-V", price="45000.00"
+        )
+
+    def test_numeric_query_param_matches_stored_int(self):
+        """A numeric query param matches an integer JSONB value."""
+        response = self.client.get(URLS["products"], {"capacity": "200"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["slug"], "num-fridge-small")
+
+    def test_numeric_choice_facet_counts(self):
+        """Integer JSONB values appear as stringified counts."""
+        response = self.client.get(URLS["products"])
+        self.assertEqual(response.data["facets"]["Capacity"]["200"], 1)
+        self.assertEqual(response.data["facets"]["Capacity"]["400"], 1)
+
+    def test_product_field_range_filter(self):
+        """A range facet on a direct product field filters with min/max."""
+        response = self.client.get(
+            URLS["products"], {"wattage_min": "100", "wattage_max": "1000"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["slug"], "num-fridge-small")
+
+    def test_variant_field_range_filter(self):
+        """A range facet on a variant field filters through the variant join."""
+        response = self.client.get(
+            URLS["products"], {"price_min": "30000", "price_max": "40000"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["slug"], "num-fridge-small")
+
+    def test_json_range_filter(self):
+        """A range filter over JSONB keys narrows products."""
+        response = self.client.get(
+            URLS["products"], {"load_kg_min": "30", "load_kg_max": "80"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 1)
+
+    def test_range_facets_report_min_max_bounds(self):
+        """Range facets expose min/max bounds instead of per-value counts."""
+        response = self.client.get(URLS["products"])
+        self.assertEqual(
+            response.data["facets"]["Wattage"], {"min": "500.00", "max": "1500.00"}
+        )
+        self.assertEqual(
+            response.data["facets"]["Price"], {"min": "30000.00", "max": "45000.00"}
+        )
+        self.assertEqual(
+            response.data["facets"]["Loading"], {"min": "50", "max": "120"}
+        )
+
+
+class PrimaryImageTests(APITestCase):
+    """Exercises single-primary enforcement on image creation and update."""
+
+    def setUp(self):
+        cache.clear()
+        _make_admin()
+        _login(self.client)
+        self.product = _make_product()
+
+    def _create_image(self, is_primary):
+        """Create an image via the admin endpoint and return its id."""
+        url = reverse(
+            "api:catalog:admin-product-image-list-create", args=[self.product.pk]
+        )
+        response = self.client.post(
+            url,
+            {"image": _png_upload(), "is_primary": is_primary},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data["id"]
+
+    def test_second_primary_demotes_the_first(self):
+        """Promoting a new primary image demotes the previous one."""
+        self._create_image(is_primary=True)
+        second_id = self._create_image(is_primary=True)
+
+        images = ProductImage.objects.filter(product=self.product)
+        self.assertEqual(images.count(), 2)
+        self.assertEqual(images.filter(is_primary=True).count(), 1)
+        self.assertTrue(images.get(pk=second_id).is_primary)
+
+    def test_update_promotion_demotes_other_primary(self):
+        """PATCHing is_primary on an image demotes the existing primary."""
+        primary_id = self._create_image(is_primary=True)
+        secondary_id = self._create_image(is_primary=False)
+
+        url = reverse(
+            "api:catalog:admin-product-image-detail",
+            args=[self.product.pk, secondary_id],
+        )
+        response = self.client.patch(url, {"is_primary": True}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        images = ProductImage.objects.filter(product=self.product)
+        self.assertEqual(images.filter(is_primary=True).count(), 1)
+        self.assertFalse(images.get(pk=primary_id).is_primary)
+        self.assertTrue(images.get(pk=secondary_id).is_primary)
+
+    def test_create_product_collapses_multiple_primaries(self):
+        """The create-product service keeps only the first primary image."""
+        from apps.catalog.services import create_product
+
+        product = create_product(
+            name="Multi Image",
+            slug="multi-image",
+            sku="MULTI-IMG-1",
+            description="d",
+            images=[
+                {"image": _png_upload(name="one.png"), "is_primary": True},
+                {"image": _png_upload(name="two.png"), "is_primary": True},
+            ],
+        )
+        self.assertEqual(ProductImage.objects.filter(product=product).count(), 2)
+        self.assertEqual(
+            ProductImage.objects.filter(product=product, is_primary=True).count(), 1
+        )
+
+
+class UploadValidatorTests(APITestCase):
+    """Exercises content/size validation on every catalog upload path."""
+
+    def setUp(self):
+        cache.clear()
+        _make_admin()
+        _login(self.client)
+
+    def test_category_image_rejects_non_image(self):
+        """A non-image upload to a category is rejected."""
+        response = self.client.post(
+            URLS["admin_categories"],
+            {
+                "name": "Cookers",
+                "image": SimpleUploadedFile(
+                    "logo.txt", b"not an image", content_type="text/plain"
+                ),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_brand_logo_rejects_non_image(self):
+        """A non-image upload as a brand logo is rejected."""
+        response = self.client.post(
+            URLS["admin_brands"],
+            {
+                "name": "LG",
+                "logo": SimpleUploadedFile(
+                    "logo.txt", b"not an image", content_type="text/plain"
+                ),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_pdf_fields_reject_non_pdf(self):
+        """A non-PDF upload to a product document field is rejected."""
+        response = self.client.post(
+            URLS["admin_products"],
+            {
+                "name": "Manual Product",
+                "sku": "MANUAL-1",
+                "description": "d",
+                "manual_pdf": SimpleUploadedFile(
+                    "manual.txt", b"not a pdf", content_type="text/plain"
+                ),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_valid_pdf_accepted(self):
+        """A well-formed PDF upload to a product document field succeeds."""
+        response = self.client.post(
+            URLS["admin_products"],
+            {
+                "name": "Manual Product",
+                "sku": "MANUAL-2",
+                "description": "d",
+                "manual_pdf": _pdf_upload(),
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+
+class ImageProcessingTests(APITestCase):
+    """Exercises responsive variant generation for product images."""
+
+    def setUp(self):
+        cache.clear()
+        _make_admin()
+        _login(self.client)
+        self.product = _make_product()
+
+    def test_upload_generates_responsive_variants(self):
+        """A large upload is processed into width/format variants."""
+        from apps.catalog.images import PROCESSED_IMAGE_WIDTHS
+
+        url = reverse(
+            "api:catalog:admin-product-image-list-create", args=[self.product.pk]
+        )
+        response = self.client.post(
+            url, {"image": _png_upload(1600, 1200)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        image = ProductImage.objects.get()
+        formats = {source["format"] for source in image.image_sources}
+        widths = {source["width"] for source in image.image_sources}
+        self.assertEqual(widths, set(PROCESSED_IMAGE_WIDTHS))
+        self.assertIn("webp", formats)
+        for source in image.image_sources:
+            self.assertTrue(source["url"].startswith("/media/"))
+
+        detail_url = reverse(
+            "api:catalog:admin-product-image-detail",
+            args=[self.product.pk, image.pk],
+        )
+        detail = self.client.get(detail_url)
+        self.assertEqual(detail.status_code, status.HTTP_200_OK)
+        self.assertTrue(detail.data["default_image"].endswith("--640w.webp"))
+        self.assertTrue(all("--" in s["url"] for s in detail.data["srcset"]))
+
+    def test_primary_image_in_list_uses_processed_variant(self):
+        """The public list serves the processed variant, not the original."""
+        url = reverse(
+            "api:catalog:admin-product-image-list-create", args=[self.product.pk]
+        )
+        self.client.post(
+            url,
+            {"image": _png_upload(1600, 1200), "is_primary": True},
+            format="multipart",
+        )
+
+        response = self.client.get(URLS["products"])
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        primary_url = response.data["results"][0]["primary_image"]
+        self.assertIn("--640w.webp", primary_url)
+        self.assertNotIn("photo.png", primary_url)
+
+
+class NestedResourceUpdateTests(APITestCase):
+    """Exercises the newly added update endpoints for nested resources."""
+
+    def setUp(self):
+        cache.clear()
+        _make_admin()
+        _login(self.client)
+        self.product_a = _make_product(name="A", slug="nested-a", sku="NA-1")
+        self.product_b = _make_product(name="B", slug="nested-b", sku="NB-1")
+        self.variant_a = _make_variant(self.product_a, sku="NA-1-V")
+        self.variant_b = _make_variant(
+            self.product_b, sku="NB-1-V", attributes={"color": "Blue"}
+        )
+
+    def test_image_update(self):
+        """An image's alt text and ordering can be updated in place."""
+        url = reverse(
+            "api:catalog:admin-product-image-list-create", args=[self.product_a.pk]
+        )
+        created = self.client.post(
+            url, {"image": _png_upload(), "sort_order": 5}, format="multipart"
+        )
+        detail_url = reverse(
+            "api:catalog:admin-product-image-detail",
+            args=[self.product_a.pk, created.data["id"]],
+        )
+        response = self.client.patch(
+            detail_url, {"alt_text": "Hero shot", "sort_order": 1}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        image = ProductImage.objects.get(pk=created.data["id"])
+        self.assertEqual(image.alt_text, "Hero shot")
+        self.assertEqual(image.sort_order, 1)
+
+    def test_pricing_tier_update(self):
+        """A pricing tier's price can be updated in place."""
+        tier = PricingTier.objects.create(
+            variant=self.variant_a, min_quantity=5, unit_price="41000.00"
+        )
+        url = reverse(
+            "api:catalog:admin-pricing-tier-detail",
+            args=[self.product_a.pk, tier.pk],
+        )
+        response = self.client.patch(url, {"unit_price": "39999.99"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        tier.refresh_from_db()
+        self.assertEqual(tier.unit_price, Decimal("39999.99"))
+
+    def test_pricing_tier_update_rejects_foreign_variant(self):
+        """Moving a tier onto another product's variant is rejected."""
+        tier = PricingTier.objects.create(
+            variant=self.variant_a, min_quantity=5, unit_price="41000.00"
+        )
+        url = reverse(
+            "api:catalog:admin-pricing-tier-detail",
+            args=[self.product_a.pk, tier.pk],
+        )
+        response = self.client.patch(url, {"variant": self.variant_b.pk}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_related_product_update(self):
+        """A related-product link's type and order can be updated."""
+        link = RelatedProduct.objects.create(
+            product=self.product_a,
+            related_product=self.product_b,
+            relation_type="alternative",
+        )
+        url = reverse(
+            "api:catalog:admin-related-product-detail",
+            args=[self.product_a.pk, link.pk],
+        )
+        response = self.client.patch(
+            url, {"relation_type": "accessory", "sort_order": 3}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        link.refresh_from_db()
+        self.assertEqual(link.relation_type, "accessory")
+        self.assertEqual(link.sort_order, 3)
+
+
+class CategoryIntegrityTests(APITestCase):
+    """Exercises category-tree and related-link integrity rules."""
+
+    def setUp(self):
+        cache.clear()
+        _make_admin()
+        _login(self.client)
+
+    def test_category_cannot_be_its_own_parent(self):
+        """Setting a category's parent to itself returns a 400."""
+        category = Category.objects.create(name="Root", slug="root-cat")
+        url = reverse("api:catalog:admin-category-detail", args=[category.pk])
+        response = self.client.patch(url, {"parent": category.pk}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_category_parent_cycle_rejected(self):
+        """Reparenting a category into its own descendant subtree is rejected."""
+        root = Category.objects.create(name="Root", slug="cycle-root")
+        middle = Category.objects.create(name="Middle", slug="cycle-mid", parent=root)
+        leaf = Category.objects.create(name="Leaf", slug="cycle-leaf", parent=middle)
+
+        url = reverse("api:catalog:admin-category-detail", args=[root.pk])
+        response = self.client.patch(url, {"parent": leaf.pk}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_legitimate_reparent_succeeds(self):
+        """Moving a category under a different root still works."""
+        root = Category.objects.create(name="Root", slug="legit-root")
+        child = Category.objects.create(name="Child", slug="legit-child", parent=root)
+        new_root = Category.objects.create(name="New Root", slug="legit-new")
+
+        url = reverse("api:catalog:admin-category-detail", args=[child.pk])
+        response = self.client.patch(url, {"parent": new_root.pk}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        child.refresh_from_db()
+        self.assertEqual(child.parent_id, new_root.pk)
+
+    def test_duplicate_related_product_rejected(self):
+        """Linking the same product pair twice returns a 400."""
+        product_a = _make_product(name="A", slug="dup-a", sku="DUP-A")
+        product_b = _make_product(name="B", slug="dup-b", sku="DUP-B")
+        url = reverse(
+            "api:catalog:admin-related-product-list-create", args=[product_a.pk]
+        )
+        payload = {
+            "related_product": product_b.pk,
+            "relation_type": "alternative",
+        }
+        first = self.client.post(url, payload, format="json")
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        second = self.client.post(url, payload, format="json")
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class ProductDetailQueryTests(APITestCase):
+    """Binds the product-detail endpoint to a fixed query count."""
+
+    def test_product_detail_is_query_bound(self):
+        """Detail serialization does not fire per-relation count queries."""
+        product = _make_product(with_variant=True)
+        ProductImage.objects.create(
+            product=product, image=_png_upload(), is_primary=True
+        )
+        url = reverse("api:catalog:product-detail", args=[product.slug])
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["category"]["name"], product.category.name)
+        # Product, variant prefetch (+ tier prefetch), and image prefetch.
+        self.assertLessEqual(len(ctx.captured_queries), 4)

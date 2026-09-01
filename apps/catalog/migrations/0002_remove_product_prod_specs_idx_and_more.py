@@ -22,32 +22,36 @@ class AddPostgresGinIndex(migrations.AddIndex):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('catalog', '0001_initial'),
+        ("catalog", "0001_initial"),
     ]
 
     operations = [
         migrations.RemoveIndex(
-            model_name='product',
-            name='prod_specs_idx',
+            model_name="product",
+            name="prod_specs_idx",
         ),
         AddPostgresGinIndex(
-            model_name='product',
+            model_name="product",
             index=django.contrib.postgres.indexes.GinIndex(
-                fields=['specs'], name='prod_specs_gin_idx', opclasses=['jsonb_path_ops']
+                fields=["specs"],
+                name="prod_specs_gin_idx",
+                opclasses=["jsonb_path_ops"],
             ),
         ),
         AddPostgresGinIndex(
-            model_name='productvariant',
+            model_name="productvariant",
             index=django.contrib.postgres.indexes.GinIndex(
-                fields=['attributes'], name='var_attrs_gin_idx', opclasses=['jsonb_path_ops']
+                fields=["attributes"],
+                name="var_attrs_gin_idx",
+                opclasses=["jsonb_path_ops"],
             ),
         ),
         migrations.AddConstraint(
-            model_name='productimage',
+            model_name="productimage",
             constraint=models.UniqueConstraint(
-                condition=models.Q(('is_primary', True)),
-                fields=('product',),
-                name='unique_primary_image_per_product',
+                condition=models.Q(("is_primary", True)),
+                fields=("product",),
+                name="unique_primary_image_per_product",
             ),
         ),
     ]

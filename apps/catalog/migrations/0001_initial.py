@@ -10,242 +10,526 @@ class Migration(migrations.Migration):
 
     initial = True
 
-    dependencies = [
-    ]
+    dependencies = []
 
     operations = [
         migrations.CreateModel(
-            name='Brand',
+            name="Brand",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=255)),
-                ('slug', models.SlugField(unique=True)),
-                ('logo', models.ImageField(blank=True, upload_to='brands/')),
-                ('description', models.TextField(blank=True)),
-                ('is_authorized_dealer', models.BooleanField(default=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=255)),
+                ("slug", models.SlugField(unique=True)),
+                ("logo", models.ImageField(blank=True, upload_to="brands/")),
+                ("description", models.TextField(blank=True)),
+                ("is_authorized_dealer", models.BooleanField(default=True)),
             ],
             options={
-                'ordering': ['name'],
-                'indexes': [models.Index(fields=['slug'], name='brand_slug_idx')],
+                "ordering": ["name"],
+                "indexes": [models.Index(fields=["slug"], name="brand_slug_idx")],
             },
         ),
         migrations.CreateModel(
-            name='Category',
+            name="Category",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=255)),
-                ('slug', models.SlugField(unique=True)),
-                ('description', models.TextField(blank=True)),
-                ('image', models.ImageField(blank=True, upload_to='categories/')),
-                ('meta_title', models.CharField(blank=True, max_length=255)),
-                ('meta_description', models.TextField(blank=True)),
-                ('is_active', models.BooleanField(default=True)),
-                ('parent', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='children', to='catalog.category')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=255)),
+                ("slug", models.SlugField(unique=True)),
+                ("description", models.TextField(blank=True)),
+                ("image", models.ImageField(blank=True, upload_to="categories/")),
+                ("meta_title", models.CharField(blank=True, max_length=255)),
+                ("meta_description", models.TextField(blank=True)),
+                ("is_active", models.BooleanField(default=True)),
+                (
+                    "parent",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="children",
+                        to="catalog.category",
+                    ),
+                ),
             ],
             options={
-                'verbose_name_plural': 'categories',
-                'ordering': ['name'],
+                "verbose_name_plural": "categories",
+                "ordering": ["name"],
             },
         ),
         migrations.CreateModel(
-            name='FacetDefinition',
+            name="FacetDefinition",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=100)),
-                ('key', models.CharField(blank=True, help_text='JSON key path — required when source is product_specs or variant_attributes.', max_length=100)),
-                ('field_name', models.CharField(blank=True, help_text='Model field name — required when source is product_field or variant_field.', max_length=100)),
-                ('source_field', models.CharField(choices=[('product_specs', 'Product.specs (JSON)'), ('variant_attributes', 'ProductVariant.attributes (JSON)'), ('product_field', 'Direct Product field'), ('variant_field', 'Direct ProductVariant field')], max_length=20)),
-                ('facet_type', models.CharField(choices=[('choice', 'Choice'), ('range', 'Range')], default='choice', max_length=20)),
-                ('is_active', models.BooleanField(default=True)),
-                ('sort_order', models.PositiveIntegerField(default=0)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=100)),
+                (
+                    "key",
+                    models.CharField(
+                        blank=True,
+                        help_text="JSON key path — required when source is product_specs or variant_attributes.",
+                        max_length=100,
+                    ),
+                ),
+                (
+                    "field_name",
+                    models.CharField(
+                        blank=True,
+                        help_text="Model field name — required when source is product_field or variant_field.",
+                        max_length=100,
+                    ),
+                ),
+                (
+                    "source_field",
+                    models.CharField(
+                        choices=[
+                            ("product_specs", "Product.specs (JSON)"),
+                            ("variant_attributes", "ProductVariant.attributes (JSON)"),
+                            ("product_field", "Direct Product field"),
+                            ("variant_field", "Direct ProductVariant field"),
+                        ],
+                        max_length=20,
+                    ),
+                ),
+                (
+                    "facet_type",
+                    models.CharField(
+                        choices=[("choice", "Choice"), ("range", "Range")],
+                        default="choice",
+                        max_length=20,
+                    ),
+                ),
+                ("is_active", models.BooleanField(default=True)),
+                ("sort_order", models.PositiveIntegerField(default=0)),
             ],
             options={
-                'ordering': ['sort_order', 'name'],
-                'indexes': [models.Index(fields=['is_active'], name='facet_active_idx')],
+                "ordering": ["sort_order", "name"],
+                "indexes": [
+                    models.Index(fields=["is_active"], name="facet_active_idx")
+                ],
             },
         ),
         migrations.CreateModel(
-            name='Product',
+            name="Product",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('product_type', models.CharField(choices=[('physical', 'Physical'), ('digital', 'Digital'), ('service', 'Service')], default='physical', max_length=20)),
-                ('name', models.CharField(max_length=255)),
-                ('slug', models.SlugField(unique=True)),
-                ('sku', models.CharField(max_length=100, unique=True)),
-                ('short_description', models.CharField(blank=True, max_length=500)),
-                ('description', models.TextField()),
-                ('specs', models.JSONField(blank=True, default=dict)),
-                ('features', models.JSONField(blank=True, default=list)),
-                ('is_active', models.BooleanField(default=True)),
-                ('is_featured', models.BooleanField(default=False)),
-                ('kebs_certification_number', models.CharField(blank=True, max_length=100)),
-                ('country_of_origin', models.CharField(blank=True, max_length=100)),
-                ('hs_code', models.CharField(blank=True, max_length=20)),
-                ('voltage_rating', models.CharField(blank=True, max_length=50)),
-                ('frequency_rating', models.CharField(blank=True, max_length=20)),
-                ('wattage', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
-                ('manufacturer_model_number', models.CharField(blank=True, max_length=100)),
-                ('manual_pdf', models.FileField(blank=True, upload_to='products/manuals/')),
-                ('installation_guide_pdf', models.FileField(blank=True, upload_to='products/guides/')),
-                ('datasheet_pdf', models.FileField(blank=True, upload_to='products/datasheets/')),
-                ('tracks_serial_numbers', models.BooleanField(default=False)),
-                ('warranty_duration_months', models.PositiveIntegerField(blank=True, null=True)),
-                ('warranty_type', models.CharField(blank=True, choices=[('manufacturer', 'Manufacturer'), ('dealer', 'Dealer/Local')], max_length=20)),
-                ('warranty_provider', models.CharField(blank=True, max_length=255)),
-                ('warranty_terms', models.TextField(blank=True)),
-                ('requires_professional_installation', models.BooleanField(default=False)),
-                ('requires_two_person_delivery', models.BooleanField(default=False)),
-                ('is_fragile', models.BooleanField(default=False)),
-                ('condition', models.CharField(choices=[('new', 'New'), ('open_box', 'Open Box'), ('refurbished', 'Refurbished'), ('floor_model', 'Floor Model')], default='new', max_length=20)),
-                ('is_discontinued', models.BooleanField(default=False)),
-                ('last_restocked_at', models.DateTimeField(blank=True, null=True)),
-                ('is_returnable', models.BooleanField(default=True)),
-                ('restocking_fee_percent', models.DecimalField(decimal_places=2, default=0, max_digits=5)),
-                ('tax_class', models.CharField(choices=[('standard', 'Standard VAT'), ('zero_rated', 'Zero-rated'), ('exempt', 'Exempt')], default='standard', max_length=20)),
-                ('average_rating', models.DecimalField(decimal_places=2, default=0, max_digits=3)),
-                ('review_count', models.PositiveIntegerField(default=0)),
-                ('meta_title', models.CharField(blank=True, max_length=255)),
-                ('meta_description', models.TextField(blank=True)),
-                ('gtin', models.CharField(blank=True, max_length=20)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('brand', models.ForeignKey(null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='products', to='catalog.brand')),
-                ('category', models.ForeignKey(null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='products', to='catalog.category')),
-                ('replacement_product', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='superseded_by', to='catalog.product')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "product_type",
+                    models.CharField(
+                        choices=[
+                            ("physical", "Physical"),
+                            ("digital", "Digital"),
+                            ("service", "Service"),
+                        ],
+                        default="physical",
+                        max_length=20,
+                    ),
+                ),
+                ("name", models.CharField(max_length=255)),
+                ("slug", models.SlugField(unique=True)),
+                ("sku", models.CharField(max_length=100, unique=True)),
+                ("short_description", models.CharField(blank=True, max_length=500)),
+                ("description", models.TextField()),
+                ("specs", models.JSONField(blank=True, default=dict)),
+                ("features", models.JSONField(blank=True, default=list)),
+                ("is_active", models.BooleanField(default=True)),
+                ("is_featured", models.BooleanField(default=False)),
+                (
+                    "kebs_certification_number",
+                    models.CharField(blank=True, max_length=100),
+                ),
+                ("country_of_origin", models.CharField(blank=True, max_length=100)),
+                ("hs_code", models.CharField(blank=True, max_length=20)),
+                ("voltage_rating", models.CharField(blank=True, max_length=50)),
+                ("frequency_rating", models.CharField(blank=True, max_length=20)),
+                (
+                    "wattage",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=10, null=True
+                    ),
+                ),
+                (
+                    "manufacturer_model_number",
+                    models.CharField(blank=True, max_length=100),
+                ),
+                (
+                    "manual_pdf",
+                    models.FileField(blank=True, upload_to="products/manuals/"),
+                ),
+                (
+                    "installation_guide_pdf",
+                    models.FileField(blank=True, upload_to="products/guides/"),
+                ),
+                (
+                    "datasheet_pdf",
+                    models.FileField(blank=True, upload_to="products/datasheets/"),
+                ),
+                ("tracks_serial_numbers", models.BooleanField(default=False)),
+                (
+                    "warranty_duration_months",
+                    models.PositiveIntegerField(blank=True, null=True),
+                ),
+                (
+                    "warranty_type",
+                    models.CharField(
+                        blank=True,
+                        choices=[
+                            ("manufacturer", "Manufacturer"),
+                            ("dealer", "Dealer/Local"),
+                        ],
+                        max_length=20,
+                    ),
+                ),
+                ("warranty_provider", models.CharField(blank=True, max_length=255)),
+                ("warranty_terms", models.TextField(blank=True)),
+                (
+                    "requires_professional_installation",
+                    models.BooleanField(default=False),
+                ),
+                ("requires_two_person_delivery", models.BooleanField(default=False)),
+                ("is_fragile", models.BooleanField(default=False)),
+                (
+                    "condition",
+                    models.CharField(
+                        choices=[
+                            ("new", "New"),
+                            ("open_box", "Open Box"),
+                            ("refurbished", "Refurbished"),
+                            ("floor_model", "Floor Model"),
+                        ],
+                        default="new",
+                        max_length=20,
+                    ),
+                ),
+                ("is_discontinued", models.BooleanField(default=False)),
+                ("last_restocked_at", models.DateTimeField(blank=True, null=True)),
+                ("is_returnable", models.BooleanField(default=True)),
+                (
+                    "restocking_fee_percent",
+                    models.DecimalField(decimal_places=2, default=0, max_digits=5),
+                ),
+                (
+                    "tax_class",
+                    models.CharField(
+                        choices=[
+                            ("standard", "Standard VAT"),
+                            ("zero_rated", "Zero-rated"),
+                            ("exempt", "Exempt"),
+                        ],
+                        default="standard",
+                        max_length=20,
+                    ),
+                ),
+                (
+                    "average_rating",
+                    models.DecimalField(decimal_places=2, default=0, max_digits=3),
+                ),
+                ("review_count", models.PositiveIntegerField(default=0)),
+                ("meta_title", models.CharField(blank=True, max_length=255)),
+                ("meta_description", models.TextField(blank=True)),
+                ("gtin", models.CharField(blank=True, max_length=20)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "brand",
+                    models.ForeignKey(
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="products",
+                        to="catalog.brand",
+                    ),
+                ),
+                (
+                    "category",
+                    models.ForeignKey(
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="products",
+                        to="catalog.category",
+                    ),
+                ),
+                (
+                    "replacement_product",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="superseded_by",
+                        to="catalog.product",
+                    ),
+                ),
             ],
             options={
-                'ordering': ['-created_at'],
+                "ordering": ["-created_at"],
             },
         ),
         migrations.CreateModel(
-            name='ProductImage',
+            name="ProductImage",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('image', models.ImageField(upload_to='products/images/', validators=[apps.catalog.validators.validate_image_upload])),
-                ('alt_text', models.CharField(blank=True, max_length=255)),
-                ('is_primary', models.BooleanField(default=False)),
-                ('sort_order', models.PositiveIntegerField(default=0)),
-                ('product', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='images', to='catalog.product')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "image",
+                    models.ImageField(
+                        upload_to="products/images/",
+                        validators=[apps.catalog.validators.validate_image_upload],
+                    ),
+                ),
+                ("alt_text", models.CharField(blank=True, max_length=255)),
+                ("is_primary", models.BooleanField(default=False)),
+                ("sort_order", models.PositiveIntegerField(default=0)),
+                (
+                    "product",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="images",
+                        to="catalog.product",
+                    ),
+                ),
             ],
             options={
-                'verbose_name_plural': 'product images',
-                'ordering': ['sort_order'],
+                "verbose_name_plural": "product images",
+                "ordering": ["sort_order"],
             },
         ),
         migrations.CreateModel(
-            name='ProductVariant',
+            name="ProductVariant",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('sku', models.CharField(max_length=100, unique=True)),
-                ('supplier_sku', models.CharField(blank=True, max_length=100)),
-                ('attributes', models.JSONField(default=dict)),
-                ('price', models.DecimalField(decimal_places=2, max_digits=12)),
-                ('compare_at_price', models.DecimalField(blank=True, decimal_places=2, max_digits=12, null=True)),
-                ('cost_price', models.DecimalField(blank=True, decimal_places=2, max_digits=12, null=True)),
-                ('barcode', models.CharField(blank=True, max_length=100)),
-                ('weight', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
-                ('dimensions', models.JSONField(blank=True, default=dict)),
-                ('package_weight', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
-                ('package_dimensions', models.JSONField(blank=True, default=dict)),
-                ('pieces_per_unit', models.PositiveIntegerField(default=1)),
-                ('stock_status_text', models.CharField(blank=True, max_length=100)),
-                ('expected_restock_date', models.DateField(blank=True, null=True)),
-                ('is_active', models.BooleanField(default=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('product', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='variants', to='catalog.product')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("sku", models.CharField(max_length=100, unique=True)),
+                ("supplier_sku", models.CharField(blank=True, max_length=100)),
+                ("attributes", models.JSONField(default=dict)),
+                ("price", models.DecimalField(decimal_places=2, max_digits=12)),
+                (
+                    "compare_at_price",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=12, null=True
+                    ),
+                ),
+                (
+                    "cost_price",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=12, null=True
+                    ),
+                ),
+                ("barcode", models.CharField(blank=True, max_length=100)),
+                (
+                    "weight",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=10, null=True
+                    ),
+                ),
+                ("dimensions", models.JSONField(blank=True, default=dict)),
+                (
+                    "package_weight",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=10, null=True
+                    ),
+                ),
+                ("package_dimensions", models.JSONField(blank=True, default=dict)),
+                ("pieces_per_unit", models.PositiveIntegerField(default=1)),
+                ("stock_status_text", models.CharField(blank=True, max_length=100)),
+                ("expected_restock_date", models.DateField(blank=True, null=True)),
+                ("is_active", models.BooleanField(default=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "product",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="variants",
+                        to="catalog.product",
+                    ),
+                ),
             ],
             options={
-                'ordering': ['-created_at'],
+                "ordering": ["-created_at"],
             },
         ),
         migrations.CreateModel(
-            name='PricingTier',
+            name="PricingTier",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('min_quantity', models.PositiveIntegerField()),
-                ('unit_price', models.DecimalField(decimal_places=2, max_digits=12)),
-                ('variant', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='pricing_tiers', to='catalog.productvariant')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("min_quantity", models.PositiveIntegerField()),
+                ("unit_price", models.DecimalField(decimal_places=2, max_digits=12)),
+                (
+                    "variant",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="pricing_tiers",
+                        to="catalog.productvariant",
+                    ),
+                ),
             ],
             options={
-                'ordering': ['min_quantity'],
+                "ordering": ["min_quantity"],
             },
         ),
         migrations.CreateModel(
-            name='RelatedProduct',
+            name="RelatedProduct",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('relation_type', models.CharField(choices=[('accessory', 'Accessory'), ('alternative', 'Alternative'), ('upgrade', 'Upgrade')], max_length=20)),
-                ('sort_order', models.PositiveIntegerField(default=0)),
-                ('product', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='related_from', to='catalog.product')),
-                ('related_product', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='related_to', to='catalog.product')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "relation_type",
+                    models.CharField(
+                        choices=[
+                            ("accessory", "Accessory"),
+                            ("alternative", "Alternative"),
+                            ("upgrade", "Upgrade"),
+                        ],
+                        max_length=20,
+                    ),
+                ),
+                ("sort_order", models.PositiveIntegerField(default=0)),
+                (
+                    "product",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="related_from",
+                        to="catalog.product",
+                    ),
+                ),
+                (
+                    "related_product",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="related_to",
+                        to="catalog.product",
+                    ),
+                ),
             ],
             options={
-                'ordering': ['sort_order'],
+                "ordering": ["sort_order"],
             },
         ),
         migrations.AddIndex(
-            model_name='category',
-            index=models.Index(fields=['slug'], name='cat_slug_idx'),
+            model_name="category",
+            index=models.Index(fields=["slug"], name="cat_slug_idx"),
         ),
         migrations.AddIndex(
-            model_name='category',
-            index=models.Index(fields=['is_active'], name='cat_active_idx'),
+            model_name="category",
+            index=models.Index(fields=["is_active"], name="cat_active_idx"),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(fields=['slug'], name='prod_slug_idx'),
+            model_name="product",
+            index=models.Index(fields=["slug"], name="prod_slug_idx"),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(fields=['sku'], name='prod_sku_idx'),
+            model_name="product",
+            index=models.Index(fields=["sku"], name="prod_sku_idx"),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(fields=['is_active'], name='prod_active_idx'),
+            model_name="product",
+            index=models.Index(fields=["is_active"], name="prod_active_idx"),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(fields=['is_featured'], name='prod_featured_idx'),
+            model_name="product",
+            index=models.Index(fields=["is_featured"], name="prod_featured_idx"),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(fields=['category'], name='prod_category_idx'),
+            model_name="product",
+            index=models.Index(fields=["category"], name="prod_category_idx"),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(fields=['brand'], name='prod_brand_idx'),
+            model_name="product",
+            index=models.Index(fields=["brand"], name="prod_brand_idx"),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(fields=['-created_at'], name='prod_created_idx'),
+            model_name="product",
+            index=models.Index(fields=["-created_at"], name="prod_created_idx"),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=models.Index(fields=['specs'], name='prod_specs_idx'),
+            model_name="product",
+            index=models.Index(fields=["specs"], name="prod_specs_idx"),
         ),
         migrations.AddIndex(
-            model_name='productimage',
-            index=models.Index(fields=['product', 'sort_order'], name='img_prod_sort_idx'),
+            model_name="productimage",
+            index=models.Index(
+                fields=["product", "sort_order"], name="img_prod_sort_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='productvariant',
-            index=models.Index(fields=['product'], name='var_product_idx'),
+            model_name="productvariant",
+            index=models.Index(fields=["product"], name="var_product_idx"),
         ),
         migrations.AddIndex(
-            model_name='productvariant',
-            index=models.Index(fields=['sku'], name='var_sku_idx'),
+            model_name="productvariant",
+            index=models.Index(fields=["sku"], name="var_sku_idx"),
         ),
         migrations.AddIndex(
-            model_name='productvariant',
-            index=models.Index(fields=['is_active'], name='var_active_idx'),
+            model_name="productvariant",
+            index=models.Index(fields=["is_active"], name="var_active_idx"),
         ),
         migrations.AddIndex(
-            model_name='pricingtier',
-            index=models.Index(fields=['variant', 'min_quantity'], name='tier_var_qty_idx'),
+            model_name="pricingtier",
+            index=models.Index(
+                fields=["variant", "min_quantity"], name="tier_var_qty_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='relatedproduct',
-            index=models.Index(fields=['product', 'relation_type'], name='relprod_prod_type_idx'),
+            model_name="relatedproduct",
+            index=models.Index(
+                fields=["product", "relation_type"], name="relprod_prod_type_idx"
+            ),
         ),
     ]

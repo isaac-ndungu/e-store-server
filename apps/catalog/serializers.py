@@ -19,7 +19,7 @@ from apps.catalog.models import (
 class CategoryListSerializer(serializers.ModelSerializer):
     """Slim category representation for list endpoints."""
 
-    product_count = serializers.IntegerField(source="products.count", read_only=True)
+    product_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Category
@@ -34,12 +34,25 @@ class CategoryListSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id"]
 
+    def get_product_count(self, obj):
+        """Return the annotated product count, falling back to a direct count.
+
+        Args:
+            obj (Category): the category instance.
+
+        Returns:
+            int: the number of products in the category.
+        """
+        if hasattr(obj, "product_count"):
+            return obj.product_count
+        return obj.products.count()
+
 
 class CategoryDetailSerializer(serializers.ModelSerializer):
     """Full category representation including sub-categories."""
 
     children = CategoryListSerializer(many=True, read_only=True)
-    product_count = serializers.IntegerField(source="products.count", read_only=True)
+    product_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Category
@@ -57,6 +70,19 @@ class CategoryDetailSerializer(serializers.ModelSerializer):
             "product_count",
         ]
         read_only_fields = ["id"]
+
+    def get_product_count(self, obj):
+        """Return the annotated product count, falling back to a direct count.
+
+        Args:
+            obj (Category): the category instance.
+
+        Returns:
+            int: the number of products in the category.
+        """
+        if hasattr(obj, "product_count"):
+            return obj.product_count
+        return obj.products.count()
 
 
 class CategoryWriteSerializer(serializers.ModelSerializer):
@@ -92,6 +118,51 @@ class CategoryWriteSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id"]
 
+    def validate_image(self, value):
+        """Validate the uploaded image via the shared validator."""
+        from apps.catalog.validators import validate_image_upload
+
+        validate_image_upload(value)
+        return value
+
+    def validate(self, attrs):
+        """Reject a parent change that would cycle back to the category.
+
+        Walks the proposed parent's ancestor chain to confirm it never
+        reaches the category itself. Only runs on updates that move the
+        category (a fresh category cannot create a cycle, and the model
+        constraint already blocks self-parenting).
+
+        Args:
+            attrs (dict): the validated data (partial on PATCH).
+
+        Returns:
+            dict: the validated data.
+
+        Raises:
+            ValidationError: if the parent choice creates a cycle.
+        """
+        parent = attrs.get("parent")
+        if parent is None or self.instance is None:
+            return attrs
+
+        node_id = parent.pk
+        visited = set()
+        while node_id is not None:
+            if node_id == self.instance.pk:
+                raise serializers.ValidationError(
+                    {"parent": "A category cannot be its own parent or ancestor."}
+                )
+            if node_id in visited:
+                break
+            visited.add(node_id)
+            node_id = (
+                Category.objects.filter(pk=node_id)
+                .values_list("parent_id", flat=True)
+                .first()
+            )
+        return attrs
+
     def create(self, validated_data):
         """Create the category, generating a slug from the name if omitted."""
         from apps.catalog.services import create_category
@@ -111,7 +182,7 @@ class CategoryWriteSerializer(serializers.ModelSerializer):
 class BrandListSerializer(serializers.ModelSerializer):
     """Slim brand representation for list endpoints."""
 
-    product_count = serializers.IntegerField(source="products.count", read_only=True)
+    product_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Brand
@@ -125,11 +196,24 @@ class BrandListSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id"]
 
+    def get_product_count(self, obj):
+        """Return the annotated product count, falling back to a direct count.
+
+        Args:
+            obj (Brand): the brand instance.
+
+        Returns:
+            int: the number of products in the brand.
+        """
+        if hasattr(obj, "product_count"):
+            return obj.product_count
+        return obj.products.count()
+
 
 class BrandDetailSerializer(serializers.ModelSerializer):
     """Full brand representation."""
 
-    product_count = serializers.IntegerField(source="products.count", read_only=True)
+    product_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Brand
@@ -143,6 +227,19 @@ class BrandDetailSerializer(serializers.ModelSerializer):
             "product_count",
         ]
         read_only_fields = ["id"]
+
+    def get_product_count(self, obj):
+        """Return the annotated product count, falling back to a direct count.
+
+        Args:
+            obj (Brand): the brand instance.
+
+        Returns:
+            int: the number of products in the brand.
+        """
+        if hasattr(obj, "product_count"):
+            return obj.product_count
+        return obj.products.count()
 
 
 class BrandWriteSerializer(serializers.ModelSerializer):
@@ -175,6 +272,13 @@ class BrandWriteSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id"]
 
+    def validate_image(self, value):
+        """Validate the uploaded logo via the shared validator."""
+        from apps.catalog.validators import validate_image_upload
+
+        validate_image_upload(value)
+        return value
+
     def create(self, validated_data):
         """Create the brand, generating a slug from the name if omitted."""
         from apps.catalog.services import create_brand
@@ -192,7 +296,16 @@ class BrandWriteSerializer(serializers.ModelSerializer):
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
-    """Read/write serializer for product images."""
+    """Read serializer for product images with processed-variant info.
+
+    ``default_image`` is the URL the storefront should display and ``srcset``
+    lists the responsive variants (width + format + URL) generated from the
+    upload. Browsers pick from ``srcset``; the original upload is not meant
+    to be served to customers.
+    """
+
+    default_image = serializers.SerializerMethodField()
+    srcset = serializers.JSONField(source="image_sources", read_only=True)
 
     class Meta:
         model = ProductImage
@@ -203,14 +316,31 @@ class ProductImageSerializer(serializers.ModelSerializer):
             "alt_text",
             "is_primary",
             "sort_order",
+            "default_image",
+            "srcset",
         ]
-        read_only_fields = ["id"]
+        read_only_fields = ["id", "default_image", "srcset"]
+
+    def get_default_image(self, obj):
+        """Return the preferred processed variant URL for the image.
+
+        Args:
+            obj (ProductImage): the image instance.
+
+        Returns:
+            str | None: the display URL, or None when unavailable.
+        """
+        from apps.catalog.images import preferred_image_url
+
+        return preferred_image_url(obj.image.name, obj.image_sources)
 
 
 class ProductImageWriteSerializer(serializers.ModelSerializer):
     """Writable serializer for images nested under a product.
 
     ``product`` is set by the view from the URL, not from the request body.
+    Creation and update go through a service that keeps a single primary
+    image per product.
     """
 
     class Meta:
@@ -231,6 +361,18 @@ class ProductImageWriteSerializer(serializers.ModelSerializer):
         validate_image_upload(value)
         return value
 
+    def create(self, validated_data):
+        """Create the image, demoting any existing primary first."""
+        from apps.catalog.services import create_image
+
+        return create_image(product=validated_data.pop("product"), **validated_data)
+
+    def update(self, instance, validated_data):
+        """Update the image, demoting any other primary when promoted."""
+        from apps.catalog.services import update_image
+
+        return update_image(instance, **validated_data)
+
 
 class PricingTierSerializer(serializers.ModelSerializer):
     """Read/write serializer for volume-based pricing tiers."""
@@ -249,8 +391,8 @@ class PricingTierSerializer(serializers.ModelSerializer):
 class PricingTierWriteSerializer(serializers.ModelSerializer):
     """Writable serializer for tiers nested under a product.
 
-    ``variant`` is validated by the view to ensure it belongs to the product
-    in the URL.
+    ``variant`` is validated to belong to the product scoping the request when
+    the view supplies the parent product in the serializer context.
     """
 
     class Meta:
@@ -262,6 +404,30 @@ class PricingTierWriteSerializer(serializers.ModelSerializer):
             "unit_price",
         ]
         read_only_fields = ["id"]
+
+    def validate(self, attrs):
+        """Check the variant belongs to the product scoping the request.
+
+        Args:
+            attrs (dict): the validated data (partial on PATCH).
+
+        Returns:
+            dict: the validated data.
+
+        Raises:
+            ValidationError: if the variant belongs to another product.
+        """
+        parent_product = self.context.get("parent_product")
+        variant = attrs.get("variant", getattr(self.instance, "variant", None))
+        if (
+            parent_product is not None
+            and variant is not None
+            and variant.product_id != parent_product.pk
+        ):
+            raise serializers.ValidationError(
+                {"variant": "This variant does not belong to the specified product."}
+            )
+        return attrs
 
 
 class ProductVariantListSerializer(serializers.ModelSerializer):
@@ -357,7 +523,8 @@ class RelatedProductWriteSerializer(serializers.ModelSerializer):
     """Writable serializer for related products nested under a product.
 
     ``product`` is set by the view from the URL; ``related_product`` is
-    validated to differ from the parent product.
+    validated to differ from the parent product and not duplicate an
+    existing link.
     """
 
     class Meta:
@@ -375,11 +542,42 @@ class RelatedProductWriteSerializer(serializers.ModelSerializer):
 
         The parent product is injected into the serializer context by the
         view.
+
+        Returns:
+            Product: the validated related product.
         """
         parent_product = self.context.get("parent_product")
         if parent_product and value.pk == parent_product.pk:
             raise serializers.ValidationError("A product cannot be related to itself.")
         return value
+
+    def validate(self, attrs):
+        """Reject a link that duplicates an existing product pair.
+
+        Args:
+            attrs (dict): the validated data (partial on PATCH).
+
+        Returns:
+            dict: the validated data.
+
+        Raises:
+            ValidationError: if the product pair is already linked.
+        """
+        parent_product = self.context.get("parent_product")
+        related_product = attrs.get(
+            "related_product", getattr(self.instance, "related_product", None)
+        )
+        if parent_product is not None and related_product is not None:
+            queryset = RelatedProduct.objects.filter(
+                product=parent_product, related_product=related_product
+            )
+            if self.instance is not None:
+                queryset = queryset.exclude(pk=self.instance.pk)
+            if queryset.exists():
+                raise serializers.ValidationError(
+                    {"related_product": "This product link already exists."}
+                )
+        return attrs
 
 
 class ProductListSerializer(serializers.ModelSerializer):
@@ -420,30 +618,74 @@ class ProductListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_primary_image(self, obj):
-        """Return the primary image URL for a product, or None.
+        """Return the display URL for a product's primary image, or None.
+
+        Reads the ``primary_images`` prefetch added by the list selectors
+        and returns the preferred processed variant rather than the
+        original upload. When the attribute is absent the product was not
+        prefetched (e.g. a detail payload), so a targeted lookup is used
+        instead.
 
         Args:
             obj (Product): the product instance.
 
         Returns:
-            str | None: the primary image URL, or None.
+            str | None: the primary image display URL, or None.
         """
-        if not hasattr(obj, "_prefetched_images_cache"):
+        from apps.catalog.images import preferred_image_url
+
+        primary = getattr(obj, "primary_images", None)
+        if primary is not None:
+            if primary:
+                try:
+                    image = primary[0]
+                    return preferred_image_url(image.image.name, image.image_sources)
+                except ValueError:
+                    return None
             return None
-        primary = [img for img in obj._prefetched_images_cache if img.is_primary]
-        if primary:
-            try:
-                return primary[0].image.url
-            except ValueError:
-                return None
-        return None
+        try:
+            primary = obj.images.filter(is_primary=True).first()
+        except ValueError:
+            return None
+        if primary is None:
+            return None
+        try:
+            return preferred_image_url(primary.image.name, primary.image_sources)
+        except ValueError:
+            return None
+
+
+class ProductDetailCategorySerializer(serializers.ModelSerializer):
+    """Category fields for product-detail nesting.
+
+    Deliberately omits ``product_count``: the detail payload does not need
+    it and computing it would fire a count query per nested object.
+    """
+
+    class Meta:
+        model = Category
+        fields = ["id", "name", "slug", "image", "is_active", "parent"]
+        read_only_fields = fields
+
+
+class ProductDetailBrandSerializer(serializers.ModelSerializer):
+    """Brand fields for product-detail nesting.
+
+    Deliberately omits ``product_count`` for the same reason as
+    ``ProductDetailCategorySerializer``.
+    """
+
+    class Meta:
+        model = Brand
+        fields = ["id", "name", "slug", "logo", "description", "is_authorized_dealer"]
+        read_only_fields = fields
 
 
 class ProductDetailSerializer(serializers.ModelSerializer):
     """Full product representation with nested variants and images."""
 
-    category = CategoryListSerializer(read_only=True)
-    brand = BrandListSerializer(read_only=True)
+    category = ProductDetailCategorySerializer(read_only=True)
+    brand = ProductDetailBrandSerializer(read_only=True)
     variants = ProductVariantListSerializer(many=True, read_only=True)
     images = ProductImageSerializer(many=True, read_only=True)
     replacement_product_name = serializers.CharField(
@@ -536,6 +778,27 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             )
         ]
     )
+
+    def validate_manual_pdf(self, value):
+        """Validate the manual PDF upload."""
+        from apps.catalog.validators import validate_pdf_upload
+
+        validate_pdf_upload(value)
+        return value
+
+    def validate_installation_guide_pdf(self, value):
+        """Validate the installation guide PDF upload."""
+        from apps.catalog.validators import validate_pdf_upload
+
+        validate_pdf_upload(value)
+        return value
+
+    def validate_datasheet_pdf(self, value):
+        """Validate the datasheet PDF upload."""
+        from apps.catalog.validators import validate_pdf_upload
+
+        validate_pdf_upload(value)
+        return value
 
     class Meta:
         model = Product
