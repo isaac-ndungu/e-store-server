@@ -619,6 +619,43 @@ class AddressTests(APITestCase):
         self.assertEqual(len(page.data["results"]), 1)
         self.assertIsNotNone(page.data["next"])
 
+    def test_list_supports_ordering(self):
+        """The address list can be ordered by county, area_name, and label."""
+        self.client.post(
+            ADDRESS_LIST_URL,
+            {
+                **self.address_payload,
+                "label": "Home",
+                "county": "Mombasa",
+                "area_name": "Nyali",
+            },
+            format="json",
+        )
+        self.client.post(
+            ADDRESS_LIST_URL,
+            {
+                **self.address_payload,
+                "label": "Work",
+                "county": "Nairobi",
+                "area_name": "Westlands",
+            },
+            format="json",
+        )
+        by_county = self.client.get(ADDRESS_LIST_URL, {"ordering": "county"})
+        self.assertEqual(by_county.status_code, status.HTTP_200_OK)
+        counties = [a["county"] for a in by_county.data["results"]]
+        self.assertEqual(counties, ["Mombasa", "Nairobi"])
+
+        by_county_desc = self.client.get(ADDRESS_LIST_URL, {"ordering": "-county"})
+        self.assertEqual(by_county_desc.status_code, status.HTTP_200_OK)
+        counties_desc = [a["county"] for a in by_county_desc.data["results"]]
+        self.assertEqual(counties_desc, ["Nairobi", "Mombasa"])
+
+        by_area = self.client.get(ADDRESS_LIST_URL, {"ordering": "area_name"})
+        self.assertEqual(by_area.status_code, status.HTTP_200_OK)
+        areas = [a["area_name"] for a in by_area.data["results"]]
+        self.assertEqual(areas, ["Nyali", "Westlands"])
+
 
 class AddressDefaultTests(APITestCase):
     """Exercises the single-default invariant for a user's addresses."""

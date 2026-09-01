@@ -49,6 +49,7 @@ THIRD_PARTY_APPS = [
 LOCAL_APPS = [
     "apps.core",
     "apps.accounts",
+    "apps.notifications",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -171,6 +172,9 @@ REST_FRAMEWORK = {
         "auth_login": "3/min",
         "auth_reauth": "10/min",
         "auth_write": "10/min",
+        # The staff-only test-SMS endpoint costs real money (SMS charges), so
+        # it gets a concrete limit rather than the framework default.
+        "notification_send": "5/min",
     },
 }
 

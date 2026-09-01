@@ -1,11 +1,11 @@
 # E-Commerce Platform (e-store)
 
 Single-tenant, API-first, modular e-commerce backend for a Kenyan home
-appliance business. Follows `docs/ecommerce-platform-plan.md` (v7).
+appliance business.
 
 ## Stack
 
-- Django 6.1 (plan's 5.x target was overridden by choice — see §12/README decisions)
+- Django 6.1 
 - Django REST Framework, django-filter
 - PostgreSQL 16, Redis (cache + Celery broker)
 - Celery + Celery Beat
