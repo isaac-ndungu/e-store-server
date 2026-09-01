@@ -4,7 +4,9 @@ Implements registration, JWT login/refresh/logout, the ``/me/`` profile
 retrieve/update endpoint, password change and account deactivation, and
 per-user ``Address`` CRUD. Registration is deliberately public
 (``AllowAny``); everything else requires an authenticated user. Address
-retrieve/update/delete enforce ownership via ``get_object()`` to prevent IDOR.
+retrieve/update/delete enforce ownership via ``get_object()`` and report a
+resource the caller does not own as ``404`` (never ``403``) so the id scheme
+does not reveal other users' records.
 """
 
 from django.shortcuts import get_object_or_404
@@ -299,6 +301,10 @@ class AddressRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
 
     Requires authentication. Ownership is enforced in ``get_object()`` so a
     caller cannot reach another account's address via its primary key (IDOR).
+    Convention: an address the caller does not own — whether it belongs to
+    another account or does not exist at all — is reported as ``404 Not
+    Found``, never ``403 Forbidden``, so the id scheme does not leak which
+    ids other users' records use.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -306,6 +312,9 @@ class AddressRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_object(self):
         """Return the address only if it belongs to the authenticated caller.
+
+        A missing address and another caller's address are treated the same
+        (``Http404``) so cross-user probing cannot tell them apart.
 
         Returns:
             Address: the requested address owned by ``request.user``.

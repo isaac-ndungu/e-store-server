@@ -3,8 +3,9 @@
 Covers registration (including email normalization and password validation),
 JWT login/refresh/rotation/logout, password reset (request + confirm),
 password change and account deactivation, the ``/me/`` retrieve/update
-endpoint, per-user Address CRUD with ownership enforcement, and the
-``auth_login`` / ``auth_write`` throttle scopes.
+endpoint, per-user Address CRUD with ownership enforcement (cross-user and
+missing resources both return 404), and the ``auth_login`` / ``auth_write``
+throttle scopes.
 """
 
 from django.contrib.auth.tokens import default_token_generator
@@ -543,6 +544,35 @@ class AddressTests(APITestCase):
         self.assertEqual(update.status_code, status.HTTP_404_NOT_FOUND)
 
         self.assertEqual(Address.objects.get(id=address_id).label, "Home")
+
+    def test_missing_address_is_indistinguishable_from_another_users(self):
+        """A nonexistent id and another user's id both return 404, not 403.
+
+        This locks the convention: cross-user access must not be reported
+        differently from a plain missing record, or the id scheme would leak
+        which ids other accounts use.
+        """
+        self.client.post(ADDRESS_LIST_URL, self.address_payload, format="json")
+
+        missing_url = reverse("api:accounts:address-detail", args=[99999])
+        missing = self.client.get(missing_url)
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
+
+        other_login = self.client.post(
+            LOGIN_URL,
+            {"email": "other@example.com", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {other_login.data['access']}"
+        )
+        cross_user = self.client.get(
+            reverse(
+                "api:accounts:address-detail",
+                args=[Address.objects.get().id],
+            )
+        )
+        self.assertEqual(cross_user.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_other_user_cannot_list_my_addresses(self):
         """User B's address list never contains user A's addresses."""
