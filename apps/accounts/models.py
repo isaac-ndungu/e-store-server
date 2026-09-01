@@ -24,6 +24,9 @@ class User(AbstractUser):
 
     email = models.EmailField(unique=True)
     phone_number = models.CharField(max_length=15)
+    # Set to True only server-side after a phone number has been verified
+    # (e.g. via an OTP flow). No such flow exists yet, so it stays False;
+    # it is never set by a client and is never auto-set at registration.
     phone_verified = models.BooleanField(default=False)
 
     USERNAME_FIELD = "email"

@@ -3,9 +3,10 @@
 Defines the explicit readable/writable field lists for registration, the
 ``/me/`` user payload (with writable profile fields), password-change and
 account-deactivation confirmation payloads, and the writable ``Address`` CRUD
-serializer. Login itself is handled by ``simplejwt``'s
-``TokenObtainPairSerializer`` (which reads ``USERNAME_FIELD`` = email), so no
-login serializer is defined here.
+serializer. Every write path normalizes and validates emails and phone
+numbers so stored values keep one shape. Login itself is handled by
+``simplejwt``'s ``TokenObtainPairSerializer`` (which reads ``USERNAME_FIELD`` =
+email), so no login serializer is defined here.
 """
 
 from django.contrib.auth.password_validation import validate_password

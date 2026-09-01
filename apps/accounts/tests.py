@@ -109,6 +109,22 @@ class RegisterTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(User.objects.count(), 1)
 
+    def test_register_normalizes_phone_number(self):
+        """A local-format phone number is normalized to E.164 on registration."""
+        response = self.client.post(
+            REGISTER_URL, {**self.payload, "phone_number": "0712345678"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(User.objects.get().phone_number, "+254712345678")
+
+    def test_register_rejects_malformed_phone_number(self):
+        """A clearly invalid phone number is rejected with a 400."""
+        response = self.client.post(
+            REGISTER_URL, {**self.payload, "phone_number": "not-a-phone"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(User.objects.count(), 0)
+
     def test_register_throttles_after_rate_limit(self):
         """Bursting past the auth_write rate limit yields HTTP 429."""
         for i in range(AUTH_WRITE_RATE_LIMIT):
@@ -439,6 +455,41 @@ class AddressTests(APITestCase):
 
         delete = self.client.delete(detail_url)
         self.assertEqual(delete.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(Address.objects.count(), 0)
+
+    def test_create_address_normalizes_phone_number(self):
+        """A local-format delivery phone is normalized to E.164 on create."""
+        response = self.client.post(
+            ADDRESS_LIST_URL,
+            {**self.address_payload, "phone_number": "0712345678"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["phone_number"], "+254712345678")
+        self.assertEqual(Address.objects.get().phone_number, "+254712345678")
+
+    def test_update_address_normalizes_phone_number(self):
+        """A local-format delivery phone is normalized to E.164 on update."""
+        created = self.client.post(
+            ADDRESS_LIST_URL, self.address_payload, format="json"
+        )
+        address_id = created.data["id"]
+        detail_url = reverse("api:accounts:address-detail", args=[address_id])
+
+        update = self.client.patch(
+            detail_url, {"phone_number": "0700000000"}, format="json"
+        )
+        self.assertEqual(update.status_code, status.HTTP_200_OK)
+        self.assertEqual(update.data["phone_number"], "+254700000000")
+
+    def test_create_address_rejects_malformed_phone_number(self):
+        """A clearly invalid delivery phone is rejected with a 400."""
+        response = self.client.post(
+            ADDRESS_LIST_URL,
+            {**self.address_payload, "phone_number": "not-a-phone"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Address.objects.count(), 0)
 
     def test_cannot_access_another_users_address(self):
