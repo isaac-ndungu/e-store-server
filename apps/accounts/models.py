@@ -63,6 +63,10 @@ class Address(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "is_default"], name="addr_user_default_idx"),
+            models.Index(fields=["county"], name="addr_county_idx"),
+        ]
 
     def __str__(self):
         """Return a short human-readable label for admin/trace output."""

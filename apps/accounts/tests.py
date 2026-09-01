@@ -426,6 +426,33 @@ class AddressTests(APITestCase):
         response = self.client.get(ADDRESS_LIST_URL)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
+        create = self.client.post(ADDRESS_LIST_URL, self.address_payload, format="json")
+        self.assertEqual(create.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_anonymous_cannot_mutate_an_existing_address(self):
+        """A guest cannot retrieve, update, or delete a stored address by id."""
+        created = self.client.post(
+            ADDRESS_LIST_URL, self.address_payload, format="json"
+        )
+        detail_url = reverse("api:accounts:address-detail", args=[created.data["id"]])
+
+        self.client.credentials()
+        self.assertEqual(
+            self.client.get(detail_url).status_code, status.HTTP_401_UNAUTHORIZED
+        )
+        self.assertEqual(
+            self.client.patch(
+                detail_url, {"label": "Stolen"}, format="json"
+            ).status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+        self.assertEqual(
+            self.client.delete(detail_url).status_code, status.HTTP_401_UNAUTHORIZED
+        )
+
+        self.assertEqual(Address.objects.get(id=created.data["id"]).label, "Home")
+        self.assertEqual(Address.objects.count(), 1)
+
     def test_create_and_list_address(self):
         """A logged-in user can create then list their own addresses."""
         create = self.client.post(ADDRESS_LIST_URL, self.address_payload, format="json")
