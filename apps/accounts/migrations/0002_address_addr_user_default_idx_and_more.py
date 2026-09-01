@@ -6,16 +6,18 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('accounts', '0001_initial'),
+        ("accounts", "0001_initial"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='address',
-            index=models.Index(fields=['user', 'is_default'], name='addr_user_default_idx'),
+            model_name="address",
+            index=models.Index(
+                fields=["user", "is_default"], name="addr_user_default_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='address',
-            index=models.Index(fields=['county'], name='addr_county_idx'),
+            model_name="address",
+            index=models.Index(fields=["county"], name="addr_county_idx"),
         ),
     ]

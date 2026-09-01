@@ -12,6 +12,7 @@ does not reveal other users' records.
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -277,15 +278,42 @@ class CurrentUserView(generics.RetrieveUpdateAPIView):
         return self.request.user
 
 
+class AddressPagination(PageNumberPagination):
+    """Page the address list with a client-selectable, bounded page size.
+
+    In addition to ``page`` (provided by the project default), accepts a
+    ``page_size`` capped at 100 so a single client cannot request an unbounded
+    page.
+    """
+
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
 class AddressListCreateView(generics.ListCreateAPIView):
     """List a user's addresses or add a new one to their account.
 
     Requires authentication and is scoped to the caller's own addresses — a
-    user can never see another account's addresses here.
+    user can never see another account's addresses here. The list is
+    paginated with a client-selectable bounded page size and supports exact
+    filtering on ``is_default`` and ``county``, free-text search across the
+    address contact/location fields, and ordering by the declared fields.
     """
 
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AddressSerializer
+    pagination_class = AddressPagination
+    filterset_fields = ["is_default", "county"]
+    search_fields = [
+        "label",
+        "recipient_name",
+        "phone_number",
+        "county",
+        "area_name",
+        "landmark_description",
+        "building_or_estate",
+    ]
+    ordering_fields = ["created_at", "county", "area_name", "label"]
 
     def get_queryset(self):
         """Return only the authenticated caller's addresses."""

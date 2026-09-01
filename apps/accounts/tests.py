@@ -590,6 +590,35 @@ class AddressTests(APITestCase):
         self.assertEqual(listing.status_code, status.HTTP_200_OK)
         self.assertEqual(listing.data["count"], 0)
 
+    def test_list_supports_filter_search_and_default_pagination(self):
+        """The address list filters, searches, and paginates by default."""
+        nairobi = {**self.address_payload, "county": "Nairobi", "label": "Home"}
+        mombasa = {**self.address_payload, "county": "Mombasa", "label": "Work"}
+        self.client.post(
+            ADDRESS_LIST_URL, {**nairobi, "is_default": True}, format="json"
+        )
+        self.client.post(ADDRESS_LIST_URL, mombasa, format="json")
+
+        county = self.client.get(ADDRESS_LIST_URL, {"county": "Mombasa"})
+        self.assertEqual(county.status_code, status.HTTP_200_OK)
+        self.assertEqual(county.data["count"], 1)
+        self.assertEqual(county.data["results"][0]["county"], "Mombasa")
+
+        default = self.client.get(ADDRESS_LIST_URL, {"is_default": "true"})
+        self.assertEqual(default.status_code, status.HTTP_200_OK)
+        self.assertEqual(default.data["count"], 1)
+        self.assertTrue(default.data["results"][0]["is_default"])
+
+        search = self.client.get(ADDRESS_LIST_URL, {"search": "Sarit"})
+        self.assertEqual(search.status_code, status.HTTP_200_OK)
+        self.assertEqual(search.data["count"], 2)
+
+        page = self.client.get(ADDRESS_LIST_URL, {"page_size": 1})
+        self.assertEqual(page.status_code, status.HTTP_200_OK)
+        self.assertEqual(page.data["count"], 2)
+        self.assertEqual(len(page.data["results"]), 1)
+        self.assertIsNotNone(page.data["next"])
+
 
 class AddressDefaultTests(APITestCase):
     """Exercises the single-default invariant for a user's addresses."""
