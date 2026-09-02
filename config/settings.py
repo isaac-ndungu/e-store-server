@@ -49,6 +49,7 @@ LOCAL_APPS = [
     "apps.accounts",
     "apps.notifications",
     "apps.catalog",
+    "apps.inventory",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -157,6 +158,8 @@ REST_FRAMEWORK = {
         "auth_write": "10/min",
         "notification_send": "5/min",
         "public_catalog": "100/min",
+        "admin": "300/min",
+        "inventory_write": "30/min",
     },
 }
 
@@ -195,6 +198,16 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = TESTING
 CELERY_TASK_EAGER_PROPAGATES = TESTING
+
+# Stock reserved at checkout expires after the configured grace period so
+# abandoned, unpaid orders cannot hold inventory indefinitely. The sweep
+# runs frequently enough that released stock returns to availability quickly.
+CELERY_BEAT_SCHEDULE = {
+    "release-expired-stock-reservations": {
+        "task": "apps.inventory.tasks.expire_stale_reservations",
+        "schedule": 120.0,
+    },
+}
 
 EMAIL_BACKEND = config(
     "EMAIL_BACKEND",
