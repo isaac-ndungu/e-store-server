@@ -23,4 +23,5 @@ urlpatterns = [
     ),
     path("v1/", include(("apps.catalog.urls", "catalog"), namespace="catalog")),
     path("v1/", include(("apps.inventory.urls", "inventory"), namespace="inventory")),
+    path("v1/", include(("apps.shipping.urls", "shipping"), namespace="shipping")),
 ]

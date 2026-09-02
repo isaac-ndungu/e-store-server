@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "ecommerce-platform-step0",
+    "_postman_id": "ecommerce-platform",
     "name": "E-Commerce Platform (e-store)",
     "description": "API collection for the e-commerce backend, organized by application area — infrastructure, then one folder per app. Currently only infrastructure and core/site-config endpoints exist.\n\nCollection variables below (baseUrl, tokens, test phones) stand in for a separate environment — set them once when importing.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"

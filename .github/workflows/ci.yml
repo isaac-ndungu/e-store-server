@@ -1,7 +1,7 @@
-# CI pipeline skeleton for the e-commerce platform (Step 0).
+# CI pipeline skeleton for the e-commerce platform.
 #
-# Currently: lint + Django system checks + tests.
-# Later Steps add migrations checks, coverage gates, and image builds here.
+# Currently: lint, reference hygiene, Django system checks, migrations check,
+# and tests. Later: coverage gates and image builds.
 name: CI
 
 on:
@@ -21,6 +21,18 @@ jobs:
         run: pip install -r requirements.txt
       - name: Lint
         run: ruff check .
+      - name: Forbid plan/step/rule references in code
+        run: |
+          matches=$(grep -rInE '[Ss]tep[[:space:]]*[0-9]|[Pp]hase[[:space:]]*[0-9]|docs/plan[.]md|per the[ ]plan|AGENTS[.]md' . \
+            --exclude-dir=.git --exclude-dir=docs --exclude-dir=env --exclude-dir=.venv \
+            --exclude-dir=__pycache__ --exclude-dir=.ruff_cache --exclude='*.pyc' \
+            --exclude='*.pyo' --exclude='.gitignore' --exclude='AGENTS[.]md' \
+            --exclude='AGENTS.*.md' || true)
+          if [ -n "$matches" ]; then
+            echo "$matches"
+            echo "::error::Found a reference to the plan document, a numbered step/phase, or the repo guidance file. Re-express it without such a pointer."
+            exit 1
+          fi
 
   test:
     runs-on: ubuntu-latest

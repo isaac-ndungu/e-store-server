@@ -178,10 +178,10 @@ class SendSmsServiceTests(APITestCase):
     def test_failure_contract_returns_failed_log_not_exception(self):
         """A provider-reported failure returns a ``failed`` log, not an error.
 
-        This is the contract Step 11's checkout relies on: a failed or
-        timed-out send is reported via ``log.status == 'failed'`` so the
-        caller can tell the customer the code could not be sent, rather
-        than raising an exception and losing the audit trail.
+        The checkout flow depends on this contract: a failed or timed-out
+        send is reported via ``log.status == 'failed'`` so the caller can
+        tell the customer the code could not be sent, rather than raising
+        an exception and losing the audit trail.
         """
 
         def _fail(recipient, message, sender_id=""):
