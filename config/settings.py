@@ -51,6 +51,7 @@ LOCAL_APPS = [
     "apps.catalog",
     "apps.inventory",
     "apps.shipping",
+    "apps.collections",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -203,10 +204,17 @@ CELERY_TASK_EAGER_PROPAGATES = TESTING
 # Stock reserved at checkout expires after the configured grace period so
 # abandoned, unpaid orders cannot hold inventory indefinitely. The sweep
 # runs frequently enough that released stock returns to availability quickly.
+# Stock reserved at checkout expires after the configured grace period so
+# abandoned, unpaid orders cannot hold inventory indefinitely. The sweep
+# runs frequently enough that released stock returns to availability quickly.
 CELERY_BEAT_SCHEDULE = {
     "release-expired-stock-reservations": {
         "task": "apps.inventory.tasks.expire_stale_reservations",
         "schedule": 120.0,
+    },
+    "refresh-smart-collections": {
+        "task": "apps.collections.tasks.refresh_smart_collections",
+        "schedule": 900.0,
     },
 }
 
