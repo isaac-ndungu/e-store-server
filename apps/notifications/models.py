@@ -1,3 +1,4 @@
+from django.core.validators import MaxLengthValidator
 from django.db import models
 
 
@@ -32,7 +33,8 @@ class NotificationLog(models.Model):
     channel = models.CharField(max_length=10, choices=CHANNEL_CHOICES, default="sms")
     purpose = models.CharField(max_length=20, choices=PURPOSE_CHOICES, default="test")
     recipient = models.CharField(
-        max_length=15,
+        max_length=254,
+        validators=[MaxLengthValidator(254)],
         help_text="Phone number (E.164) or email address.",
     )
     message = models.TextField()
@@ -40,6 +42,18 @@ class NotificationLog(models.Model):
     provider_message_id = models.CharField(max_length=255, blank=True)
     provider_response = models.JSONField(default=dict, blank=True)
     error_message = models.TextField(blank=True)
+    segments = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="SMS segment count reported by the provider.",
+    )
+    idempotency_key = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text="Client-supplied dedup key; prevents duplicate sends on retry.",
+    )
     sent_by = models.ForeignKey(
         "accounts.User",
         null=True,
@@ -57,16 +71,24 @@ class NotificationLog(models.Model):
             models.Index(fields=["status"]),
             models.Index(fields=["purpose"]),
             models.Index(fields=["created_at"]),
+            models.Index(fields=["idempotency_key"]),
         ]
 
     def __str__(self):
         """Return a human-readable label for admin/trace output."""
-        return f"[{self.get_channel_display()}] {self.recipient} ({self.status})"
+        return (
+            f"[{self.get_channel_display()}] {self.recipient} "
+            f"({self.purpose}/{self.status})"
+        )
 
     def update_status(
         self, status, provider_message_id="", provider_response=None, error_message=""
     ):
         """Transition the log to a new status and persist immediately.
+
+        Only non-empty arguments overwrite existing values so that calling
+        ``update_status("sent")`` without a ``provider_message_id`` does not
+        erase an already-stored ID.
 
         Args:
             status (str): the new status from ``STATUS_CHOICES``.

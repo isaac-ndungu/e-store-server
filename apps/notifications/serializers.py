@@ -1,11 +1,4 @@
-"""Serializers for the notifications app.
-
-Defines the writable payload for the internal test-send endpoint and the
-read-only representation returned in audit-log queries.  All write
-serializers use an explicit field list so no privileged fields (``status``,
-``provider_message_id``, ``sent_by``) can be injected by the caller.
-"""
-
+import bleach
 from rest_framework import serializers
 
 from apps.notifications.models import NotificationLog
@@ -44,17 +37,43 @@ class SendTestSMSSerializer(serializers.Serializer):
 
         return validate_phone_number(value)
 
+    def validate_message(self, value):
+        """Strip any HTML tags from the message body.
+
+        Currently SMS-only (plain text), but the model declares ``email``
+        as a channel choice.  Sanitising proactively prevents an XSS
+        vector if the message is ever rendered as HTML downstream.
+
+        Args:
+            value (str): the raw message text.
+
+        Returns:
+            str: the sanitised message text.
+        """
+        return bleach.clean(value, tags=set(), strip=True)
+
+
+class _SenderSerializer(serializers.Serializer):
+    """Minimal nested representation of the staff user who sent a notification."""
+
+    id = serializers.IntegerField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+
 
 class NotificationLogSerializer(serializers.ModelSerializer):
     """Read-only representation of a ``NotificationLog`` for audit queries.
 
-    Exposes all meaningful fields as read-only so the API consumer can
-    inspect the outcome of any send without being able to mutate the log.
+    ``provider_response`` is intentionally omitted from ``fields`` — raw
+    provider payloads may contain sensitive infrastructure details (API
+    keys in request echoes, internal IDs).  Ops staff can inspect them
+    through the Django admin where the field is exposed as read-only.
+
+    ``error_message`` is masked for non-superuser callers (A1) so raw
+    provider rejection strings don't leak implementation details through
+    the API.  Superusers see the full error for debugging.
     """
 
-    sent_by_email = serializers.CharField(
-        source="sent_by.email", read_only=True, default=None
-    )
+    sent_by = _SenderSerializer(read_only=True)
 
     class Meta:
         model = NotificationLog
@@ -68,8 +87,23 @@ class NotificationLogSerializer(serializers.ModelSerializer):
             "provider_message_id",
             "error_message",
             "sent_by",
-            "sent_by_email",
+            "segments",
             "created_at",
             "updated_at",
         ]
         read_only_fields = fields
+
+    def to_representation(self, instance):
+        """Mask ``error_message`` for non-superuser callers.
+
+        Args:
+            instance: the ``NotificationLog`` instance.
+
+        Returns:
+            dict: the serialised representation.
+        """
+        data = super().to_representation(instance)
+        request = self.context.get("request")
+        if instance.error_message and request and not request.user.is_superuser:
+            data["error_message"] = "Send failed. See Django admin for details."
+        return data

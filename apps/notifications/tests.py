@@ -17,11 +17,18 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
 from apps.notifications.models import NotificationLog
-from apps.notifications.services import _send_africastalking, send_otp_sms, send_sms
+from apps.notifications.services import (
+    _send_africastalking,
+    send_email,
+    send_notification,
+    send_otp_sms,
+    send_sms,
+)
 
 SEND_TEST_URL = reverse("api:notifications:notification-send-test-sms")
 LOG_LIST_URL = reverse("api:notifications:notification-log-list")
 FAILED_LOGS_URL = reverse("api:notifications:notification-log-failed")
+DLR_URL = reverse("api:notifications:notification-delivery-report")
 
 SMSSendFailure = Exception
 
@@ -44,6 +51,16 @@ def _make_customer(password="CustomerPass123!"):
         username="buyer",
         password=password,
         phone_number="+254712345678",
+    )
+
+
+def _make_superuser(password="BossPass123!"):
+    """Create and return a superuser (full admin access)."""
+    return User.objects.create_superuser(
+        email="boss@example.com",
+        username="boss",
+        password=password,
+        phone_number="+254700000000",
     )
 
 
@@ -317,13 +334,20 @@ class SendTestSMSEndpointTests(APITestCase):
         },
     )
     def test_send_test_sms_records_failed_status(self, mock_provider):
-        """A provider failure is returned with ``failed`` status and error."""
+        """A provider failure is returned with ``failed`` status.
+
+        The non-superuser sees a masked error (raw provider text is not
+        leaked to staff without admin access).
+        """
         _login(self.client, "manager@example.com", "StaffPass123!")
         response = self.client.post(SEND_TEST_URL, self.payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["status"], "failed")
-        self.assertEqual(response.data["error_message"], "Network timeout")
-        self.assertEqual(NotificationLog.objects.get().status, "failed")
+        self.assertEqual(
+            response.data["error_message"],
+            "Send failed. See Django admin for details.",
+        )
+        self.assertEqual(NotificationLog.objects.get().error_message, "Network timeout")
 
     @mock.patch(
         "apps.notifications.services._send_via_provider",
@@ -468,7 +492,7 @@ class NotificationLogModelTests(APITestCase):
         self.assertEqual(log.provider_response, {"ok": True})
 
     def test_admin_is_append_only(self):
-        """The admin cannot create or edit log entries in place."""
+        """The admin cannot create, edit, or delete log entries in place."""
         from django.contrib.admin.sites import AdminSite
 
         from apps.notifications.admin import NotificationLogAdmin
@@ -478,3 +502,454 @@ class NotificationLogModelTests(APITestCase):
         self.assertFalse(
             admin_instance.has_change_permission(request=None, obj=NotificationLog())
         )
+        self.assertFalse(
+            admin_instance.has_delete_permission(request=None, obj=NotificationLog())
+        )
+
+
+class SecurityHardeningTests(APITestCase):
+    """Exercises the security hardening applied to the app."""
+
+    def setUp(self):
+        cache.clear()
+        self.staff = _make_staff()
+        self.superuser = _make_superuser()
+        self.customer = _make_customer()
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": False,
+            "message_id": "",
+            "response": {},
+            "error": "Provider rejected recipient",
+        },
+    )
+    def test_superuser_sees_raw_error(self, mock_provider):
+        """A superuser sees the raw provider error in the log output."""
+        _login(self.client, "boss@example.com", "BossPass123!")
+        response = self.client.post(SEND_TEST_URL, self.payload(), format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        log_id = response.data["id"]
+        detail_url = reverse("api:notifications:notification-log-detail", args=[log_id])
+        response = self.client.get(detail_url)
+        self.assertEqual(response.data["error_message"], "Provider rejected recipient")
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": False,
+            "message_id": "",
+            "response": {},
+            "error": "Provider rejected recipient",
+        },
+    )
+    def test_non_superuser_staff_sees_masked_error(self, mock_provider):
+        """A staff (non-admin) user sees a masked error, not raw provider text."""
+        _login(self.client, "manager@example.com", "StaffPass123!")
+        response = self.client.post(SEND_TEST_URL, self.payload(), format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        log_id = response.data["id"]
+        detail_url = reverse("api:notifications:notification-log-detail", args=[log_id])
+        response = self.client.get(detail_url)
+        self.assertEqual(
+            response.data["error_message"],
+            "Send failed. See Django admin for details.",
+        )
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": True,
+            "message_id": "id_1",
+            "response": {},
+            "error": "",
+        },
+    )
+    def test_idempotency_key_prevents_duplicate_send(self, mock_provider):
+        """A repeated POST with the same idempotency key sends once."""
+        _login(self.client, "boss@example.com", "BossPass123!")
+        first = self.client.post(
+            SEND_TEST_URL,
+            self.payload(),
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="key-123",
+        )
+        second = self.client.post(
+            SEND_TEST_URL,
+            self.payload(),
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="key-123",
+        )
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(first.data["id"], second.data["id"])
+        self.assertEqual(NotificationLog.objects.count(), 1)
+        mock_provider.assert_called_once()
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": True,
+            "message_id": "id_1",
+            "response": {},
+            "error": "",
+        },
+    )
+    def test_idempotency_key_on_service(self, mock_provider):
+        """send_sms dedupes on idempotency_key at the service level."""
+        first = send_sms("+254712345678", "Hi", "test", idempotency_key="svc-key-1")
+        second = send_sms("+254712345678", "Hi", "test", idempotency_key="svc-key-1")
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(NotificationLog.objects.count(), 1)
+        mock_provider.assert_called_once()
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={"success": True, "message_id": "", "response": {}, "error": ""},
+    )
+    def test_per_recipient_rate_limit_blocks_extra_sends(self, mock_provider):
+        """The per-recipient outbound rate limit rejects a 6th send."""
+        from rest_framework import serializers
+
+        for _ in range(5):
+            send_sms("+254712345678", "Hi", "test")
+        with self.assertRaisesMessage(
+            serializers.ValidationError, "Too many SMS sends to +254712345678"
+        ):
+            send_sms("+254712345678", "Hi", "test")
+        self.assertEqual(mock_provider.call_count, 5)
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={"success": True, "message_id": "", "response": {}, "error": ""},
+    )
+    def test_message_is_sanitized_via_endpoint(self, mock_provider):
+        """HTML tags are stripped from the message through the send endpoint."""
+        _login(self.client, "boss@example.com", "BossPass123!")
+        response = self.client.post(
+            SEND_TEST_URL,
+            {
+                "recipient": "+254712345678",
+                "message": "<script>alert('x')</script>Hello <b>world</b>",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertNotIn("<script>", response.data["message"])
+        self.assertNotIn("<b>", response.data["message"])
+        self.assertIn("Hello world", response.data["message"])
+
+    def payload(self):
+        """Return a valid test-SMS payload."""
+        return {"recipient": "+254712345678", "message": "Test SMS"}
+
+
+class EmailServiceTests(APITestCase):
+    """Exercises the email-sending service abstraction."""
+
+    def setUp(self):
+        cache.clear()
+
+    @mock.patch("django.core.mail.send_mail", return_value=1)
+    def test_send_email_creates_sent_log(self, mock_send_mail):
+        """A successful email send records a ``sent`` email log."""
+        log = send_email(
+            "ops@example.com", "Subject", "Body text", purpose="transactional"
+        )
+        self.assertEqual(log.channel, "email")
+        self.assertEqual(log.status, "sent")
+        self.assertEqual(log.recipient, "ops@example.com")
+        self.assertEqual(NotificationLog.objects.filter(channel="email").count(), 1)
+        mock_send_mail.assert_called_once()
+
+    @mock.patch("django.core.mail.send_mail", side_effect=OSError("smtp down"))
+    def test_send_email_records_failure(self, mock_send_mail):
+        """A provider failure is recorded with ``failed`` status."""
+        log = send_email(
+            "ops@example.com", "Subject", "Body text", purpose="transactional"
+        )
+        self.assertEqual(log.status, "failed")
+        self.assertIn("smtp down", log.error_message)
+
+
+class NotificationInfrastructureTests(APITestCase):
+    """Exercises templates, low-stock alerts, and delivery reports."""
+
+    def setUp(self):
+        cache.clear()
+        self.staff = _make_staff()
+        NotificationLog.objects.all().delete()
+
+    def test_template_registry_renders(self):
+        """A registered template renders with the supplied context."""
+        from apps.notifications.notification_templates import render_message
+
+        message = render_message("sms", "otp", code="482913", expiry_minutes=10)
+        self.assertIn("482913", message)
+        self.assertIn("10 minutes", message)
+
+    def test_template_registry_rejects_unknown_key(self):
+        """An unregistered template key raises ValueError."""
+        from apps.notifications.notification_templates import render_message
+
+        with self.assertRaises(ValueError):
+            render_message("sms", "nonexistent_purpose", code="123")
+
+    def test_send_notification_forwards_to_sms(self):
+        """send_notification routes to send_sms for the sms channel."""
+        with mock.patch(
+            "apps.notifications.services._send_via_provider",
+            return_value={
+                "success": True,
+                "message_id": "id_1",
+                "response": {"SMSMessageData": {"NumSegments": 1}},
+                "error": "",
+            },
+        ):
+            log = send_notification(
+                "sms",
+                "test",
+                "+254712345678",
+                template_key="test",
+                context={"body": "Hello"},
+            )
+        self.assertEqual(log.channel, "sms")
+        self.assertEqual(log.status, "sent")
+
+    @mock.patch("django.core.mail.send_mail", return_value=1)
+    def test_send_notification_forwards_to_email(self, mock_send_mail):
+        """send_notification routes to send_email for the email channel."""
+        log = send_notification(
+            "email",
+            "transactional",
+            "ops@example.com",
+            context={"subject": "Hi", "body": "Body"},
+            subject="Hi",
+            body="Body",
+        )
+        self.assertEqual(log.channel, "email")
+        self.assertEqual(log.status, "sent")
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": True,
+            "message_id": "ATXid_9",
+            "response": {"SMSMessageData": {"NumSegments": 2}},
+            "error": "",
+        },
+    )
+    def test_sms_stores_segments(self, mock_provider):
+        """The provider-reported segment count is stored on the log."""
+        log = send_sms("+254712345678", "x" * 200, "transactional")
+        self.assertEqual(log.segments, 2)
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": True,
+            "message_id": "ATXid_dlr",
+            "response": {},
+            "error": "",
+        },
+    )
+    def test_delivery_report_marks_delivered(self, mock_provider):
+        """A delivery report updates the log to ``delivered``."""
+        log = send_sms("+254712345678", "Hi", "transactional")
+        response = self.client.post(
+            DLR_URL,
+            {"id": log.provider_message_id, "status": "Success"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        log.refresh_from_db()
+        self.assertEqual(log.status, "delivered")
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": True,
+            "message_id": "ATXid_fail",
+            "response": {},
+            "error": "",
+        },
+    )
+    def test_delivery_report_marks_failed(self, mock_provider):
+        """A failing delivery report updates the log to ``failed``."""
+        log = send_sms("+254712345678", "Hi", "transactional")
+        response = self.client.post(
+            DLR_URL,
+            {"id": log.provider_message_id, "status": "Failed"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        log.refresh_from_db()
+        self.assertEqual(log.status, "failed")
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": True,
+            "message_id": "ATXid_term",
+            "response": {},
+            "error": "",
+        },
+    )
+    def test_delivery_report_ignores_unknown_id(self, mock_provider):
+        """A report for an unknown provider id is a no-op."""
+        response = self.client.post(
+            DLR_URL, {"id": "nope", "status": "Success"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class LowStockAlertTests(APITestCase):
+    """Exercises the low-stock staff alert."""
+
+    def setUp(self):
+        cache.clear()
+        self.staff = _make_staff()
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={
+            "success": True,
+            "message_id": "",
+            "response": {"SMSMessageData": {"NumSegments": 1}},
+            "error": "",
+        },
+    )
+    def test_low_stock_notifies_all_staff_with_phones(self, mock_provider):
+        """Every staff user with a phone number is alerted."""
+        from apps.notifications.services import notify_low_stock
+
+        User.objects.create_user(
+            email="ops@example.com",
+            username="ops",
+            password="OpsPass123!",
+            phone_number="+254700111222",
+            is_staff=True,
+        )
+        User.objects.create_user(
+            email="nol@example.com",
+            username="nol",
+            password="NoPass123!",
+            phone_number="",
+            is_staff=True,
+        )
+
+        class _Variant:
+            name = "Kettle"
+            sku = "KTL-1"
+
+        class _Warehouse:
+            name = "Nairobi Main"
+
+        logs = notify_low_stock(_Variant(), _Warehouse(), quantity=3, threshold=5)
+
+        recipients = {log.recipient for log in logs}
+        self.assertIn("+254712345678", recipients)
+        self.assertIn("+254700111222", recipients)
+        self.assertNotIn("", recipients)
+        self.assertEqual(len(logs), 2)
+
+
+class NotificationLogDetailTests(APITestCase):
+    """Exercises the single-log detail endpoint."""
+
+    def setUp(self):
+        cache.clear()
+        self.staff = _make_staff()
+        _make_customer()
+        self.log = NotificationLog.objects.create(
+            channel="sms",
+            purpose="test",
+            recipient="+254712345678",
+            message="Hi",
+            status="sent",
+            sent_by=self.staff,
+        )
+        self.detail_url = reverse(
+            "api:notifications:notification-log-detail", args=[self.log.id]
+        )
+
+    def test_anonymous_cannot_get_log_detail(self):
+        """An unauthenticated caller is rejected (401)."""
+        response = self.client.get(self.detail_url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_non_staff_cannot_get_log_detail(self):
+        """A plain customer token is rejected (403)."""
+        _login(self.client, "buyer@example.com", "CustomerPass123!")
+        response = self.client.get(self.detail_url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_staff_can_get_log_detail(self):
+        """A staff user can retrieve a single log."""
+        _login(self.client, "manager@example.com", "StaffPass123!")
+        response = self.client.get(self.detail_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.log.id)
+        self.assertEqual(response.data["status"], "sent")
+
+
+class ComposableFilterTests(APITestCase):
+    """Verifies the composable log-filter queryset."""
+
+    def setUp(self):
+        cache.clear()
+        self.staff = _make_staff()
+
+    def _seed(self):
+        NotificationLog.objects.create(
+            channel="sms",
+            purpose="otp",
+            recipient="+254712345678",
+            message="OTP",
+            status="sent",
+            sent_by=self.staff,
+        )
+        NotificationLog.objects.create(
+            channel="sms",
+            purpose="order_update",
+            recipient="+254700000000",
+            message="Order",
+            status="failed",
+            error_message="rejected",
+            sent_by=self.staff,
+        )
+
+    def test_combined_filters_compose(self):
+        """Combining recipient and status narrows correctly (no priority bug)."""
+
+        self._seed()
+        _login(self.client, "manager@example.com", "StaffPass123!")
+        response = self.client.get(
+            LOG_LIST_URL, {"recipient": "+254712345678", "status": "sent"}
+        )
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["purpose"], "otp")
+
+    def test_purpose_and_recipient_compose(self):
+        """Purpose and recipient are both applied (not silently dropped)."""
+
+        self._seed()
+        _login(self.client, "manager@example.com", "StaffPass123!")
+        response = self.client.get(
+            LOG_LIST_URL,
+            {
+                "purpose": "otp",
+                "recipient": "+254700000000",
+            },
+        )
+        self.assertEqual(response.data["count"], 0)
+
+    def test_selector_unit(self):
+        """The composable selector applies all filters together."""
+        self._seed()
+        from apps.notifications.selectors import get_notification_logs
+
+        qs = get_notification_logs(recipient="+254712345678", purpose="otp")
+        self.assertEqual(list(qs.values_list("purpose", flat=True)), ["otp"])
+        self.assertEqual(qs.count(), 1)

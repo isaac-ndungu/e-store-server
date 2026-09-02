@@ -13,6 +13,7 @@ sentry-sdk[django]==2.68.1
 whitenoise[brotli]==6.12.0
 Pillow==12.3.0
 africastalking==2.0.3
+bleach>=6.0
 ruff==0.16.5
 black==26.5.1
 isort==9.0.1

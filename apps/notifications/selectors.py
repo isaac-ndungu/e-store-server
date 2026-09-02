@@ -1,18 +1,46 @@
-"""Selectors for the notifications app.
-
-Read-only query helpers used by views and future callers (order status
-updates, OTP dispatch, etc.) so every consumer shares the same filter
-logic and queryset optimization.
-"""
 
 from apps.notifications.models import NotificationLog
 
 
+def _base_queryset():
+    """Return the base notification-log queryset with the sender prefetched.
+
+    Returns:
+        QuerySet: ``NotificationLog`` rows ordered by ``-created_at`` with
+            ``sent_by`` eagerly loaded to avoid per-row queries.
+    """
+    return NotificationLog.objects.select_related("sent_by").order_by("-created_at")
+
+
+def get_notification_logs(recipient=None, channel=None, status=None, purpose=None):
+    """Return notification logs matching any combination of filters.
+
+    Unlike the individual helpers below, all supplied filters are combined
+    (ANDed) so a caller can narrow by recipient and purpose at once.
+
+    Args:
+        recipient (str | None): exact phone number or email match.
+        channel (str | None): ``"sms"`` / ``"email"`` filter.
+        status (str | None): log status filter.
+        purpose (str | None): notification purpose filter.
+
+    Returns:
+        QuerySet: matching ``NotificationLog`` rows, newest first.
+    """
+    qs = _base_queryset()
+    if recipient:
+        qs = qs.filter(recipient=recipient)
+    if channel:
+        qs = qs.filter(channel=channel)
+    if status:
+        qs = qs.filter(status=status)
+    if purpose:
+        qs = qs.filter(purpose=purpose)
+    return qs
+
+
 def get_notification_logs_for_recipient(recipient, channel=None):
     """Return notification logs for a specific recipient, newest first.
-
-    Optionally filters by channel (``sms``, ``email``). The queryset is
-    not evaluated — callers can further slice, paginate, or aggregate it.
 
     Args:
         recipient (str): the phone number or email to look up.
@@ -21,10 +49,7 @@ def get_notification_logs_for_recipient(recipient, channel=None):
     Returns:
         QuerySet: matching ``NotificationLog`` rows ordered by ``-created_at``.
     """
-    qs = NotificationLog.objects.filter(recipient=recipient)
-    if channel:
-        qs = qs.filter(channel=channel)
-    return qs.select_related("sent_by")
+    return get_notification_logs(recipient=recipient, channel=channel)
 
 
 def get_failed_notification_logs():
@@ -35,7 +60,7 @@ def get_failed_notification_logs():
     Returns:
         QuerySet: failed ``NotificationLog`` rows ordered by ``-created_at``.
     """
-    return NotificationLog.objects.filter(status="failed").select_related("sent_by")
+    return get_notification_logs(status="failed")
 
 
 def get_notification_logs_by_purpose(purpose):
@@ -47,4 +72,4 @@ def get_notification_logs_by_purpose(purpose):
     Returns:
         QuerySet: matching ``NotificationLog`` rows ordered by ``-created_at``.
     """
-    return NotificationLog.objects.filter(purpose=purpose).select_related("sent_by")
+    return get_notification_logs(purpose=purpose)

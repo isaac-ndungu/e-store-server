@@ -1,22 +1,10 @@
-"""API views for the notifications app.
-
-Implements the internal test-send endpoint and notification-log retrieval.
-The test-send view is staff-only so only managers/support can trigger a
-real SMS.  Log queries are also staff-only so operational dashboards can
-read audit data without exposing it to customers.
-"""
-
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.notifications.models import NotificationLog
-from apps.notifications.selectors import (
-    get_failed_notification_logs,
-    get_notification_logs_by_purpose,
-    get_notification_logs_for_recipient,
-)
+from apps.notifications.selectors import get_notification_logs
 from apps.notifications.serializers import (
     NotificationLogSerializer,
     SendTestSMSSerializer,
@@ -34,7 +22,9 @@ class SendTestSMSView(APIView):
 
     The endpoint is deliberately synchronous: the caller sees the provider
     outcome immediately so a Postman test can confirm success or failure
-    in a single round trip.
+    in a single round trip.  A client-supplied ``Idempotency-Key`` header
+    prevents a retried tap from sending a duplicate SMS (each SMS costs
+    money).
     """
 
     permission_classes = [permissions.IsAdminUser]
@@ -45,7 +35,8 @@ class SendTestSMSView(APIView):
         """Send the test SMS and return the resulting audit log.
 
         Args:
-            request: the POST request carrying ``recipient`` and ``message``.
+            request: the POST request carrying ``recipient`` and ``message``,
+                plus an optional ``Idempotency-Key`` header.
 
         Returns:
             Response: ``201 Created`` with the ``NotificationLog`` payload on
@@ -54,14 +45,17 @@ class SendTestSMSView(APIView):
         serializer = SendTestSMSSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        idempotency_key = request.headers.get("Idempotency-Key")
+
         log = send_test_sms(
             recipient=serializer.validated_data["recipient"],
             message=serializer.validated_data["message"],
             sent_by=request.user,
+            idempotency_key=idempotency_key,
         )
 
         return Response(
-            NotificationLogSerializer(log).data,
+            NotificationLogSerializer(log, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
         )
 
@@ -70,37 +64,53 @@ class NotificationLogListView(generics.ListAPIView):
     """List notification logs with optional filtering.
 
     Staff-only (``IsAdminUser``).  Supports filtering by ``recipient``,
-    ``channel``, ``status``, and ``purpose`` via query parameters.  Results
-    are paginated using the project default.
+    ``channel``, ``status``, and ``purpose`` via query parameters, any
+    combination of which is applied together.  Results are paginated.
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
     serializer_class = NotificationLogSerializer
-    filterset_fields = ["recipient", "channel", "status", "purpose"]
-    ordering_fields = ["created_at", "status", "purpose"]
-    ordering = ["-created_at"]
 
     def get_queryset(self):
-        """Return the full notification log queryset.
-
-        When a ``recipient`` query parameter is provided, delegates to the
-        selector for a recipient-scoped query; otherwise returns all logs.
+        """Return the notification-log queryset filtered by query params.
 
         Returns:
-            QuerySet: ``NotificationLog`` rows ordered by ``-created_at``.
+            QuerySet: ``NotificationLog`` rows matching the supplied filters.
         """
-        recipient = self.request.query_params.get("recipient")
-        channel = self.request.query_params.get("channel")
-        purpose = self.request.query_params.get("purpose")
+        params = self.request.query_params
+        return get_notification_logs(
+            recipient=params.get("recipient"),
+            channel=params.get("channel"),
+            status=params.get("status"),
+            purpose=params.get("purpose"),
+        )
 
-        if purpose:
-            return get_notification_logs_by_purpose(purpose)
-        if recipient:
-            return get_notification_logs_for_recipient(recipient, channel=channel)
-        qs = NotificationLog.objects.all()
-        if channel:
-            qs = qs.filter(channel=channel)
-        return qs.select_related("sent_by")
+    def get_serializer_context(self):
+        """Add the request to the serializer context for error masking.
+
+        Returns:
+            dict: the serializer context including ``request``.
+        """
+        context = super().get_serializer_context()
+        context["request"] = self.request
+        return context
+
+
+class NotificationLogDetailView(generics.RetrieveAPIView):
+    """Retrieve a single notification log by id.
+
+    Staff-only (``IsAdminUser``).  Supplements the Django admin with an
+    API path for operational tooling that needs one log without a
+    full-history scan.
+    """
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+    serializer_class = NotificationLogSerializer
+    queryset = NotificationLog.objects.select_related("sent_by")
 
 
 class FailedNotificationLogsView(generics.ListAPIView):
@@ -111,8 +121,9 @@ class FailedNotificationLogsView(generics.ListAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
     serializer_class = NotificationLogSerializer
-    ordering = ["-created_at"]
 
     def get_queryset(self):
         """Return all failed notification logs.
@@ -120,4 +131,49 @@ class FailedNotificationLogsView(generics.ListAPIView):
         Returns:
             QuerySet: failed ``NotificationLog`` rows.
         """
-        return get_failed_notification_logs()
+        return get_notification_logs(status="failed")
+
+
+class DeliveryReportView(APIView):
+    """Receive SMS delivery-report callbacks from Africa's Talking.
+
+    Africa's Talking POSTs delivery reports to this endpoint when an SMS
+    is delivered, expires, or fails.  The endpoint looks the log up by
+    ``provider_message_id`` and updates its status to ``delivered`` or
+    ``failed``.
+
+    The endpoint is unauthenticated because the provider (not a user)
+    calls it; the provider dashboard must be configured to POST here.
+    Source-IP allowlisting should be applied at the proxy/CDN layer per
+    the provider's documentation.  Update is idempotent: if the log is
+    already in a terminal state the report is ignored.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        """Process a delivery-report payload.
+
+        Args:
+            request: the POST body containing the delivery report.
+
+        Returns:
+            Response: ``200 OK`` once the report is handled (or ignored).
+        """
+        provider_message_id = request.data.get("id") or request.data.get("messageId")
+        if not provider_message_id:
+            return Response(status=status.HTTP_200_OK)
+
+        log = NotificationLog.objects.filter(
+            provider_message_id=provider_message_id
+        ).first()
+        if log is None:
+            return Response(status=status.HTTP_200_OK)
+
+        state = request.data.get("status")
+        if log.status in ("delivered", "failed"):
+            return Response(status=status.HTTP_200_OK)
+
+        new_status = "failed" if (state and state.lower() == "failed") else "delivered"
+        log.update_status(new_status, provider_response=request.data)
+        return Response(status=status.HTTP_200_OK)

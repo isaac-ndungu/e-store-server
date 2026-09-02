@@ -39,3 +39,7 @@ class NotificationLogAdmin(admin.ModelAdmin):
     def has_change_permission(self, request, obj=None):
         """Logs are append-only — prevent in-place edits."""
         return False
+
+    def has_delete_permission(self, request, obj=None):
+        """Logs are append-only — prevent deletion through the admin."""
+        return False
