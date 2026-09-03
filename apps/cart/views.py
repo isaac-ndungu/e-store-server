@@ -1,0 +1,401 @@
+"""API views for the cart app.
+
+The cart is always addressed as a single-object resource: ``GET /cart/``
+returns the current user's (or guest's) active cart with computed totals.
+Cart mutations are ``POST`` to sub-endpoints (``/cart/items/``,
+``/cart/apply-coupon/``, etc.) to keep the URL scheme clean.
+
+Permission model:
+- ``CartView`` and ``CartItemsView`` accept an optional ``X-Session-Key``
+  header from anonymous browsers (guest checkout) and ``IsAuthenticated``
+  or ``AllowAny`` as appropriate.
+- ``WishlistView`` is always ``IsAuthenticated`` — the wishlist requires an
+  account.
+- Ownership is enforced at the service/view level: a caller can only
+  address their own cart.
+"""
+
+from functools import wraps
+
+from django.core.exceptions import ValidationError as DjangoValidationError
+from rest_framework import permissions, status
+from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.views import APIView
+
+from apps.cart.selectors import get_wishlist_for_user
+from apps.cart.serializers import (
+    CartItemQuantitySerializer,
+    CartItemWriteSerializer,
+    CartSummarySerializer,
+    CouponApplySerializer,
+    CouponResultSerializer,
+    WishlistAddSerializer,
+    WishlistItemSerializer,
+)
+from apps.cart.services import (
+    add_item,
+    add_to_wishlist,
+    apply_coupon,
+    compute_cart_totals,
+    get_or_create_cart,
+    remove_coupon,
+    remove_from_wishlist,
+    remove_item,
+    update_item_quantity,
+)
+
+
+def _get_session_key(request):
+    """Extract the guest session key from the request header.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        str | None: the session key, or None if not provided.
+    """
+    return request.headers.get("X-Session-Key", "").strip() or None
+
+
+def _service_error_to_400(mutation):
+    """Convert a service-layer validation error into a DRF 400 response.
+
+    Services raise Django's ``ValidationError``; DRF only translates the
+    ``rest_framework`` variant automatically, so a mutation that raises for
+    a business rule would otherwise surface as a 500.
+
+    Args:
+        mutation (Callable): the service function to invoke.
+
+    Returns:
+        Callable: a wrapper that raises DRF's ``ValidationError`` on a
+            service validation failure.
+    """
+
+    @wraps(mutation)
+    def wrapper(*args, **kwargs):
+        try:
+            return mutation(*args, **kwargs)
+        except DjangoValidationError as exc:
+            raise DRFValidationError(exc.messages) from exc
+
+    return wrapper
+
+
+def _resolve_cart(request):
+    """Resolve the active cart for the request's user or guest.
+
+    For authenticated users the cart is user-scoped.  For guests the cart
+    is identified by the ``X-Session-Key`` header.  If neither is available
+    the view returns ``None`` and the caller must decide the response.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        Cart | None: the active cart, or None if unresolvable.
+    """
+    if request.user.is_authenticated:
+        return get_or_create_cart(user=request.user)
+    session_key = _get_session_key(request)
+    if session_key:
+        return get_or_create_cart(session_key=session_key)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Cart endpoints
+# ---------------------------------------------------------------------------
+
+
+class CartView(APIView):
+    """Return the active cart with computed totals.
+
+    Supports both authenticated users and anonymous guests (via the
+    ``X-Session-Key`` header).  The response includes server-computed
+    effective prices, discount breakdowns, and VAT — all money values are
+    strings for exact representation.
+
+    GET returns the current cart (creating one if needed).
+    DELETE empties the cart by removing all items and clearing the coupon.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public"
+
+    def get(self, request):
+        """Return the active cart with priced line items and totals.
+
+        Args:
+            request: the GET request.
+
+        Returns:
+            Response: the full cart summary, or 400 if the caller is
+                anonymous and provides no session key.
+        """
+        cart = _resolve_cart(request)
+        if cart is None:
+            return Response(
+                {"detail": "Provide a session key or log in to view your cart."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        totals = compute_cart_totals(cart)
+        serializer = CartSummarySerializer(
+            {
+                "id": cart.pk,
+                "user": cart.user_id,
+                "session_key": cart.session_key,
+                "coupon_code": cart.coupon.code if cart.coupon_id else None,
+                "created_at": cart.created_at,
+                "updated_at": cart.updated_at,
+                **totals,
+            }
+        )
+        return Response(serializer.data)
+
+    def delete(self, request):
+        """Empty the cart by removing all items and clearing the coupon.
+
+        Args:
+            request: the DELETE request.
+
+        Returns:
+            Response: ``204 No Content`` on success.
+        """
+        cart = _resolve_cart(request)
+        if cart is None:
+            return Response(
+                {"detail": "Provide a session key or log in to view your cart."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        cart.items.all().delete()
+        if cart.coupon_id is not None:
+            cart.coupon = None
+            cart.save(update_fields=["coupon", "updated_at"])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CartItemsView(APIView):
+    """Add items to the cart.
+
+    POST with ``variant_id`` or ``bundle_id`` and ``quantity``.  Duplicate
+    lines are merged by summing the quantity.  Validates stock availability
+    for variants and bundle/variant active status.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public"
+
+    def post(self, request):
+        """Add an item to the active cart.
+
+        Args:
+            request: the POST request carrying ``variant_id`` or
+                ``bundle_id`` and optionally ``quantity``.
+
+        Returns:
+            Response: ``201 Created`` with the cart item id, or ``400``
+                for invalid input / stock errors.
+        """
+        cart = _resolve_cart(request)
+        if cart is None:
+            return Response(
+                {"detail": "Provide a session key or log in to add items."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        input_serializer = CartItemWriteSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        item = _service_error_to_400(add_item)(
+            cart,
+            variant_id=data.get("variant_id"),
+            bundle_id=data.get("bundle_id"),
+            quantity=data["quantity"],
+        )
+        return Response({"item_id": item.pk}, status=status.HTTP_201_CREATED)
+
+
+class CartItemDetailView(APIView):
+    """Update the quantity or remove a specific cart item.
+
+    PATCH with ``quantity`` to change the quantity.
+    DELETE to remove the item entirely.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public"
+
+    def patch(self, request, item_id):
+        """Update the quantity of a cart item.
+
+        Args:
+            request: the PATCH request carrying ``quantity``.
+            item_id (int): the cart-item id.
+
+        Returns:
+            Response: ``200 OK`` with the updated item id, or ``204`` if
+                the item was removed (quantity <= 0).
+        """
+        cart = _resolve_cart(request)
+        if cart is None:
+            return Response(
+                {"detail": "Provide a session key or log in."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        input_serializer = CartItemQuantitySerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        updated = _service_error_to_400(update_item_quantity)(
+            cart, item_id, input_serializer.validated_data["quantity"]
+        )
+        if updated is None:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({"item_id": updated.pk})
+
+    def delete(self, request, item_id):
+        """Remove a cart item.
+
+        Args:
+            request: the DELETE request.
+            item_id (int): the cart-item id.
+
+        Returns:
+            Response: ``204 No Content`` on success.
+        """
+        cart = _resolve_cart(request)
+        if cart is None:
+            return Response(
+                {"detail": "Provide a session key or log in."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        _service_error_to_400(remove_item)(cart, item_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CartCouponView(APIView):
+    """Apply or remove a coupon on the active cart.
+
+    POST to apply (``{"code": "SAVE10"}``), DELETE to remove.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "coupon_validate"
+
+    def post(self, request):
+        """Apply a coupon code to the active cart.
+
+        Args:
+            request: the POST request carrying ``code``.
+
+        Returns:
+            Response: ``200 OK`` with the validation result, or ``400``
+                if the coupon is invalid.
+        """
+        cart = _resolve_cart(request)
+        if cart is None:
+            return Response(
+                {"detail": "Provide a session key or log in to apply a coupon."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        input_serializer = CouponApplySerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        user = request.user if request.user.is_authenticated else None
+        result = _service_error_to_400(apply_coupon)(
+            cart, input_serializer.validated_data["code"], user=user
+        )
+        output_serializer = CouponResultSerializer(result)
+        return Response(output_serializer.data)
+
+    def delete(self, request):
+        """Remove the coupon from the active cart.
+
+        Args:
+            request: the DELETE request.
+
+        Returns:
+            Response: ``204 No Content`` on success.
+        """
+        cart = _resolve_cart(request)
+        if cart is None:
+            return Response(
+                {"detail": "Provide a session key or log in."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        remove_coupon(cart)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Wishlist endpoints
+# ---------------------------------------------------------------------------
+
+
+class WishlistView(APIView):
+    """List wishlist items or add a new one.
+
+    Requires authentication — the wishlist is tied to an account.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public"
+
+    def get(self, request):
+        """Return the authenticated user's wishlist.
+
+        Args:
+            request: the GET request.
+
+        Returns:
+            Response: the wishlist items with product details.
+        """
+        items = get_wishlist_for_user(request.user)
+        serializer = WishlistItemSerializer(items, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        """Add a product to the authenticated user's wishlist.
+
+        Args:
+            request: the POST request carrying ``product_id``.
+
+        Returns:
+            Response: ``201 Created`` with the wishlist item, or ``400``
+                if the product does not exist.
+        """
+        input_serializer = WishlistAddSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        item = _service_error_to_400(add_to_wishlist)(
+            request.user, input_serializer.validated_data["product_id"]
+        )
+        output_serializer = WishlistItemSerializer(item)
+        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class WishlistItemDetailView(APIView):
+    """Remove a product from the wishlist.
+
+    Requires authentication.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public"
+
+    def delete(self, request, product_id):
+        """Remove a product from the authenticated user's wishlist.
+
+        Args:
+            request: the DELETE request.
+            product_id (int): the product id to remove.
+
+        Returns:
+            Response: ``204 No Content`` on success.
+        """
+        _service_error_to_400(remove_from_wishlist)(request.user, product_id)
+        return Response(status=status.HTTP_204_NO_CONTENT)

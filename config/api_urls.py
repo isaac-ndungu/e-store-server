@@ -33,4 +33,8 @@ urlpatterns = [
         "v1/",
         include(("apps.promotions.urls", "promotions"), namespace="promotions"),
     ),
+    path(
+        "v1/",
+        include(("apps.cart.urls", "cart"), namespace="cart"),
+    ),
 ]
