@@ -5,6 +5,7 @@ governed by one rule that decides which products belong to it:
 
 - ``new_arrivals`` — products created within the rule window, newest first.
 - ``restocked`` — products with a restock recorded within the window.
+- ``on_sale`` — products with a currently active automatic discount.
 - ``low_stock`` (almost gone) — products whose available stock across all
   warehouses is at or below ``rule_threshold``.
 
@@ -14,10 +15,10 @@ then caches the resulting product id list per slug. Manual collections are
 untouched. Collecting the product ids in a single query and matching them in
 Python keeps the refresh cheap even with many candidates.
 
-``on_sale`` and ``best_sellers`` are valid smart rules on the model, but their
-data sources — active discounts and order-line counts — are not yet built, so
-they currently compute to an empty membership. Their computation slots into
-``_SMART_RULE_COMPUTERS`` as those features land.
+``best_sellers`` is a valid smart rule on the model, but its data source —
+order-line counts — is not yet built, so it currently computes to an empty
+membership. Its computation slots into ``_SMART_RULE_COMPUTERS`` when that
+feature lands.
 """
 
 import logging
@@ -158,6 +159,67 @@ def _low_stock(collection):
     )
 
 
+def _on_sale(collection):
+    """Return products with a currently active discount.
+
+    A product qualifies when at least one active, in-window discount applies
+    to it under any scope other than ``bundle`` — a bundle discount reduces
+    the bundle's own price, not the price of the products inside it. The
+    result is ordered by discount priority so the most prominent offers come
+    first.
+
+    Args:
+        collection (Collection): the smart collection.
+
+    Returns:
+        list[int]: active product primary keys currently on sale.
+    """
+    from django.db.models import Q
+
+    from apps.catalog.models import Product
+    from apps.promotions.models import Discount
+
+    now = timezone.now()
+    discounts = list(
+        Discount.objects.filter(is_active=True, starts_at__lte=now)
+        .filter(Q(ends_at__isnull=True) | Q(ends_at__gte=now))
+        .exclude(scope="bundle")
+        .order_by("-priority", "pk")
+    )
+    budgets = [
+        discount
+        for discount in discounts
+        if discount.max_redemptions is None
+        or discount.redemption_count < discount.max_redemptions
+    ]
+
+    product_pks = []
+    seen = set()
+    for discount in budgets:
+        scope = discount.scope
+        if scope == "variant":
+            ids = discount.variants.values_list("product_id", flat=True)
+        elif scope == "product":
+            ids = discount.products.values_list("pk", flat=True)
+        elif scope == "category":
+            ids = discount.categories.values_list("products__pk", flat=True)
+        elif scope == "brand":
+            ids = discount.brands.values_list("products__pk", flat=True)
+        else:
+            ids = Product.objects.filter(is_active=True).values_list("pk", flat=True)
+        for product_id in ids:
+            if product_id is not None and product_id not in seen:
+                seen.add(product_id)
+                product_pks.append(product_id)
+    if not product_pks:
+        return []
+    return list(
+        Product.objects.filter(pk__in=product_pks, is_active=True)
+        .order_by("-pk")
+        .values_list("pk", flat=True)
+    )
+
+
 def _no_source(collection):
     """Return an empty membership for rules whose data source is pending.
 
@@ -181,7 +243,7 @@ _SMART_RULE_COMPUTERS = {
     "new_arrivals": _new_arrivals,
     "restocked": _restocked,
     "low_stock": _low_stock,
-    "on_sale": _no_source,
+    "on_sale": _on_sale,
     "best_sellers": _no_source,
 }
 

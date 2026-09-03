@@ -29,4 +29,8 @@ urlpatterns = [
         include(("apps.collections.urls", "collections"), namespace="collections"),
     ),
     path("v1/", include(("apps.bundles.urls", "bundles"), namespace="bundles")),
+    path(
+        "v1/",
+        include(("apps.promotions.urls", "promotions"), namespace="promotions"),
+    ),
 ]

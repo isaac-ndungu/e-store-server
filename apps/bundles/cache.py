@@ -69,6 +69,20 @@ def invalidate_bundle_price(slug):
     cache.delete(_cache_key(slug))
 
 
+def invalidate_all_bundle_prices():
+    """Drop every cached bundle price.
+
+    Called when a promotion changes in a way that could affect any bundle —
+    a sitewide or category sale can change the discount-aware component price
+    of many bundles at once, so it is cheaper and simpler to clear all bundle
+    prices than to track which bundles are affected.
+    """
+    from apps.bundles.models import Bundle
+
+    for slug in Bundle.objects.values_list("slug", flat=True):
+        cache.delete(_cache_key(slug))
+
+
 def _money(value):
     """Return ``value`` as an exact ``Decimal``.
 

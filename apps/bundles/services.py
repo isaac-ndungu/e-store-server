@@ -250,11 +250,14 @@ def _compute_bundle_price(bundle):
         raise ValidationError("A bundle must have at least one item to be priced.")
 
     regular_total = Decimal("0.00")
+    effective_total = Decimal("0.00")
     items_detail = []
     for item in item_rows:
+        source = _item_source_variant(item)
+        regular_unit = source.price
         unit_price = _item_unit_price(item)
-        line_total = unit_price * item.quantity
-        regular_total += line_total
+        regular_total += regular_unit * item.quantity
+        effective_total += unit_price * item.quantity
         items_detail.append(
             {
                 "product": item.product_id,
@@ -263,26 +266,62 @@ def _compute_bundle_price(bundle):
                 "quantity": item.quantity,
                 "is_optional": item.is_optional,
                 "unit_price": str(unit_price),
-                "line_total": str(line_total),
+                "regular_unit_price": str(regular_unit),
+                "line_total": str(unit_price * item.quantity),
             }
         )
 
-    discount = _discount_amount(bundle, regular_total)
+    discount = _discount_amount(bundle, effective_total)
 
     return {
         "slug": bundle.slug,
         "regular_price": str(regular_total),
         "discount": str(discount),
-        "price": str(regular_total - discount),
+        "price": str(effective_total - discount),
         "items": items_detail,
     }
+
+
+def _item_source_variant(item):
+    """Return the catalog variant a bundle item should be priced from.
+
+    A variant-specific item prices from that variant. A product-only item
+    prices from the product's cheapest active variant.
+
+    Args:
+        item (BundleItem): the bundle item.
+
+    Returns:
+        ProductVariant: the source variant.
+
+    Raises:
+        ValidationError: if the item has no priceable source.
+    """
+    if item.variant_id is not None:
+        if item.variant is None:
+            raise ValidationError(
+                "Bundle item variant was removed and can no longer be priced."
+            )
+        return item.variant
+    cheapest = (
+        item.product.variants.filter(is_active=True).order_by("price", "pk").first()
+    )
+    if cheapest is None:
+        raise ValidationError(
+            "Bundle item product has no active variant to price against."
+        )
+    return cheapest
 
 
 def _item_unit_price(item):
     """Return the billable unit price for a bundle item.
 
-    A variant-specific item uses that variant's price. A product-only item
-    uses the lowest price among the product's active variants.
+    A variant-specific item uses that variant's effective price (after any
+    discount that opts into bundles). A product-only item uses the lowest
+    price among the product's active variants, likewise discount-adjusted.
+    The effective price comes from the promotions service so a component
+    inside a bundle is never double-discounted by an individual-item
+    promotion unless it is explicitly marked to apply within bundles.
 
     Args:
         item (BundleItem): the bundle item.
@@ -293,24 +332,10 @@ def _item_unit_price(item):
     Raises:
         ValidationError: if the item has no priceable source.
     """
-    if item.variant_id is not None:
-        if item.variant is None:
-            raise ValidationError(
-                "Bundle item variant was removed and can no longer be priced."
-            )
-        return _money(item.variant.price)
+    from apps.promotions.services import effective_unit_price
 
-    cheapest = (
-        item.product.variants.filter(is_active=True)
-        .order_by("price", "pk")
-        .values_list("price", flat=True)
-        .first()
-    )
-    if cheapest is None:
-        raise ValidationError(
-            "Bundle item product has no active variant to price against."
-        )
-    return _money(cheapest)
+    variant = _item_source_variant(item)
+    return effective_unit_price(variant, within_bundle=True)
 
 
 def _discount_amount(bundle, regular_total):
