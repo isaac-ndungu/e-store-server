@@ -3,7 +3,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.promotions import cache
@@ -188,7 +188,7 @@ def get_effective_price(variant, coupon=None, within_bundle=False):
     """
     base = _money(variant.price)
     discounted, discount_data = _discount_price(variant, within_bundle, base)
-    coupon_savings = _coupon_adjustment(discounted, base, coupon)
+    coupon_savings = _coupon_adjustment(variant, discounted, base, coupon)
     final_price = discounted - coupon_savings
     return {
         "variant": variant.pk,
@@ -254,16 +254,48 @@ def _discount_savings(price, final_price):
     return (price - final_price).quantize(_PENNY, rounding=ROUND_HALF_UP)
 
 
-def _coupon_adjustment(discounted, base, coupon):
-    """Return a coupon's price reduction, honoring the stacking rule.
+def _coupon_applies_to_variant(coupon, variant):
+    """Return whether a coupon's product/category restrictions cover a variant.
+
+    A coupon with neither ``applies_to_products`` nor ``applies_to_categories``
+    is unrestricted and applies to every product. Otherwise it applies only
+    when the product is listed, or its category is listed, as an allowed target.
+
+    Args:
+        coupon (Coupon): the coupon.
+        variant (ProductVariant): the variant being priced.
+
+    Returns:
+        bool: True when the coupon may discount this variant's product.
+    """
+    product = variant.product
+    if coupon.applies_to_products.exists():
+        if coupon.applies_to_products.filter(pk=product.pk).exists():
+            return True
+        return False
+    if coupon.applies_to_categories.exists():
+        category_id = product.category_id
+        if (
+            category_id is not None
+            and coupon.applies_to_categories.filter(pk=category_id).exists()
+        ):
+            return True
+        return False
+    return True
+
+
+def _coupon_adjustment(variant, discounted, base, coupon):
+    """Return a coupon's price reduction, honoring stacking and scope rules.
 
     A coupon contributes to a unit price only when it is intrinsically
-    applicable (active, in window) and — where an automatic discount has
-    already reduced the price — the coupon is marked ``stackable_with_discounts``.
-    A ``free_shipping`` coupon reduces only shipping, which is outside this
+    applicable (active, in window), its product/category restrictions cover
+    the variant, and — where an automatic discount has already reduced the
+    price — the coupon is marked ``stackable_with_discounts``. A
+    ``free_shipping`` coupon reduces only shipping, which is outside this
     unit-price function's scope, so it contributes nothing here.
 
     Args:
+        variant (ProductVariant): the variant being priced.
         discounted (Decimal): the price after any automatic discount.
         base (Decimal): the variant's base (undiscounted) price.
         coupon (Coupon | None): the coupon to apply.
@@ -274,6 +306,8 @@ def _coupon_adjustment(discounted, base, coupon):
     if coupon is None:
         return Decimal("0.00")
     if not coupon.is_active or not _in_window(coupon.starts_at, coupon.ends_at):
+        return Decimal("0.00")
+    if not _coupon_applies_to_variant(coupon, variant):
         return Decimal("0.00")
     if coupon.discount_type == "free_shipping":
         return Decimal("0.00")
@@ -530,12 +564,43 @@ def _invalid(coupon, reason):
     }
 
 
-def record_redemption(coupon, user=None):
-    """Record that a coupon has been used.
+def record_discount_redemption(discount):
+    """Record an automatic discount application, bumping its usage counter.
 
-    Creates a ``CouponRedemption`` row (the order link is added once the
-    orders table exists) which ``validate_coupon`` counts toward the coupon's
-    total and per-user usage limits.
+    Called at order confirmation whenever a ``Discount`` actually reduces a
+    checkout total. Locks the discount row and increments ``redemption_count``,
+    refusing to do so once ``max_redemptions`` is reached, so the budget is
+    enforced exactly under concurrency.
+
+    Args:
+        discount (Discount): the discount that was applied.
+
+    Returns:
+        Discount: the refreshed discount (with the bumped counter).
+
+    Raises:
+        ValidationError: if the discount's redemption limit is reached.
+    """
+    with transaction.atomic():
+        locked = Discount.objects.select_for_update().get(pk=discount.pk)
+        if (
+            locked.max_redemptions is not None
+            and locked.redemption_count >= locked.max_redemptions
+        ):
+            raise ValidationError("Discount redemption limit has been reached.")
+        Discount.objects.filter(pk=locked.pk).update(
+            redemption_count=F("redemption_count") + 1
+        )
+        return Discount.objects.get(pk=locked.pk)
+
+
+def record_redemption(coupon, user=None):
+    """Record that a coupon has been used, enforcing its usage limits atomically.
+
+    The coupon row is locked (``select_for_update``) and its limits are
+    re-checked inside the same transaction as the insert, so two concurrent
+    checkouts cannot both pass a usage check and together overshoot the
+    ``usage_limit_total`` / ``usage_limit_per_user`` budget.
 
     Args:
         coupon (Coupon): the coupon being redeemed.
@@ -543,5 +608,25 @@ def record_redemption(coupon, user=None):
 
     Returns:
         CouponRedemption: the created redemption record.
+
+    Raises:
+        ValidationError: if the coupon is not usable (inactive, out of
+            window, or its global or per-user usage limit is exhausted).
     """
-    return CouponRedemption.objects.create(coupon=coupon, user=user)
+    with transaction.atomic():
+        locked = Coupon.objects.select_for_update().get(pk=coupon.pk)
+        if not locked.is_active:
+            raise ValidationError("Coupon is not active.")
+        if not _in_window(locked.starts_at, locked.ends_at):
+            raise ValidationError("Coupon is outside its valid dates.")
+        if locked.usage_limit_total is not None:
+            used = locked.redemptions.count()
+            if used >= locked.usage_limit_total:
+                raise ValidationError("Coupon usage limit has been reached.")
+        if user is not None:
+            used_by_user = CouponRedemption.objects.filter(
+                coupon=locked, user=user
+            ).count()
+            if used_by_user >= locked.usage_limit_per_user:
+                raise ValidationError("Coupon has already been used by this user.")
+        return CouponRedemption.objects.create(coupon=locked, user=user)

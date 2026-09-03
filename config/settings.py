@@ -162,6 +162,7 @@ REST_FRAMEWORK = {
         "auth_write": "10/min",
         "notification_send": "5/min",
         "public_catalog": "100/min",
+        "coupon_validate": "5/min",
         "admin": "300/min",
         "inventory_write": "30/min",
     },

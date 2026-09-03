@@ -159,6 +159,9 @@ class CouponSerializer(serializers.ModelSerializer):
             ValidationError: if the window is reversed or a value is missing.
         """
         instance = self.instance
+        code = attrs.get("code", getattr(instance, "code", None))
+        if code is not None:
+            attrs["code"] = code.strip().upper()
         discount_type = attrs.get(
             "discount_type", getattr(instance, "discount_type", None)
         )
@@ -167,6 +170,14 @@ class CouponSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"value": "value is required for percent and fixed coupons."}
             )
+        if code is not None:
+            duplicates = Coupon.objects.filter(code__iexact=code)
+            if instance is not None:
+                duplicates = duplicates.exclude(pk=instance.pk)
+            if duplicates.exists():
+                raise serializers.ValidationError(
+                    {"code": "A coupon with this code already exists."}
+                )
         starts_at = attrs.get("starts_at", getattr(instance, "starts_at", None))
         ends_at = attrs.get("ends_at", getattr(instance, "ends_at", None))
         if starts_at is not None and ends_at is not None and ends_at < starts_at:

@@ -1,11 +1,3 @@
-"""API views for the promotions app.
-
-Split into public views (``AllowAny``) — the effective-price lookup and coupon
-validation — and admin CRUD views (``IsAdminUser``) for discounts and coupons.
-Every view delegates to a service or selector and stays thin: parse input,
-call service, return response.
-"""
-
 from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -52,7 +44,7 @@ class VariantEffectivePriceView(APIView):
         """
         from apps.catalog.models import ProductVariant
 
-        variant = ProductVariant.objects.filter(pk=variant_pk).first()
+        variant = ProductVariant.objects.filter(pk=variant_pk, is_active=True).first()
         if variant is None:
             raise NotFound("No such variant.")
         price_data = get_effective_price(variant)
@@ -70,7 +62,7 @@ class CouponValidateView(APIView):
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public"
+    throttle_scope = "coupon_validate"
 
     def post(self, request):
         """Validate the submitted coupon code.
@@ -136,7 +128,9 @@ class AdminCouponListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         """Return coupons with their restrictions pre-fetched."""
-        return list_coupons().prefetch_related("applies_to_products")
+        return list_coupons().prefetch_related(
+            "applies_to_products", "applies_to_categories"
+        )
 
 
 class AdminCouponDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -149,4 +143,6 @@ class AdminCouponDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         """Return coupons with their restrictions pre-fetched."""
-        return list_coupons().prefetch_related("applies_to_products")
+        return list_coupons().prefetch_related(
+            "applies_to_products", "applies_to_categories"
+        )

@@ -1,12 +1,53 @@
+from django import forms
 from django.contrib import admin
 
 from apps.promotions.models import Coupon, CouponRedemption, Discount
+
+_SCOPE_RELATION = {
+    "variant": "variants",
+    "product": "products",
+    "category": "categories",
+    "brand": "brands",
+}
+
+
+class DiscountAdminForm(forms.ModelForm):
+    """Admin form that enforces the scope-relation pairing.
+
+    ``Discount.clean()`` skips its many-to-many check on an unsaved instance
+    (the relations are populated only after save), so this form validates the
+    pairing from the submitted relation selections up front.
+    """
+
+    class Meta:
+        model = Discount
+        fields = "__all__"
+
+    def clean(self):
+        """Require a matching relation for non-sitewide, non-bundle scopes.
+
+        Returns:
+            dict: the cleaned data.
+
+        Raises:
+            ValidationError: if the scope is empty of a matching relation.
+        """
+        cleaned = super().clean()
+        scope = cleaned.get("scope")
+        if scope in _SCOPE_RELATION:
+            relation_field = _SCOPE_RELATION[scope]
+            if not cleaned.get(relation_field):
+                raise forms.ValidationError(
+                    {relation_field: (f"Select at least one {scope} for this scope.")}
+                )
+        return cleaned
 
 
 @admin.register(Discount)
 class DiscountAdmin(admin.ModelAdmin):
     """Admin page for discounts."""
 
+    form = DiscountAdminForm
     list_display = (
         "name",
         "scope",

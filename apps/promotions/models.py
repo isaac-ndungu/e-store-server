@@ -13,8 +13,13 @@ discount arithmetic stays exact and ``min`` / truncation never compounds
 rounding error.
 """
 
+import decimal
+
 from django.core.exceptions import ValidationError
+from django.core.validators import MinValueValidator
 from django.db import models
+
+MIN_ZERO = MinValueValidator(decimal.Decimal("0.00"))
 
 
 class Discount(models.Model):
@@ -51,7 +56,7 @@ class Discount(models.Model):
     badge_text = models.CharField(max_length=50, blank=True)
     scope = models.CharField(max_length=20, choices=SCOPE_CHOICES)
     discount_type = models.CharField(max_length=10, choices=DISCOUNT_TYPE_CHOICES)
-    value = models.DecimalField(max_digits=10, decimal_places=2)
+    value = models.DecimalField(max_digits=10, decimal_places=2, validators=[MIN_ZERO])
     variants = models.ManyToManyField(
         "catalog.ProductVariant", blank=True, related_name="discounts"
     )
@@ -104,6 +109,14 @@ class Discount(models.Model):
         super().clean()
         if self.starts_at and self.ends_at and self.ends_at < self.starts_at:
             raise ValidationError({"ends_at": "ends_at must be on or after starts_at."})
+        if (
+            self.discount_type == "percent"
+            and self.value is not None
+            and self.value > 100
+        ):
+            raise ValidationError(
+                {"value": "A percentage discount cannot exceed 100%."}
+            )
         if self.scope == "bundle" and not self.bundle_id:
             raise ValidationError(
                 {"bundle": "A bundle-scoped discount must select a bundle."}
@@ -149,7 +162,13 @@ class Coupon(models.Model):
 
     code = models.CharField(max_length=50, unique=True)
     discount_type = models.CharField(max_length=20, choices=DISCOUNT_TYPE_CHOICES)
-    value = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    value = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MIN_ZERO],
+    )
     min_order_value = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     applies_to_products = models.ManyToManyField(
         "catalog.Product", blank=True, related_name="coupons"
@@ -186,12 +205,25 @@ class Coupon(models.Model):
                 coupon has no ``value``.
         """
         super().clean()
-        if self.starts_at and self.ends_at and self.ends_at < self.starts_at:
-            raise ValidationError({"ends_at": "ends_at must be on or after starts_at."})
+        if self.code:
+            self.code = self.code.strip().upper()
         if self.discount_type != "free_shipping" and self.value is None:
             raise ValidationError(
                 {"value": "value is required for percent and fixed coupons."}
             )
+        if (
+            self.discount_type == "percent"
+            and self.value is not None
+            and self.value > 100
+        ):
+            raise ValidationError({"value": "A percentage coupon cannot exceed 100%."})
+        if self.starts_at and self.ends_at and self.ends_at < self.starts_at:
+            raise ValidationError({"ends_at": "ends_at must be on or after starts_at."})
+        duplicates = Coupon.objects.filter(code__iexact=self.code)
+        if self.pk is not None:
+            duplicates = duplicates.exclude(pk=self.pk)
+        if duplicates.exists():
+            raise ValidationError({"code": "A coupon with this code already exists."})
 
 
 class CouponRedemption(models.Model):

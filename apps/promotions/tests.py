@@ -1,8 +1,8 @@
-
 from datetime import timedelta
 from decimal import Decimal
 
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
@@ -19,6 +19,7 @@ from apps.promotions.models import Coupon, CouponRedemption, Discount
 from apps.promotions.services import (
     create_discount,
     get_effective_price,
+    record_discount_redemption,
     record_redemption,
     validate_coupon,
 )
@@ -114,7 +115,9 @@ def _make_bundle(variant_a, variant_b, discount_type="percent", discount_value="
 
 def _make_coupon(code="SAVE10", discount_type="percent", value="10.00", **kwargs):
     """Create a coupon with default window starting in the past."""
-    return Coupon.objects.create(
+    applies_to_products = kwargs.pop("applies_to_products", [])
+    applies_to_categories = kwargs.pop("applies_to_categories", [])
+    coupon = Coupon.objects.create(
         code=code,
         discount_type=discount_type,
         value=value,
@@ -123,6 +126,11 @@ def _make_coupon(code="SAVE10", discount_type="percent", value="10.00", **kwargs
         is_active=kwargs.pop("is_active", True),
         **kwargs,
     )
+    if applies_to_products:
+        coupon.applies_to_products.set(applies_to_products)
+    if applies_to_categories:
+        coupon.applies_to_categories.set(applies_to_categories)
+    return coupon
 
 
 class EffectivePriceServiceTests(APITestCase):
@@ -379,6 +387,45 @@ class EffectivePriceServiceTests(APITestCase):
         self.assertEqual(data["base_price"], "6000.00")
         self.assertEqual(data["price"], "5400.00")
 
+    def test_percent_discount_above_100_rejected(self):
+        """A percentage discount above 100% is rejected."""
+        with self.assertRaises(ValidationError):
+            create_discount(
+                name="Too Much",
+                scope="sitewide",
+                discount_type="percent",
+                value="110.00",
+                starts_at=timezone.now() - timedelta(days=1),
+            )
+
+    def test_negative_discount_rejected(self):
+        """A negative discount value is rejected."""
+        with self.assertRaises(ValidationError):
+            create_discount(
+                name="Negative",
+                scope="sitewide",
+                discount_type="fixed",
+                value="-50.00",
+                starts_at=timezone.now() - timedelta(days=1),
+            )
+
+    def test_record_discount_redemption_bumps_counter(self):
+        """Recording a discount redemption increments its usage counter."""
+        discount = create_discount(
+            name="Capped",
+            scope="sitewide",
+            discount_type="percent",
+            value="10.00",
+            starts_at=timezone.now() - timedelta(days=1),
+            max_redemptions=2,
+        )
+        refreshed = record_discount_redemption(discount)
+        self.assertEqual(refreshed.redemption_count, 1)
+        refreshed = record_discount_redemption(refreshed)
+        self.assertEqual(refreshed.redemption_count, 2)
+        with self.assertRaises(ValidationError):
+            record_discount_redemption(refreshed)
+
 
 class BundleDiscountIntegrationTests(APITestCase):
     """Exercises discount integration into bundle pricing."""
@@ -556,6 +603,112 @@ class CouponServiceTests(APITestCase):
         data = get_effective_price(variant, coupon=coupon)
         self.assertEqual(data["price"], "5000.00")
         self.assertEqual(data["coupon_discount"], "0.00")
+
+    def test_coupon_percent_above_100_rejected(self):
+        """A percentage coupon above 100% is rejected at the model layer."""
+        coupon = _make_coupon(code="TOOMUCH", discount_type="percent", value="110.00")
+        with self.assertRaises(ValidationError):
+            coupon.full_clean()
+
+    def test_coupon_negative_value_rejected(self):
+        """A negative coupon value is rejected by the model validator."""
+        coupon = _make_coupon(code="NEG", discount_type="fixed", value="-50.00")
+        with self.assertRaises(ValidationError):
+            coupon.full_clean()
+
+    def test_redemption_atomic_limit_enforced(self):
+        """Recording a redemption re-checks the limit and raises when exhausted."""
+        coupon = _make_coupon(usage_limit_total=1)
+        record_redemption(coupon)
+        with self.assertRaises(ValidationError):
+            record_redemption(coupon)
+        self.assertEqual(CouponRedemption.objects.filter(coupon=coupon).count(), 1)
+
+    def test_coupon_product_restriction_only_discounts_match(self):
+        """A product-restricted coupon discounts only that product."""
+        _, variant_a = _make_product(
+            name="Kettle A", slug="kettle-a", sku="KTL-A", price="5000.00"
+        )
+        _, variant_b = _make_product(
+            name="Iron B", slug="iron-b", sku="IRN-B", price="4000.00"
+        )
+        coupon = _make_coupon(
+            code="PROD",
+            discount_type="percent",
+            value="10.00",
+            applies_to_products=[variant_a.product],
+        )
+        data_a = get_effective_price(variant_a, coupon=coupon)
+        data_b = get_effective_price(variant_b, coupon=coupon)
+        self.assertEqual(data_a["coupon_discount"], "500.00")
+        self.assertEqual(data_b["coupon_discount"], "0.00")
+        self.assertEqual(data_b["price"], "4000.00")
+
+    def test_coupon_category_restriction_discounts_matching_category(self):
+        """A category-restricted coupon discounts only that category's products."""
+        other_cat, _ = Category.objects.get_or_create(
+            name="Small Appliances", slug="small-appliances"
+        )
+        _, variant_a = _make_product(
+            name="Kettle C", slug="kettle-c", sku="KTL-C", price="5000.00"
+        )
+        _, variant_b = _make_product(
+            name="Fryer",
+            slug="fryer-c",
+            sku="FRY-C",
+            price="7000.00",
+            category=other_cat,
+        )
+        coupon = _make_coupon(
+            code="CAT",
+            discount_type="percent",
+            value="10.00",
+            applies_to_categories=[variant_a.product.category],
+        )
+        data_a = get_effective_price(variant_a, coupon=coupon)
+        data_b = get_effective_price(variant_b, coupon=coupon)
+        self.assertEqual(data_a["coupon_discount"], "500.00")
+        self.assertEqual(data_b["coupon_discount"], "0.00")
+
+    def test_coupon_code_normalized_to_uppercase(self):
+        """Submitting a lowercase, padded coupon code is normalized on save."""
+        _, variant = _make_product(price="5000.00")
+        self.client.force_authenticate(user=_make_admin())
+        response = self.client.post(
+            URLS["admin_coupons"],
+            {
+                "code": " elf20 ",
+                "discount_type": "percent",
+                "value": "20.00",
+                "starts_at": timezone.now().isoformat(),
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["code"], "ELF20")
+        result = get_effective_price(variant, coupon=Coupon.objects.get(code="ELF20"))
+        self.assertEqual(result["coupon_discount"], "1000.00")
+
+    def test_coupon_code_case_insensitive_uniqueness(self):
+        """A coupon code differing only by case is rejected."""
+        Coupon.objects.create(
+            code="SAVE20",
+            discount_type="percent",
+            value="20.00",
+            starts_at=timezone.now() - timedelta(days=1),
+        )
+        self.client.force_authenticate(user=_make_admin())
+        response = self.client.post(
+            URLS["admin_coupons"],
+            {
+                "code": "save20",
+                "discount_type": "percent",
+                "value": "10.00",
+                "starts_at": timezone.now().isoformat(),
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class OnSaleCollectionTests(APITestCase):
@@ -790,6 +943,15 @@ class PublicApiTests(APITestCase):
     def test_effective_price_endpoint_404_for_unknown_variant(self):
         """An unknown variant pk returns 404."""
         url = reverse("api:promotions:variant-effective-price", args=[999999])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_effective_price_endpoint_404_for_inactive_variant(self):
+        """An inactive (hidden) variant returns 404 rather than a price."""
+        _, variant = _make_product(price="5000.00")
+        variant.is_active = False
+        variant.save()
+        url = reverse("api:promotions:variant-effective-price", args=[variant.pk])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
