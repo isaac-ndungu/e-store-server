@@ -16,7 +16,7 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
@@ -63,11 +63,44 @@ class LoginView(TokenObtainPairView):
     Public (``AllowAny``) by design — login precedes authentication.
     Rate-limited with the dedicated ``auth_login`` scope to blunt brute-force
     guessing of passwords.
+
+    On a successful login any guest cart carried by the ``X-Session-Key``
+    header is merged into the user's cart, so items added before
+    authentication are not lost.
     """
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "auth_login"
+
+    def post(self, request, *args, **kwargs):
+        """Authenticate the user and adopt any preceding guest cart.
+
+        The authenticated ``user`` is read from the login serializer (the
+        JWT backend stores it there, not on ``request.user``), then any guest
+        cart carried by the ``X-Session-Key`` header is merged in.
+
+        Args:
+            request: the POST request with credentials and an optional
+                ``X-Session-Key`` header.
+
+        Returns:
+            Response: the token pair plus the user payload.
+        """
+        serializer = self.get_serializer(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError as exc:
+            raise InvalidToken(exc.args[0]) from exc
+
+        user = serializer.user
+        session_key = request.headers.get("X-Session-Key", "").strip() or None
+        if user is not None and session_key:
+            from apps.cart.services import merge_guest_cart
+
+            merge_guest_cart(user, session_key)
+
+        return Response(serializer.validated_data, status=status.HTTP_200_OK)
 
 
 class RefreshView(TokenRefreshView):

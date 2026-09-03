@@ -39,9 +39,9 @@ def _money(value):
     return value if isinstance(value, Decimal) else Decimal(value)
 
 
-# ---------------------------------------------------------------------------
+# 
 # Cart retrieval / creation
-# ---------------------------------------------------------------------------
+# 
 
 
 def get_or_create_cart(user=None, session_key=None):
@@ -101,9 +101,74 @@ def _validate_cart_coupon(cart):
         cart.save(update_fields=["coupon", "updated_at"])
 
 
-# ---------------------------------------------------------------------------
+def merge_guest_cart(user, session_key):
+    """Adopt a guest cart into a user's authenticated cart.
+
+    On login, the shopper expects the items they added as a guest to carry
+    across.  Guest lines are merged into the user's cart, summing quantities
+    for lines that reference the same variant or bundle; the guest coupon is
+    carried over only when the user cart has none and it still validates
+    against the merged cart.  The guest cart row is then removed so it cannot
+    be addressed again.
+
+    Args:
+        user (User): the authenticated user adopting the cart.
+        session_key (str | None): the guest session key, or None to skip.
+
+    Returns:
+        Cart: the user's cart after any merge.
+    """
+    if not session_key:
+        user_cart, _created = Cart.objects.get_or_create(
+            user=user, defaults={"user": user}
+        )
+        return user_cart
+
+    guest_cart = Cart.objects.filter(session_key=session_key).first()
+    if guest_cart is None:
+        user_cart, _created = Cart.objects.get_or_create(
+            user=user, defaults={"user": user}
+        )
+        return user_cart
+
+    user_cart, _created = Cart.objects.get_or_create(user=user, defaults={"user": user})
+
+    guest_items = list(guest_cart.items.all())
+    for guest_item in guest_items:
+        if guest_item.variant_id is not None:
+            existing = CartItem.objects.filter(
+                cart=user_cart, variant_id=guest_item.variant_id
+            ).first()
+        elif guest_item.bundle_id is not None:
+            existing = CartItem.objects.filter(
+                cart=user_cart, bundle_id=guest_item.bundle_id
+            ).first()
+        else:
+            continue
+
+        if existing:
+            existing.quantity = existing.quantity + guest_item.quantity
+            existing.save(update_fields=["quantity", "added_at"])
+        else:
+            CartItem.objects.create(
+                cart=user_cart,
+                variant_id=guest_item.variant_id,
+                bundle_id=guest_item.bundle_id,
+                quantity=guest_item.quantity,
+            )
+
+    if user_cart.coupon_id is None and guest_cart.coupon_id is not None:
+        user_cart.coupon = guest_cart.coupon
+        user_cart.save(update_fields=["coupon", "updated_at"])
+        _validate_cart_coupon(user_cart)
+
+    guest_cart.delete()
+    return user_cart
+
+
+
 # Cart item management
-# ---------------------------------------------------------------------------
+
 
 
 def add_item(cart, *, variant_id=None, bundle_id=None, quantity=1):
@@ -198,9 +263,9 @@ def remove_item(cart, item_id):
     item.delete()
 
 
-# ---------------------------------------------------------------------------
+
 # Coupon management
-# ---------------------------------------------------------------------------
+
 
 
 def apply_coupon(cart, code, user=None):
@@ -247,9 +312,9 @@ def remove_coupon(cart):
         cart.save(update_fields=["coupon", "updated_at"])
 
 
-# ---------------------------------------------------------------------------
+
 # Cart totals computation
-# ---------------------------------------------------------------------------
+
 
 
 def compute_cart_totals(cart):
@@ -518,9 +583,9 @@ def _line_subtotal_sum(cart):
     return total
 
 
-# ---------------------------------------------------------------------------
+
 # Validation helpers
-# ---------------------------------------------------------------------------
+
 
 
 def _validate_variant(variant_id, quantity):
@@ -600,9 +665,8 @@ def _get_owned_item(cart, item_id):
     return item
 
 
-# ---------------------------------------------------------------------------
+
 # Wishlist services
-# ---------------------------------------------------------------------------
 
 
 def add_to_wishlist(user, product_id):

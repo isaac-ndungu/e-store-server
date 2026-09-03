@@ -25,6 +25,7 @@ from apps.cart.services import (
     compute_cart_totals,
     get_or_create_cart,
     list_wishlist,
+    merge_guest_cart,
     remove_coupon,
     remove_from_wishlist,
     remove_item,
@@ -193,6 +194,80 @@ class CartCreationTests(APITestCase):
         cart.save(update_fields=["coupon"])
         retrieved = get_or_create_cart(user=user)
         self.assertIsNone(retrieved.coupon_id)
+
+
+class MergeGuestCartTests(APITestCase):
+    """Exercises adopting a guest cart into a user's cart on login."""
+
+    def setUp(self):
+        cache.clear()
+        self.user = _make_user()
+        _, self.variant = _make_product()
+        _stock_variant(self.variant)
+
+    def test_no_session_key_returns_user_cart(self):
+        """With no session key the user cart is returned untouched."""
+        cart = merge_guest_cart(self.user, None)
+        self.assertEqual(cart.user_id, self.user.pk)
+        self.assertEqual(cart.items.count(), 0)
+
+    def test_no_guest_cart_returns_user_cart(self):
+        """With no matching guest cart the user cart is returned untouched."""
+        cart = merge_guest_cart(self.user, "missing-session")
+        self.assertEqual(cart.user_id, self.user.pk)
+        self.assertEqual(cart.items.count(), 0)
+
+    def test_guest_items_transfer_to_user_cart(self):
+        """Guest lines are adopted into the user's cart on merge."""
+        guest_cart = get_or_create_cart(session_key="guest-1")
+        add_item(guest_cart, variant_id=self.variant.pk, quantity=2)
+        merged = merge_guest_cart(self.user, "guest-1")
+        item = merged.items.get(variant_id=self.variant.pk)
+        self.assertEqual(item.quantity, 2)
+        self.assertFalse(get_or_create_cart(session_key="guest-1").items.exists())
+
+    def test_duplicate_lines_are_summed(self):
+        """A guest line matching an existing user line sums quantities."""
+        user_cart = get_or_create_cart(user=self.user)
+        add_item(user_cart, variant_id=self.variant.pk, quantity=1)
+        guest_cart = get_or_create_cart(session_key="guest-2")
+        add_item(guest_cart, variant_id=self.variant.pk, quantity=3)
+        merged = merge_guest_cart(self.user, "guest-2")
+        self.assertEqual(merged.items.count(), 1)
+        item = merged.items.get(variant_id=self.variant.pk)
+        self.assertEqual(item.quantity, 4)
+
+    def test_guest_cart_row_is_removed(self):
+        """The adopted guest cart row is deleted after the merge."""
+        guest_cart = get_or_create_cart(session_key="guest-3")
+        add_item(guest_cart, variant_id=self.variant.pk, quantity=1)
+        merge_guest_cart(self.user, "guest-3")
+        from apps.cart.models import Cart
+
+        self.assertFalse(Cart.objects.filter(session_key="guest-3").exists())
+
+    def test_guest_coupon_adopted_when_user_cart_has_none(self):
+        """A valid guest coupon carries over when the user cart has none."""
+        coupon = _make_coupon(code="ADOPT10")
+        guest_cart = get_or_create_cart(session_key="guest-4")
+        add_item(guest_cart, variant_id=self.variant.pk, quantity=1)
+        guest_cart.coupon = coupon
+        guest_cart.save(update_fields=["coupon"])
+        merged = merge_guest_cart(self.user, "guest-4")
+        self.assertEqual(merged.coupon_id, coupon.pk)
+
+    def test_user_coupon_is_not_overridden(self):
+        """The user's existing coupon wins over a guest coupon."""
+        user_coupon = _make_coupon(code="USERCOUP")
+        guest_coupon = _make_coupon(code="GUESTCOP")
+        user_cart = get_or_create_cart(user=self.user)
+        user_cart.coupon = user_coupon
+        user_cart.save(update_fields=["coupon"])
+        guest_cart = get_or_create_cart(session_key="guest-5")
+        guest_cart.coupon = guest_coupon
+        guest_cart.save(update_fields=["coupon"])
+        merged = merge_guest_cart(self.user, "guest-5")
+        self.assertEqual(merged.coupon_id, user_coupon.pk)
 
 
 class CartItemServiceTests(APITestCase):
@@ -599,6 +674,27 @@ class CartApiTests(APITestCase):
             HTTP_X_SESSION_KEY="guest-session-xyz",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_login_merges_guest_cart(self):
+        """Logging in with a session key adopts the guest cart items."""
+        self.client.post(
+            reverse("api:cart:cart-items"),
+            {"variant_id": self._variant.pk, "quantity": 2},
+            format="json",
+            HTTP_X_SESSION_KEY="merge-session-1",
+        )
+        login_url = reverse("api:accounts:login")
+        response = self.client.post(
+            login_url,
+            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            format="json",
+            HTTP_X_SESSION_KEY="merge-session-1",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
+        cart_response = self.client.get(reverse("api:cart:cart"))
+        self.assertEqual(cart_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(cart_response.data["item_count"], 2)
 
     def test_add_item_no_session_no_auth(self):
         """An anonymous request without session/auth returns 400."""
