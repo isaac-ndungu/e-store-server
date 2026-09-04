@@ -89,6 +89,49 @@ def validate_phone_number(value):
     return normalized
 
 
+def mask_phone(value):
+    """Return a phone number with all but the last two digits masked.
+
+    Used before persisting PII into audit/log tables so a full number is never
+    stored in cleartext. A short or non-E.164 value is masked defensively by
+    keeping only the trailing two characters.
+
+    Args:
+        value (str): the phone number to mask.
+
+    Returns:
+        str: the masked number, e.g. ``+2547*****31``.
+    """
+    text = value.strip() if value else ""
+    if len(text) <= 2:
+        return "*" * len(text)
+    return f"{text[:4]}{'*' * (len(text) - 6)}{text[-2:]}"
+
+
+def mask_email(value):
+    """Return an email with the local part masked, preserving the domain.
+
+    Used before persisting PII into audit/log tables. The domain is kept so the
+    address remains distinguishable for operational filtering while the local
+    part (the identifying portion) is masked.
+
+    Args:
+        value (str): the email address to mask.
+
+    Returns:
+        str: the masked address, e.g. ``u***r@domain.com``.
+    """
+    text = value.strip() if value else ""
+    if "@" not in text:
+        return text
+    local, _, domain = text.partition("@")
+    if not local:
+        return text
+    if len(local) <= 2:
+        return f"{'*' * len(local)}@{domain}"
+    return f"{local[0]}{'*' * (len(local) - 2)}{local[-1]}@{domain}"
+
+
 def register_user(email, username, password, phone_number):
     """Create and return a new user after validating the inputs.
 

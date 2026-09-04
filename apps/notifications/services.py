@@ -4,7 +4,7 @@ from decouple import config
 from django.core.cache import cache
 from rest_framework import serializers
 
-from apps.accounts.services import validate_phone_number
+from apps.accounts.services import mask_email, mask_phone, validate_phone_number
 from apps.notifications.models import NotificationLog
 
 logger = logging.getLogger(__name__)
@@ -208,7 +208,7 @@ def send_sms(
     log = NotificationLog.objects.create(
         channel="sms",
         purpose=purpose,
-        recipient=recipient,
+        recipient=mask_phone(recipient),
         message=log_message,
         sent_by=sent_by,
         idempotency_key=idempotency_key,
@@ -300,7 +300,7 @@ def send_email(
     log = NotificationLog.objects.create(
         channel="email",
         purpose=purpose,
-        recipient=recipient,
+        recipient=mask_email(recipient),
         message=f"[Subject] {subject}\n\n{body[:500]}",
         sent_by=sent_by,
     )
@@ -318,7 +318,7 @@ def send_email(
             provider_response={"result": result},
         )
     except OSError as exc:
-        logger.exception("Email send failed for %s", recipient)
+        logger.exception("Email send failed for %s", mask_email(recipient))
         log.update_status(
             "failed",
             error_message=str(exc),

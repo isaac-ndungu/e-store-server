@@ -92,7 +92,7 @@ class SendSmsServiceTests(APITestCase):
         mock_provider.assert_called_once()
         self.assertEqual(NotificationLog.objects.count(), 1)
         self.assertEqual(log.status, "sent")
-        self.assertEqual(log.recipient, "+254712345678")
+        self.assertEqual(log.recipient, "+254*******78")
         self.assertEqual(log.message, "Hello from the platform")
         self.assertEqual(log.purpose, "transactional")
         self.assertEqual(log.provider_message_id, "ATXid_12345")
@@ -254,7 +254,7 @@ class SendTestSMSEndpointTests(APITestCase):
         response = self.client.post(SEND_TEST_URL, self.payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["status"], "sent")
-        self.assertEqual(response.data["recipient"], "+254712345678")
+        self.assertEqual(response.data["recipient"], "+254*******78")
         self.assertEqual(response.data["purpose"], "test")
         log = NotificationLog.objects.get()
         self.assertEqual(log.sent_by, self.staff)
@@ -396,7 +396,7 @@ class NotificationLogEndpointTests(APITestCase):
         NotificationLog.objects.create(
             channel="sms",
             purpose="otp",
-            recipient="+254712345678",
+            recipient="+254*******78",
             message="Your code is 123456.",
             status="sent",
             provider_message_id="id_a",
@@ -405,7 +405,7 @@ class NotificationLogEndpointTests(APITestCase):
         NotificationLog.objects.create(
             channel="sms",
             purpose="order_update",
-            recipient="+254700000000",
+            recipient="+254*******00",
             message="Your order is out for delivery.",
             status="failed",
             provider_message_id="",
@@ -437,7 +437,7 @@ class NotificationLogEndpointTests(APITestCase):
         response = self.client.get(LOG_LIST_URL, {"recipient": "+254712345678"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
-        self.assertEqual(response.data["results"][0]["recipient"], "+254712345678")
+        self.assertEqual(response.data["results"][0]["recipient"], "+254*******78")
 
     def test_staff_can_filter_by_status(self):
         """Logs can be filtered by status."""
@@ -659,7 +659,7 @@ class EmailServiceTests(APITestCase):
         )
         self.assertEqual(log.channel, "email")
         self.assertEqual(log.status, "sent")
-        self.assertEqual(log.recipient, "ops@example.com")
+        self.assertEqual(log.recipient, "o*s@example.com")
         self.assertEqual(NotificationLog.objects.filter(channel="email").count(), 1)
         mock_send_mail.assert_called_once()
 
@@ -849,8 +849,8 @@ class LowStockAlertTests(APITestCase):
         logs = notify_low_stock(_Variant(), _Warehouse(), quantity=3, threshold=5)
 
         recipients = {log.recipient for log in logs}
-        self.assertIn("+254712345678", recipients)
-        self.assertIn("+254700111222", recipients)
+        self.assertIn("+254*******78", recipients)
+        self.assertIn("+254*******22", recipients)
         self.assertNotIn("", recipients)
         self.assertEqual(len(logs), 2)
 
@@ -905,7 +905,7 @@ class ComposableFilterTests(APITestCase):
         NotificationLog.objects.create(
             channel="sms",
             purpose="otp",
-            recipient="+254712345678",
+            recipient="+254*******78",
             message="OTP",
             status="sent",
             sent_by=self.staff,
@@ -913,7 +913,7 @@ class ComposableFilterTests(APITestCase):
         NotificationLog.objects.create(
             channel="sms",
             purpose="order_update",
-            recipient="+254700000000",
+            recipient="+254*******00",
             message="Order",
             status="failed",
             error_message="rejected",

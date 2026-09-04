@@ -1,4 +1,3 @@
-
 from apps.notifications.models import NotificationLog
 
 
@@ -29,7 +28,10 @@ def get_notification_logs(recipient=None, channel=None, status=None, purpose=Non
     """
     qs = _base_queryset()
     if recipient:
-        qs = qs.filter(recipient=recipient)
+        from apps.accounts.services import mask_email, mask_phone
+
+        masked = mask_email(recipient) if "@" in recipient else mask_phone(recipient)
+        qs = qs.filter(recipient=masked)
     if channel:
         qs = qs.filter(channel=channel)
     if status:
