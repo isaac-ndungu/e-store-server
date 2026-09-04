@@ -52,11 +52,36 @@ _ALLOWED_TRANSITIONS = {
     "returned": set(),
 }
 
-# Payment methods that require OTP verification of the contact number.
-_OTP_REQUIRING_PAYMENT_METHODS = {"cod"}
-
 # Amount of time a verification code remains valid (minutes).
 _OTP_EXPIRY_MINUTES_DEFAULT = 10
+
+
+def _validate_payment_method(payment_method):
+    """Reject a payment method that is not enabled or has no completion path.
+
+    A method must be both listed in the site's enabled payment methods and be
+    completable — COD via OTP verification, a provider method via an
+    operational gateway. Availability is delegated to the payment adapter so
+    the moment a gateway is wired in, the method comes alive here without
+    further changes.
+
+    Args:
+        payment_method (str): the payment method key.
+
+    Raises:
+        ValidationError: if the method is disabled or not implemented.
+    """
+    from apps.orders.payments import is_payment_method_available
+
+    enabled = SiteConfig.load().settings.get("payment_methods", [])
+    if payment_method not in enabled:
+        raise ValidationError(
+            f"Payment method '{payment_method}' is not enabled on this store."
+        )
+    if not is_payment_method_available(payment_method):
+        raise ValidationError(
+            f"Payment method '{payment_method}' is not available yet."
+        )
 
 
 def _money(value):
@@ -150,6 +175,33 @@ def transition_order(order, to_status, *, changed_by=None, note=""):
     return order
 
 
+def _cart_requires_shipping(items):
+    """Return whether any cart line is a physical deliverable.
+
+    A line needs a fulfilment route when it holds a variant of a physical
+    product or a bundle that contains at least one physical component. Digital
+    and service lines alone can be fulfilled without a delivery zone.
+
+    Args:
+        items (list[CartItem]): the cart lines to inspect.
+
+    Returns:
+        bool: True when any line needs physical delivery.
+    """
+    for item in items:
+        if item.bundle_id is not None:
+            targets = item.bundle.items.select_related("product").values_list(
+                "product__product_type", flat=True
+            )
+            if "physical" in targets:
+                return True
+            continue
+        if getattr(item.variant, "product", None) is not None:
+            if item.variant.product.product_type == "physical":
+                return True
+    return False
+
+
 def create_order_from_cart(
     *,
     cart,
@@ -182,9 +234,10 @@ def create_order_from_cart(
             account phone number.
         shipping_address (Address | None): the delivery address, if any.
         delivery_zone_id (int | None): the delivery zone used to price and
-            route shipping. When omitted a no-zone order is created with zero
-            shipping (only valid for non-physical or pick-up scenarios).
+            route shipping. Required when the cart contains physical items so
+            a fulfilment route is never guessed later.
         payment_method (str): the payment method (``cod``, ``mpesa``, etc.).
+            Must be listed in the site's enabled payment methods.
         email (str): the optional order contact email.
         notes (str): the optional order memo.
 
@@ -193,8 +246,9 @@ def create_order_from_cart(
 
     Raises:
         ValidationError: if the cart is empty, the phone is invalid, the
-            delivery zone is missing for a shipping-required order, or stock
-            is insufficient for any line.
+            payment method is not enabled, the delivery zone is missing for a
+            shipment of physical items or is inactive, or stock is
+            insufficient for any line.
     """
     phone = _normalize_phone(phone)
     items = list(cart.items.select_related("variant__product", "bundle"))
@@ -204,6 +258,7 @@ def create_order_from_cart(
     order_payment_method = payment_method or SiteConfig.load().settings.get(
         "default_payment_method", "cod"
     )
+    _validate_payment_method(order_payment_method)
 
     totals = compute_cart_totals(cart)
     subtotal = Decimal(totals["subtotal"])
@@ -212,6 +267,12 @@ def create_order_from_cart(
     shipping_total = Decimal("0.00")
     shipping_tax_rate = Decimal("0.00")
     shipping_tax_amount = Decimal("0.00")
+
+    if _cart_requires_shipping(items) and not delivery_zone_id:
+        raise ValidationError(
+            "A delivery zone is required when the cart contains physical items "
+            "so a fulfilment route is never guessed later."
+        )
 
     if delivery_zone_id:
         from apps.shipping.models import DeliveryZone
@@ -341,6 +402,7 @@ def _create_variant_order_item(order, cart_item, delivery_zone):
         unit_price=unit_price,
         quantity=quantity,
         total_price=total_price,
+        applied_discount=line["line_discount"],
         tax_rate=tax_rate,
         tax=tax,
         fulfillment_warehouse=warehouse,
@@ -535,6 +597,7 @@ def confirm_order_from_verification(order, *, user=None):
             be fulfilled because it was released in the interim.
     """
     from apps.inventory.services import fulfill_reservation
+    from apps.promotions.services import record_redemption
 
     with transaction.atomic():
         if order.status != "pending":
@@ -556,7 +619,36 @@ def confirm_order_from_verification(order, *, user=None):
                     "re-hold stock before confirming."
                 )
 
+        if order.coupon_id is not None:
+            record_redemption(order.coupon, user=order.user, order=order)
+
         return transition_order(order, "confirmed", changed_by=user)
+
+
+def apply_staff_status(order, to_status, *, changed_by, note=""):
+    """Apply a staff-initiated order status change with the right semantics.
+
+    Most transitions are a plain status advance via ``transition_order``, but
+    confirming must run through ``confirm_order_from_verification`` so held
+    stock is really fulfilled (deducted and serial units assigned) rather than
+    just relabelled. A staff member confirming therefore follows the same
+    rigorous path as an OTP-verified confirmation.
+
+    Args:
+        order (Order): the order to transition.
+        to_status (str): the target status.
+        changed_by (User): the acting staff user, recorded in the audit trail.
+        note (str): an optional free-text note for the audit trail.
+
+    Returns:
+        Order: the updated order.
+
+    Raises:
+        ValidationError: if the transition is not allowed.
+    """
+    if to_status == "confirmed":
+        return confirm_order_from_verification(order, user=changed_by)
+    return transition_order(order, to_status, changed_by=changed_by, note=note)
 
 
 def verify_order_otp(order, otp_code):
@@ -620,13 +712,17 @@ def verify_order_otp(order, otp_code):
 
 
 def resend_order_otp(order):
-    """Re-send and reset the OTP for a COD order.
+    """Send or re-send the OTP for a pending COD order.
 
     A new code is generated and persisted to the order's verification record,
-    and the expiry clock restarts. If no verification record exists one is
-    created. The SMS send is delegated to the notifications service; the
-    message body sent to the provider carries the live code while the audit
-    log masks it.
+    and the expiry clock restarts. A resend (any send after the first) is
+    subject to a cooldown and a total resend cap so an attacker who has the
+    order id and phone cannot endlessly extend the window or reset the
+    brute-force attempt counter; ``attempts`` is deliberately preserved across
+    resends so the bounded-verification guarantee holds. The first send creates
+    the record with no cooldown. The SMS send is delegated to the notifications
+    service; the message body sent to the provider carries the live code while
+    the audit log masks it.
 
     Args:
         order (Order): the COD order.
@@ -635,7 +731,9 @@ def resend_order_otp(order):
         OrderVerification: the updated verification record.
 
     Raises:
-        ValidationError: if the order is not pending or is not a COD order.
+        ValidationError: if the order is not pending, is not a COD order, is
+            already verified/expired/failed, or the cooldown or resend cap is
+            exceeded.
     """
     if order.status != "pending":
         raise ValidationError("Cannot resend a code for a non-pending order.")
@@ -644,18 +742,44 @@ def resend_order_otp(order):
 
     new_code = _generate_otp()
 
-    verification, _created = OrderVerification.objects.get_or_create(
+    verification, created = OrderVerification.objects.get_or_create(
         order=order,
         defaults={
             "otp_code": new_code,
             "phone_number": order.phone,
+            "resend_count": 1,
         },
     )
+
+    if verification.status == "verified":
+        raise ValidationError("This order is already verified.")
+    if verification.status in ("expired", "failed"):
+        raise ValidationError(
+            "This verification can no longer be used; request a fresh code "
+            "through customer support."
+        )
+
+    if not created:
+        cooldown_remaining = (
+            verification.RESEND_COOLDOWN_SECONDS
+            - (timezone.now() - verification.sent_at).total_seconds()
+        )
+        if cooldown_remaining > 0:
+            raise ValidationError(
+                f"Please wait {int(cooldown_remaining) + 1} seconds before "
+                "requesting another code."
+            )
+        if verification.resend_count >= verification.MAX_RESENDS:
+            raise ValidationError(
+                "Too many codes have been sent for this order. Please contact "
+                "customer support."
+            )
+
     verification.otp_code = new_code
     verification.status = "pending"
-    verification.attempts = 0
     verification.sent_at = timezone.now()
-    verification.save(update_fields=["otp_code", "status", "attempts", "sent_at"])
+    verification.resend_count = verification.resend_count + 1
+    verification.save(update_fields=["otp_code", "status", "sent_at", "resend_count"])
 
     from apps.notifications.services import send_otp_sms
 
@@ -674,4 +798,6 @@ def requires_otp_for_payment(order):
             path already proves the number (e.g. M-Pesa STK Push) or
             verification is skipped.
     """
-    return order.payment_method in _OTP_REQUIRING_PAYMENT_METHODS
+    from apps.orders.payments import requires_otp_for_payment_method
+
+    return requires_otp_for_payment_method(order.payment_method)

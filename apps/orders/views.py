@@ -28,22 +28,26 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.accounts.services import validate_phone_number
+from apps.accounts.permissions import IsManagerOrSupport
 from apps.cart.services import get_or_create_cart
 from apps.orders.selectors import (
-    get_order_by_phone,
+    get_order_by_token,
+    get_order_for_staff,
     get_order_for_user,
     list_orders_for_user,
 )
 from apps.orders.serializers import (
+    CancelOrderSerializer,
     OrderCreateSerializer,
     OrderDetailSerializer,
     OrderListSerializer,
     OrderStatusHistorySerializer,
+    OrderStatusUpdateSerializer,
     OrderVerificationSerializer,
     OTPVerifySerializer,
 )
 from apps.orders.services import (
+    apply_staff_status,
     cancel_pending_order,
     create_order_from_cart,
     requires_otp_for_payment,
@@ -106,48 +110,34 @@ def _resolve_cart(request):
     return get_or_create_cart(session_key=session_key)
 
 
-def _resolve_phone_from_query(request):
-    """Return a validated E.164 phone from the request query, or ``None``.
-
-    Args:
-        request: the incoming HTTP request.
-
-    Returns:
-        str | None: the validated phone number, or None when absent/invalid.
-    """
-    phone = request.query_params.get("phone", "")
-    if not phone:
-        return None
-    try:
-        return validate_phone_number(phone)
-    except DjangoValidationError:
-        return None
-
-
-def _resolve_order(request, order_id):
+def _resolve_order(request, order_ref):
     """Return the caller's order or raise HTTP 404.
 
-    An authenticated caller addresses their own order. A guest addresses an
-    order only when the request's ``phone`` query parameter matches the
-    order's contact number, so a caller cannot enumerate another person's
-    orders by guessing ids. Both a missing id and another caller's id raise
-    404.
+    An authenticated caller addresses their own order by id. A guest addresses
+    an order by its unguessable ``lookup_token`` (returned at creation) — no
+    id guessing and no phone number in the request. Both a missing reference
+    and another caller's reference raise 404, so nothing reveals whether an
+    order exists.
 
     Args:
         request: the incoming HTTP request.
-        order_id (int): the order id.
+        order_ref (str): an order id (authenticated) or lookup token (guest).
 
     Returns:
         Order: the resolved order.
+
+    Raises:
+        HTTPError: ``404`` when the order is absent or not the caller's.
     """
     if request.user.is_authenticated:
-        order = get_order_for_user(request.user, order_id)
-    else:
-        phone = _resolve_phone_from_query(request)
-        if phone:
-            order = get_order_by_phone(order_id, phone)
-        else:
+        try:
+            order_id = int(order_ref)
+        except TypeError, ValueError:
             order = None
+        else:
+            order = get_order_for_user(request.user, order_id)
+    else:
+        order = get_order_by_token(order_ref)
     if order is None:
         raise Http404
     return order
@@ -262,9 +252,16 @@ class OrderListCreateView(APIView):
                 notes=data.get("notes", ""),
             )
 
+            from apps.orders.payments import (
+                initiate_payment,
+                is_payment_method_available,
+            )
+
             otp_required = requires_otp_for_payment(order)
             if otp_required:
                 resend_order_otp(order)
+            elif is_payment_method_available(order.payment_method):
+                initiate_payment(order)
 
             serializer = OrderDetailSerializer(order)
             response_data = {
@@ -307,37 +304,145 @@ class OrderDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
-    def get(self, request, order_id):
+    def get(self, request, order_ref):
         """Retrieve the owned order with full detail.
 
         Args:
             request: the GET request.
-            order_id (int): the order id.
+            order_ref (str): the order id (authenticated) or lookup token
+                (guest).
 
         Returns:
             Response: the full order detail.
         """
-        order = _resolve_order(request, order_id)
+        order = _resolve_order(request, order_ref)
         serializer = OrderDetailSerializer(order)
         return Response(serializer.data)
 
-    def delete(self, request, order_id):
+    def delete(self, request, order_ref):
         """Cancel a pending order, releasing held stock.
 
         Args:
             request: the DELETE request.
-            order_id (int): the order id.
+            order_ref (str): the order id (authenticated) or lookup token
+                (guest).
 
         Returns:
             Response: ``200 OK`` with the cancelled order, or ``400`` if the
                 order is not pending.
         """
-        order = _resolve_order(request, order_id)
+        order = _resolve_order(request, order_ref)
         cancelled = _service_error_to_400(cancel_pending_order)(
             order,
             user=request.user if request.user.is_authenticated else None,
         )
         serializer = OrderDetailSerializer(cancelled)
+        return Response(serializer.data)
+
+
+class OrderCancelView(APIView):
+    """Cancel a pending order via an explicit cancel sub-resource.
+
+    Mirrors the DELETE on the detail view but as a POST under ``/cancel/``,
+    protected by an ``Idempotency-Key`` so a retried tap cannot re-process a
+    cancellation. Cancellation is naturally idempotent (only active
+    reservations are released and a non-pending order is rejected), but
+    requiring the key keeps client retry semantics predictable.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "order_write"
+
+    def post(self, request, order_ref):
+        """Cancel the caller's pending order.
+
+        Args:
+            request: the POST request carrying an ``Idempotency-Key``.
+            order_ref (str): the order id (authenticated) or lookup token
+                (guest).
+
+        Returns:
+            Response: ``200 OK`` with the cancelled order, or ``400`` for a
+                non-pending order or an invalid idempotency key, or ``404``
+                when the order is not owned by the caller.
+        """
+        from apps.core.idempotency import (
+            acquire_processing_lock,
+            read_cached_result,
+            release_processing_lock,
+            require_idempotency_key,
+            store_result,
+        )
+
+        key = require_idempotency_key(request)
+        user_pk = request.user.pk if request.user.is_authenticated else 0
+        cached = read_cached_result(user_pk, key)
+        if cached is not None:
+            return Response(cached["data"], status=cached["status"])
+        if not acquire_processing_lock(user_pk, key):
+            return Response(
+                {
+                    "detail": "A request with this Idempotency-Key is already in progress."
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            order = _resolve_order(request, order_ref)
+            input_serializer = CancelOrderSerializer(data=request.data)
+            input_serializer.is_valid(raise_exception=True)
+            cancelled = _service_error_to_400(cancel_pending_order)(
+                order,
+                user=request.user if request.user.is_authenticated else None,
+                note=input_serializer.validated_data.get("note", ""),
+            )
+            serializer = OrderDetailSerializer(cancelled)
+            store_result(user_pk, key, status.HTTP_200_OK, serializer.data)
+            return Response(serializer.data)
+        finally:
+            release_processing_lock(user_pk, key)
+
+
+class OrderStatusUpdateView(APIView):
+    """Advance an order's fulfilment status as a staff user.
+
+    Staff-only, restricted to fulfilment roles (manager/support). The acting
+    staff member names a target status and optional note; the shared service
+    validates the transition against the allowed graph and writes a
+    status-history row alongside it.
+    """
+
+    permission_classes = [IsManagerOrSupport]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "order_write"
+
+    def post(self, request, order_id):
+        """Transition an order to the requested status.
+
+        Args:
+            request: the POST request carrying ``to_status`` and an optional
+                ``note``.
+            order_id (int): the order id.
+
+        Returns:
+            Response: ``200 OK`` with the updated order, ``400`` for an
+                illegal transition, or ``404`` when the order does not exist.
+        """
+        from django.http import Http404
+
+        order = get_order_for_staff(order_id)
+        if order is None:
+            raise Http404
+        input_serializer = OrderStatusUpdateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        updated = _service_error_to_400(apply_staff_status)(
+            order,
+            data["to_status"],
+            changed_by=request.user,
+            note=data.get("note", ""),
+        )
+        serializer = OrderDetailSerializer(updated)
         return Response(serializer.data)
 
 
@@ -348,19 +453,20 @@ class OrderVerifyOTPView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_verify"
 
-    def post(self, request, order_id):
+    def post(self, request, order_ref):
         """Verify the order's OTP and confirm the order on success.
 
         Args:
             request: the POST request carrying ``otp_code``.
-            order_id (int): the order id.
+            order_ref (str): the order id (authenticated) or lookup token
+                (guest).
 
         Returns:
             Response: ``200 OK`` with the confirmed order on success, ``400``
                 for an invalid/expired/maxed-out code, or ``404`` when the
                 order is not owned by the caller.
         """
-        order = _resolve_order(request, order_id)
+        order = _resolve_order(request, order_ref)
         input_serializer = OTPVerifySerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         order, _verified = _service_error_to_400(verify_order_otp)(
@@ -377,19 +483,20 @@ class OrderResendOTPView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_otp_resend"
 
-    def post(self, request, order_id):
+    def post(self, request, order_ref):
         """Re-send and reset the OTP for a COD order.
 
         Args:
             request: the POST request.
-            order_id (int): the order id.
+            order_ref (str): the order id (authenticated) or lookup token
+                (guest).
 
         Returns:
             Response: ``200 OK`` with the updated verification state, ``400``
                 for a non-COD or non-pending order, or ``404`` when the order
                 is not owned by the caller.
         """
-        order = _resolve_order(request, order_id)
+        order = _resolve_order(request, order_ref)
         verification = _service_error_to_400(resend_order_otp)(order)
         serializer = OrderVerificationSerializer(verification)
         return Response(serializer.data)
@@ -402,16 +509,17 @@ class OrderStatusHistoryView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
-    def get(self, request, order_id):
+    def get(self, request, order_ref):
         """Return the order's status history.
 
         Args:
             request: the GET request.
-            order_id (int): the order id.
+            order_ref (str): the order id (authenticated) or lookup token
+                (guest).
 
         Returns:
             Response: the list of status transitions.
         """
-        order = _resolve_order(request, order_id)
+        order = _resolve_order(request, order_ref)
         serializer = OrderStatusHistorySerializer(order.status_history, many=True)
         return Response(serializer.data)
