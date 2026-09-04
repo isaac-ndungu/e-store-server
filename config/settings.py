@@ -41,6 +41,7 @@ THIRD_PARTY_APPS = [
     "rest_framework_simplejwt.token_blacklist",
     "django_filters",
     "corsheaders",
+    "drf_spectacular",
 ]
 
 
@@ -174,6 +175,42 @@ REST_FRAMEWORK = {
         "order_otp_resend": "5/min",
         "mpesa_callback": "500/min",
     },
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "E-Store API",
+    "DESCRIPTION": "Kenyan e-commerce platform for home appliances",
+    "VERSION": "1.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+    "SCHEMA_PATH_PREFIX": r"/api/v1/",
+    "TAGS": [
+        {"name": "core", "description": "Site configuration and health"},
+        {
+            "name": "accounts",
+            "description": "User registration, authentication, and addresses",
+        },
+        {"name": "notifications", "description": "SMS and notification logs"},
+        {
+            "name": "catalog",
+            "description": "Brands, categories, products, and variants",
+        },
+        {
+            "name": "inventory",
+            "description": "Warehouses, stock levels, and serial units",
+        },
+        {"name": "shipping", "description": "Delivery zones and shipping quotes"},
+        {
+            "name": "collections",
+            "description": "Product collections and smart collections",
+        },
+        {"name": "bundles", "description": "Product bundles"},
+        {"name": "promotions", "description": "Discounts and coupons"},
+        {"name": "cart", "description": "Shopping cart and wishlist"},
+        {"name": "orders", "description": "Order placement, status, and verification"},
+        {"name": "payments", "description": "M-Pesa payments and transactions"},
+    ],
 }
 
 
