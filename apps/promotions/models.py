@@ -230,11 +230,9 @@ class CouponRedemption(models.Model):
     """A record of a coupon having been used, for usage-limit accounting.
 
     ``user`` is nullable because a guest checkout (with no persisted account)
-    can still apply a coupon. The ``order`` the coupon was redeemed against is
-    deferred: it is added in a follow-up migration once the orders table
-    exists, because the orders app is built after this one and Django cannot
-    create a cross-app FK to a table that does not yet exist. Until then the
-    row holds the coupon, the optional user, and the redemption timestamp.
+    can still apply a coupon. ``order`` records which order the coupon was
+    redeemed against; it is nullable because redemption rows predate the
+    orders table's existence.
     """
 
     coupon = models.ForeignKey(
@@ -242,6 +240,13 @@ class CouponRedemption(models.Model):
     )
     user = models.ForeignKey(
         "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="coupon_redemptions",
+    )
+    order = models.ForeignKey(
+        "orders.Order",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,

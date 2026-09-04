@@ -172,11 +172,12 @@ class UserSerializer(serializers.ModelSerializer):
             "username",
             "phone_number",
             "phone_verified",
+            "role",
             "first_name",
             "last_name",
             "date_joined",
         ]
-        read_only_fields = ["id", "email", "phone_verified", "date_joined"]
+        read_only_fields = ["id", "email", "phone_verified", "role", "date_joined"]
 
     def validate_username(self, value):
         """Reject a username taken by another account.

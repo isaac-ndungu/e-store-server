@@ -993,3 +993,34 @@ class DeactivateAccountTests(APITestCase):
 
         reused = self.client.post(REFRESH_URL, {"refresh": refresh}, format="json")
         self.assertEqual(reused.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class PiiMaskingTests(APITestCase):
+    """Exercises PII masking helpers used before persisting audit data."""
+
+    def test_mask_phone_keeps_prefix_and_tail(self):
+        """mask_phone keeps a short prefix and the tail, masking the middle."""
+        from apps.accounts.services import mask_phone
+
+        self.assertEqual(mask_phone("+254712345678"), "+254*******78")
+        self.assertEqual(mask_phone("+254700000001"), "+254*******01")
+
+    def test_mask_phone_short_value(self):
+        """A short or empty value is fully masked without crashing."""
+        from apps.accounts.services import mask_phone
+
+        self.assertEqual(mask_phone(""), "")
+        self.assertEqual(mask_phone("12"), "**")
+
+    def test_mask_email_keeps_domain_and_edges(self):
+        """mask_email masks the local part but keeps the domain."""
+        from apps.accounts.services import mask_email
+
+        self.assertEqual(mask_email("ops@example.com"), "o*s@example.com")
+        self.assertEqual(mask_email("a@b.co"), "*@b.co")
+
+    def test_mask_email_no_at(self):
+        """An email without an @ is returned unchanged."""
+        from apps.accounts.services import mask_email
+
+        self.assertEqual(mask_email("notanemail"), "notanemail")

@@ -29,8 +29,37 @@ class User(AbstractUser):
     # it is never set by a client and is never auto-set at registration.
     phone_verified = models.BooleanField(default=False)
 
+    ROLE_CHOICES = (
+        ("customer", "Customer"),
+        ("manager", "Manager"),
+        ("support", "Support"),
+        ("analyst", "Analyst"),
+        ("courier", "Courier"),
+    )
+    # Role drives business-rule permissions (which endpoints a staff member may
+    # reach and what data they can act on). It is independent of ``is_staff``,
+    # which remains the coarse gate for Django's admin interface.
+    role = models.CharField(
+        max_length=12, choices=ROLE_CHOICES, default="customer", db_index=True
+    )
+
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username", "phone_number"]
+
+    def has_role(self, *roles):
+        """Return whether the user holds any of the given roles.
+
+        A superuser is considered to hold every role, so an operator with
+        ``is_superuser`` is never locked out of a role-gated action.
+
+        Args:
+            *roles (str): role keys to test against.
+
+        Returns:
+            bool: True when the user's role is among ``roles`` or the user is
+                a superuser.
+        """
+        return self.is_superuser or self.role in roles
 
     def __str__(self):
         """Return the login credential (email) for admin/trace output."""

@@ -594,7 +594,7 @@ def record_discount_redemption(discount):
         return Discount.objects.get(pk=locked.pk)
 
 
-def record_redemption(coupon, user=None):
+def record_redemption(coupon, user=None, order=None):
     """Record that a coupon has been used, enforcing its usage limits atomically.
 
     The coupon row is locked (``select_for_update``) and its limits are
@@ -605,6 +605,8 @@ def record_redemption(coupon, user=None):
     Args:
         coupon (Coupon): the coupon being redeemed.
         user (User | None): the redeeming user, when logged in.
+        order (Order | None): the order the coupon was redeemed against, when
+            it exists at redemption time (i.e. a confirmed order).
 
     Returns:
         CouponRedemption: the created redemption record.
@@ -629,4 +631,4 @@ def record_redemption(coupon, user=None):
             ).count()
             if used_by_user >= locked.usage_limit_per_user:
                 raise ValidationError("Coupon has already been used by this user.")
-        return CouponRedemption.objects.create(coupon=locked, user=user)
+        return CouponRedemption.objects.create(coupon=locked, user=user, order=order)
