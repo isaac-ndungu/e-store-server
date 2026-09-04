@@ -13,7 +13,7 @@ from django.core.exceptions import ValidationError
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
 from apps.accounts.models import User
 from apps.bundles.models import Bundle, BundleItem
@@ -487,7 +487,7 @@ class CartTotalsTests(APITestCase):
         self.assertEqual(totals["discount_total"], "500.00")
 
     def test_coupon_reduces_totals(self):
-        """An applied coupon reduces the total by the coupon amount."""
+        """A fixed coupon reduces the net goods subtotal, and total equals subtotal plus VAT."""
         _, variant = _make_product(price="10000.00")
         _stock_variant(variant)
         add_item(self.cart, variant_id=variant.pk, quantity=1)
@@ -499,11 +499,14 @@ class CartTotalsTests(APITestCase):
         self.cart.coupon = coupon
         self.cart.save(update_fields=["coupon"])
         totals = compute_cart_totals(self.cart)
+        self.assertEqual(totals["subtotal"], "9000.00")
         self.assertEqual(totals["coupon_discount"], "1000.00")
         self.assertEqual(totals["coupon_code"], "FLAT1000")
+        self.assertEqual(totals["vat_total"], "1440.00")
+        self.assertEqual(totals["total"], "10440.00")
 
     def test_coupon_percent_discount(self):
-        """A percentage coupon reduces the total by the correct amount."""
+        """A percentage coupon reduces the subtotal once; total is not double-discounted."""
         _, variant = _make_product(price="10000.00")
         _stock_variant(variant)
         add_item(self.cart, variant_id=variant.pk, quantity=1)
@@ -515,7 +518,28 @@ class CartTotalsTests(APITestCase):
         self.cart.coupon = coupon
         self.cart.save(update_fields=["coupon"])
         totals = compute_cart_totals(self.cart)
+        self.assertEqual(totals["subtotal"], "8000.00")
         self.assertEqual(totals["coupon_discount"], "2000.00")
+        self.assertEqual(totals["vat_total"], "1280.00")
+        self.assertEqual(totals["total"], "9280.00")
+
+    def test_coupon_nets_subtotal_without_double_counting(self):
+        """The coupon is not subtracted from ``total`` again after netting the subtotal."""
+        _, variant = _make_product(price="10000.00")
+        _stock_variant(variant)
+        add_item(self.cart, variant_id=variant.pk, quantity=1)
+        coupon = _make_coupon(
+            code="NET20",
+            discount_type="percent",
+            value="20.00",
+        )
+        self.cart.coupon = coupon
+        self.cart.save(update_fields=["coupon"])
+        totals = compute_cart_totals(self.cart)
+        self.assertEqual(
+            Decimal(totals["total"]),
+            Decimal(totals["subtotal"]) + Decimal(totals["vat_total"]),
+        )
 
     def test_vat_standard_rate(self):
         """Standard-rated items include 16% VAT in the breakdown."""
@@ -641,18 +665,17 @@ class CartApiTests(APITestCase):
         self.assertIn("subtotal", response.data)
 
     def test_get_cart_guest_with_session(self):
-        """A guest can retrieve their cart with the X-Session-Key header."""
-        response = self.client.get(
-            reverse("api:cart:cart"),
-            HTTP_X_SESSION_KEY="test-session-abc",
-        )
+        """An anonymous guest gets a cart keyed to their Django session."""
+        response = self.client.get(reverse("api:cart:cart"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("items", response.data)
 
-    def test_get_cart_no_session_no_auth(self):
-        """An anonymous request without a session key returns 400."""
+    def test_get_cart_anonymous_gets_empty_cart(self):
+        """An anonymous request is auto-issued a session and an empty cart."""
         response = self.client.get(reverse("api:cart:cart"))
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["item_count"], 0)
+        self.assertEqual(response.data["subtotal"], "0.00")
 
     def test_add_item_to_cart(self):
         """POST /cart/items/ adds a variant to the cart."""
@@ -666,44 +689,32 @@ class CartApiTests(APITestCase):
         self.assertIn("item_id", response.data)
 
     def test_add_item_guest(self):
-        """A guest can add items using the session key."""
+        """An anonymous guest can add items to their session cart."""
         response = self.client.post(
             reverse("api:cart:cart-items"),
             {"variant_id": self._variant.pk, "quantity": 1},
             format="json",
-            HTTP_X_SESSION_KEY="guest-session-xyz",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
     def test_login_merges_guest_cart(self):
-        """Logging in with a session key adopts the guest cart items."""
+        """Logging in adopts the items added to the same session as a guest."""
         self.client.post(
             reverse("api:cart:cart-items"),
             {"variant_id": self._variant.pk, "quantity": 2},
             format="json",
-            HTTP_X_SESSION_KEY="merge-session-1",
         )
         login_url = reverse("api:accounts:login")
         response = self.client.post(
             login_url,
             {"email": "buyer@example.com", "password": "StrongPass123!"},
             format="json",
-            HTTP_X_SESSION_KEY="merge-session-1",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
         cart_response = self.client.get(reverse("api:cart:cart"))
         self.assertEqual(cart_response.status_code, status.HTTP_200_OK)
         self.assertEqual(cart_response.data["item_count"], 2)
-
-    def test_add_item_no_session_no_auth(self):
-        """An anonymous request without session/auth returns 400."""
-        response = self.client.post(
-            reverse("api:cart:cart-items"),
-            {"variant_id": self._variant.pk, "quantity": 1},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_update_cart_item_quantity(self):
         """PATCH /cart/items/{id}/ updates the quantity."""
@@ -871,7 +882,7 @@ class WishlistApiTests(APITestCase):
 
 
 class GuestCartSessionIsolationTests(APITestCase):
-    """Exercises that guest carts are isolated by session key."""
+    """Exercises that guest carts are isolated by Django session."""
 
     def setUp(self):
         cache.clear()
@@ -879,45 +890,36 @@ class GuestCartSessionIsolationTests(APITestCase):
         _stock_variant(self._variant, quantity=100)
 
     def test_different_sessions_different_carts(self):
-        """Two different session keys produce separate carts."""
-        response_a = self.client.post(
+        """Two different browser sessions produce separate carts."""
+        client_a = APIClient()
+        client_b = APIClient()
+        response_a = client_a.post(
             reverse("api:cart:cart-items"),
             {"variant_id": self._variant.pk, "quantity": 1},
             format="json",
-            HTTP_X_SESSION_KEY="session-a",
         )
-        response_b = self.client.post(
+        response_b = client_b.post(
             reverse("api:cart:cart-items"),
             {"variant_id": self._variant.pk, "quantity": 2},
             format="json",
-            HTTP_X_SESSION_KEY="session-b",
         )
         self.assertEqual(response_a.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response_b.status_code, status.HTTP_201_CREATED)
 
-        cart_a = self.client.get(
-            reverse("api:cart:cart"),
-            HTTP_X_SESSION_KEY="session-a",
-        )
-        cart_b = self.client.get(
-            reverse("api:cart:cart"),
-            HTTP_X_SESSION_KEY="session-b",
-        )
+        cart_a = client_a.get(reverse("api:cart:cart"))
+        cart_b = client_b.get(reverse("api:cart:cart"))
         self.assertEqual(cart_a.data["item_count"], 1)
         self.assertEqual(cart_b.data["item_count"], 2)
 
     def test_guest_cannot_see_other_guest_cart(self):
-        """A guest with a different session key cannot access another's cart."""
+        """A guest with a different session cannot access another's cart."""
         self.client.post(
             reverse("api:cart:cart-items"),
             {"variant_id": self._variant.pk, "quantity": 1},
             format="json",
-            HTTP_X_SESSION_KEY="session-owner",
         )
-        response = self.client.get(
-            reverse("api:cart:cart"),
-            HTTP_X_SESSION_KEY="session-stranger",
-        )
+        stranger = APIClient()
+        response = stranger.get(reverse("api:cart:cart"))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["item_count"], 0)
 

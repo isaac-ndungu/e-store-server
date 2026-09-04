@@ -55,6 +55,7 @@ LOCAL_APPS = [
     "apps.bundles",
     "apps.promotions",
     "apps.cart",
+    "apps.orders",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -166,6 +167,10 @@ REST_FRAMEWORK = {
         "coupon_validate": "5/min",
         "admin": "300/min",
         "inventory_write": "30/min",
+        "order_write": "5/min",
+        "order_read": "30/min",
+        "order_verify": "10/min",
+        "order_otp_resend": "5/min",
     },
 }
 

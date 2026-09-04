@@ -1,5 +1,3 @@
-
-
 from django.db import models
 from django.db.models import Q
 from django.db.models.constraints import CheckConstraint
@@ -138,6 +136,13 @@ class SerialUnit(models.Model):
         on_delete=models.SET_NULL,
         related_name="serial_units",
     )
+    order_item = models.ForeignKey(
+        "orders.OrderItem",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="serial_units",
+    )
     received_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -179,6 +184,13 @@ class StockReservation(models.Model):
     expires_at = models.DateTimeField()
     released_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="active")
+    order_item = models.OneToOneField(
+        "orders.OrderItem",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="reservation",
+    )
 
     class Meta:
         indexes = [

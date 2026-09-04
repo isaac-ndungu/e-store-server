@@ -302,7 +302,9 @@ def receive_serial_units(*, variant, warehouse, serial_numbers, user=None):
     return units
 
 
-def create_reservation(*, variant, quantity, warehouse=None, user=None):
+def create_reservation(
+    *, variant, quantity, warehouse=None, user=None, order_item=None
+):
     """Hold ``quantity`` units of a variant for an in-flight order line.
 
     Runs under a ``select_for_update`` transaction. ``warehouse`` accepts a
@@ -315,6 +317,11 @@ def create_reservation(*, variant, quantity, warehouse=None, user=None):
     reservation so later fulfil/release touches exactly this reservation's
     units.
 
+    ``order_item`` links the reservation to the ``OrderItem`` it holds stock
+    for. It is set at checkout when the order line already exists so the
+    reservation can be released on cancellation or fulfilled on confirmation
+    by walking the order's lines rather than holding parallel bookkeeping.
+
     Args:
         variant (ProductVariant): the variant to reserve.
         quantity (int): the number of units to hold.
@@ -323,6 +330,8 @@ def create_reservation(*, variant, quantity, warehouse=None, user=None):
             to allow any active warehouse.
         user (User | None): unused for reservation creation (the reservation
             row is its own audit record).
+        order_item (OrderItem | None): the order item the reservation holds
+            stock for, if known at creation time.
 
     Returns:
         StockReservation: the created reservation.
@@ -415,6 +424,7 @@ def create_reservation(*, variant, quantity, warehouse=None, user=None):
             inventory=chosen,
             quantity=quantity,
             expires_at=expires_at,
+            order_item=order_item,
         )
         if units:
             SerialUnit.objects.filter(pk__in=[unit.pk for unit in units]).update(

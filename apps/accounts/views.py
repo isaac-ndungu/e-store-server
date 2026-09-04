@@ -77,12 +77,12 @@ class LoginView(TokenObtainPairView):
         """Authenticate the user and adopt any preceding guest cart.
 
         The authenticated ``user`` is read from the login serializer (the
-        JWT backend stores it there, not on ``request.user``), then any guest
-        cart carried by the ``X-Session-Key`` header is merged in.
+        JWT backend stores it there, not on ``request.user``), then the guest
+        cart keyed by this request's Django session (the same browser that
+        browsed as a guest) is merged into the user's cart.
 
         Args:
-            request: the POST request with credentials and an optional
-                ``X-Session-Key`` header.
+            request: the POST request with credentials.
 
         Returns:
             Response: the token pair plus the user payload.
@@ -94,11 +94,10 @@ class LoginView(TokenObtainPairView):
             raise InvalidToken(exc.args[0]) from exc
 
         user = serializer.user
-        session_key = request.headers.get("X-Session-Key", "").strip() or None
-        if user is not None and session_key:
+        if user is not None and request.session.session_key:
             from apps.cart.services import merge_guest_cart
 
-            merge_guest_cart(user, session_key)
+            merge_guest_cart(user, request.session.session_key)
 
         return Response(serializer.validated_data, status=status.HTTP_200_OK)
 

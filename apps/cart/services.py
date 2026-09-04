@@ -17,6 +17,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Sum
 
 from apps.cart.models import Cart, CartItem, WishlistItem
+from apps.cart.selectors import get_cart_items
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,22 @@ def _money(value):
     return value if isinstance(value, Decimal) else Decimal(value)
 
 
-# 
+def _touch_cart(cart):
+    """Bump the cart's ``updated_at`` timestamp without other writes.
+
+    Item and coupon mutations should register as cart activity so activity
+    metrics (e.g. abandoned-cart reminders keyed on ``updated_at``) reflect
+    the most recent change.
+
+    Args:
+        cart (Cart): the cart to touch.
+    """
+    cart.save(update_fields=["updated_at"])
+
+
+#
 # Cart retrieval / creation
-# 
+#
 
 
 def get_or_create_cart(user=None, session_key=None):
@@ -156,6 +170,8 @@ def merge_guest_cart(user, session_key):
                 bundle_id=guest_item.bundle_id,
                 quantity=guest_item.quantity,
             )
+    if guest_items:
+        _touch_cart(user_cart)
 
     if user_cart.coupon_id is None and guest_cart.coupon_id is not None:
         user_cart.coupon = guest_cart.coupon
@@ -166,9 +182,7 @@ def merge_guest_cart(user, session_key):
     return user_cart
 
 
-
 # Cart item management
-
 
 
 def add_item(cart, *, variant_id=None, bundle_id=None, quantity=1):
@@ -210,14 +224,17 @@ def add_item(cart, *, variant_id=None, bundle_id=None, quantity=1):
             _check_stock(variant_id, new_qty)
         existing.quantity = new_qty
         existing.save(update_fields=["quantity", "added_at"])
+        _touch_cart(cart)
         return existing
 
-    return CartItem.objects.create(
+    cart_item = CartItem.objects.create(
         cart=cart,
         variant_id=variant_id,
         bundle_id=bundle_id,
         quantity=quantity,
     )
+    _touch_cart(cart)
+    return cart_item
 
 
 def update_item_quantity(cart, item_id, quantity):
@@ -239,6 +256,7 @@ def update_item_quantity(cart, item_id, quantity):
     item = _get_owned_item(cart, item_id)
     if quantity <= 0:
         item.delete()
+        _touch_cart(cart)
         return None
 
     if item.variant_id:
@@ -246,6 +264,7 @@ def update_item_quantity(cart, item_id, quantity):
 
     item.quantity = quantity
     item.save(update_fields=["quantity", "added_at"])
+    _touch_cart(cart)
     return item
 
 
@@ -261,11 +280,12 @@ def remove_item(cart, item_id):
     """
     item = _get_owned_item(cart, item_id)
     item.delete()
+    _touch_cart(cart)
 
 
-
+# ---------------------------------------------------------------------------
 # Coupon management
-
+# ---------------------------------------------------------------------------
 
 
 def apply_coupon(cart, code, user=None):
@@ -312,9 +332,7 @@ def remove_coupon(cart):
         cart.save(update_fields=["coupon", "updated_at"])
 
 
-
 # Cart totals computation
-
 
 
 def compute_cart_totals(cart):
@@ -324,6 +342,13 @@ def compute_cart_totals(cart):
     services.  Money fields are strings in the result to travel exactly as
     computed.  The coupon adjustment (if any) is applied at the line level,
     per the coupon's product/category restrictions and stacking rules.
+
+    ``subtotal`` is the net cost of the goods — the sum of the per-line
+    prices actually charged after both automatic discounts and the coupon.
+    ``discount_total`` and ``coupon_discount`` are informational savings
+    breakdowns; they are not subtracted from ``subtotal`` a second time.
+    ``total`` is ``subtotal`` plus ``vat_total`` — what the shopper pays for
+    the goods including tax, excluding shipping.
 
     The ``vat_breakdown`` dict keys are ``standard``, ``zero_rated``, and
     ``exempt``, with amounts as decimal strings.  Tax is computed from each
@@ -339,12 +364,7 @@ def compute_cart_totals(cart):
             ``coupon_code``, ``coupon_discount``, ``vat_breakdown``,
             ``vat_total``, and ``total`` — money as decimal strings.
     """
-    items = list(
-        cart.items.select_related(
-            "variant__product",
-            "bundle",
-        ).order_by("pk")
-    )
+    items = list(get_cart_items(cart))
 
     coupon = cart.coupon
     line_items = []
@@ -389,7 +409,7 @@ def compute_cart_totals(cart):
         coupon_code = coupon.code
 
     vat_total = sum(vat_breakdown.values(), Decimal("0.00"))
-    total = max(subtotal - coupon_discount + vat_total, Decimal("0.00"))
+    total = max(subtotal + vat_total, Decimal("0.00"))
 
     return {
         "items": line_items,
@@ -524,7 +544,11 @@ def _get_tax_class(item):
     """Return the tax class for a cart item.
 
     For variant items the tax class comes from the product.  For bundle
-    items the tax class is ``standard`` since bundles are composite.
+    items it is derived from the bundle's included (non-optional) component
+    products: it is ``zero_rated`` or ``exempt`` only when every component
+    shares that treatment, otherwise ``standard``.  This is a display-level
+    preview — the authoritative per-component tax is computed when the
+    bundle decomposes into individual order lines.
 
     Args:
         item (CartItem): the cart item.
@@ -534,6 +558,28 @@ def _get_tax_class(item):
     """
     if item.variant_id is not None:
         return item.variant.product.tax_class
+    return _bundle_tax_class(item.bundle)
+
+
+def _bundle_tax_class(bundle):
+    """Return the conservative tax class for a bundle's components.
+
+    A bundle is ``zero_rated`` or ``exempt`` only when all of its included
+    (non-optional) component products are, so a single standard-rated
+    component keeps the whole bundle standard-rated.
+
+    Args:
+        bundle (Bundle): the bundle.
+
+    Returns:
+        str: ``standard``, ``zero_rated``, or ``exempt``.
+    """
+    component_classes = {
+        bi.product.tax_class
+        for bi in bundle.items.select_related("product").filter(is_optional=False)
+    }
+    if len(component_classes) == 1:
+        return next(iter(component_classes))
     return "standard"
 
 
@@ -583,9 +629,7 @@ def _line_subtotal_sum(cart):
     return total
 
 
-
 # Validation helpers
-
 
 
 def _validate_variant(variant_id, quantity):
@@ -663,7 +707,6 @@ def _get_owned_item(cart, item_id):
     if item is None:
         raise ValidationError("Cart item not found.")
     return item
-
 
 
 # Wishlist services

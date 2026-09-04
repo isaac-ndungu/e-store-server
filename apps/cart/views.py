@@ -6,13 +6,15 @@ Cart mutations are ``POST`` to sub-endpoints (``/cart/items/``,
 ``/cart/apply-coupon/``, etc.) to keep the URL scheme clean.
 
 Permission model:
-- ``CartView`` and ``CartItemsView`` accept an optional ``X-Session-Key``
-  header from anonymous browsers (guest checkout) and ``IsAuthenticated``
-  or ``AllowAny`` as appropriate.
-- ``WishlistView`` is always ``IsAuthenticated`` — the wishlist requires an
-  account.
-- Ownership is enforced at the service/view level: a caller can only
-  address their own cart.
+- Cart endpoints are reachable by authenticated users (JWT) and by anonymous
+  guests.  Guest carts are keyed by Django's own server-issued session
+  (``request.session.session_key``) carried in the ``HttpOnly`` session
+  cookie — never by a client-invented header value, which would be weak and
+  forgeable.  A caller can only ever address their own cart.
+- ``WishlistView`` and ``WishlistItemDetailView`` require authentication —
+  the wishlist is tied to an account.
+- Ownership is enforced at the service/view layer: a caller can only address
+  their own cart, and wishlist mutations are scoped to the authenticated user.
 """
 
 from functools import wraps
@@ -24,7 +26,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.cart.selectors import get_wishlist_for_user
+from apps.cart.selectors import get_cart_for_session, get_wishlist_for_user
 from apps.cart.serializers import (
     CartItemQuantitySerializer,
     CartItemWriteSerializer,
@@ -45,18 +47,6 @@ from apps.cart.services import (
     remove_item,
     update_item_quantity,
 )
-
-
-def _get_session_key(request):
-    """Extract the guest session key from the request header.
-
-    Args:
-        request: the incoming HTTP request.
-
-    Returns:
-        str | None: the session key, or None if not provided.
-    """
-    return request.headers.get("X-Session-Key", "").strip() or None
 
 
 def _service_error_to_400(mutation):
@@ -84,39 +74,56 @@ def _service_error_to_400(mutation):
     return wrapper
 
 
-def _resolve_cart(request):
-    """Resolve the active cart for the request's user or guest.
+def _ensure_guest_session(request):
+    """Return the request's Django session key, creating a session if needed.
 
-    For authenticated users the cart is user-scoped.  For guests the cart
-    is identified by the ``X-Session-Key`` header.  If neither is available
-    the view returns ``None`` and the caller must decide the response.
+    The session key identifies the guest cart.  Django generates a
+    server-random key and stores the session server-side, so the guest cart
+    cannot be reached by guessing a client-supplied value.
 
     Args:
         request: the incoming HTTP request.
 
     Returns:
-        Cart | None: the active cart, or None if unresolvable.
+        str: the session key.
+    """
+    if request.session.session_key is None:
+        request.session.create()
+    return request.session.session_key
+
+
+def _resolve_cart(request):
+    """Resolve the active cart for the request's user or guest.
+
+    For authenticated users the cart is user-scoped.  For guests the cart is
+    keyed by the request's Django session.  A session (and therefore a cart)
+    is always created for the caller, so this never returns ``None``.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        Cart: the caller's active cart.
     """
     if request.user.is_authenticated:
         return get_or_create_cart(user=request.user)
-    session_key = _get_session_key(request)
-    if session_key:
-        return get_or_create_cart(session_key=session_key)
-    return None
+    session_key = _ensure_guest_session(request)
+    cart = get_cart_for_session(session_key)
+    if cart is None:
+        cart = get_or_create_cart(session_key=session_key)
+    return cart
 
 
-# ---------------------------------------------------------------------------
 # Cart endpoints
-# ---------------------------------------------------------------------------
 
 
 class CartView(APIView):
     """Return the active cart with computed totals.
 
-    Supports both authenticated users and anonymous guests (via the
-    ``X-Session-Key`` header).  The response includes server-computed
-    effective prices, discount breakdowns, and VAT — all money values are
-    strings for exact representation.
+    Supports both authenticated users and anonymous guests (keyed by Django's
+    server-side session).  The response includes server-computed effective
+    prices, discount breakdowns, and VAT — all money values are strings for
+    exact representation.
 
     GET returns the current cart (creating one if needed).
     DELETE empties the cart by removing all items and clearing the coupon.
@@ -133,15 +140,9 @@ class CartView(APIView):
             request: the GET request.
 
         Returns:
-            Response: the full cart summary, or 400 if the caller is
-                anonymous and provides no session key.
+            Response: the full cart summary.
         """
         cart = _resolve_cart(request)
-        if cart is None:
-            return Response(
-                {"detail": "Provide a session key or log in to view your cart."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         totals = compute_cart_totals(cart)
         serializer = CartSummarySerializer(
             {
@@ -166,15 +167,12 @@ class CartView(APIView):
             Response: ``204 No Content`` on success.
         """
         cart = _resolve_cart(request)
-        if cart is None:
-            return Response(
-                {"detail": "Provide a session key or log in to view your cart."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         cart.items.all().delete()
         if cart.coupon_id is not None:
             cart.coupon = None
             cart.save(update_fields=["coupon", "updated_at"])
+        else:
+            cart.save(update_fields=["updated_at"])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -202,11 +200,6 @@ class CartItemsView(APIView):
                 for invalid input / stock errors.
         """
         cart = _resolve_cart(request)
-        if cart is None:
-            return Response(
-                {"detail": "Provide a session key or log in to add items."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         input_serializer = CartItemWriteSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         data = input_serializer.validated_data
@@ -242,11 +235,6 @@ class CartItemDetailView(APIView):
                 the item was removed (quantity <= 0).
         """
         cart = _resolve_cart(request)
-        if cart is None:
-            return Response(
-                {"detail": "Provide a session key or log in."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         input_serializer = CartItemQuantitySerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         updated = _service_error_to_400(update_item_quantity)(
@@ -267,20 +255,12 @@ class CartItemDetailView(APIView):
             Response: ``204 No Content`` on success.
         """
         cart = _resolve_cart(request)
-        if cart is None:
-            return Response(
-                {"detail": "Provide a session key or log in."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         _service_error_to_400(remove_item)(cart, item_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class CartCouponView(APIView):
-    """Apply or remove a coupon on the active cart.
-
-    POST to apply (``{"code": "SAVE10"}``), DELETE to remove.
-    """
+class CartApplyCouponView(APIView):
+    """Apply a coupon code to the active cart."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
@@ -297,11 +277,6 @@ class CartCouponView(APIView):
                 if the coupon is invalid.
         """
         cart = _resolve_cart(request)
-        if cart is None:
-            return Response(
-                {"detail": "Provide a session key or log in to apply a coupon."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         input_serializer = CouponApplySerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         user = request.user if request.user.is_authenticated else None
@@ -310,6 +285,14 @@ class CartCouponView(APIView):
         )
         output_serializer = CouponResultSerializer(result)
         return Response(output_serializer.data)
+
+
+class CartRemoveCouponView(APIView):
+    """Remove the coupon from the active cart."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "coupon_validate"
 
     def delete(self, request):
         """Remove the coupon from the active cart.
@@ -321,18 +304,11 @@ class CartCouponView(APIView):
             Response: ``204 No Content`` on success.
         """
         cart = _resolve_cart(request)
-        if cart is None:
-            return Response(
-                {"detail": "Provide a session key or log in."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
         remove_coupon(cart)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# ---------------------------------------------------------------------------
 # Wishlist endpoints
-# ---------------------------------------------------------------------------
 
 
 class WishlistView(APIView):

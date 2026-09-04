@@ -1,16 +1,10 @@
-"""URL routes for the cart app.
-
-Mounted at ``/api/v1/`` from ``config/api_urls.py``.  The cart is addressed
-as a single-object resource (``/cart/``) with sub-endpoints for item
-management and coupon operations.
-"""
-
 from django.urls import path
 
 from apps.cart.views import (
-    CartCouponView,
+    CartApplyCouponView,
     CartItemDetailView,
     CartItemsView,
+    CartRemoveCouponView,
     CartView,
     WishlistItemDetailView,
     WishlistView,
@@ -25,8 +19,10 @@ urlpatterns = [
         CartItemDetailView.as_view(),
         name="cart-item-detail",
     ),
-    path("cart/apply-coupon/", CartCouponView.as_view(), name="cart-apply-coupon"),
-    path("cart/remove-coupon/", CartCouponView.as_view(), name="cart-remove-coupon"),
+    path("cart/apply-coupon/", CartApplyCouponView.as_view(), name="cart-apply-coupon"),
+    path(
+        "cart/remove-coupon/", CartRemoveCouponView.as_view(), name="cart-remove-coupon"
+    ),
     # Wishlist
     path("wishlist/", WishlistView.as_view(), name="wishlist"),
     path(
