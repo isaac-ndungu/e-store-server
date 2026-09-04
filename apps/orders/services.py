@@ -622,7 +622,15 @@ def confirm_order_from_verification(order, *, user=None):
         if order.coupon_id is not None:
             record_redemption(order.coupon, user=order.user, order=order)
 
-        return transition_order(order, "confirmed", changed_by=user)
+        confirmed = transition_order(order, "confirmed", changed_by=user)
+
+    # Fired outside the confirmation transaction so a receiver's side effect
+    # (e.g. an external system call) can never fail the stock fulfilment.  A
+    # receiver failure is logged by Django and does not roll the order back.
+    from apps.orders.signals import order_confirmed
+
+    order_confirmed.send(sender=confirmed)
+    return confirmed
 
 
 def apply_staff_status(order, to_status, *, changed_by, note=""):

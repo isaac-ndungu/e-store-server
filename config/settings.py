@@ -56,6 +56,7 @@ LOCAL_APPS = [
     "apps.promotions",
     "apps.cart",
     "apps.orders",
+    "apps.payments",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -171,6 +172,7 @@ REST_FRAMEWORK = {
         "order_read": "30/min",
         "order_verify": "10/min",
         "order_otp_resend": "5/min",
+        "mpesa_callback": "500/min",
     },
 }
 

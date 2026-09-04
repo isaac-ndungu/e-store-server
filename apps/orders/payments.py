@@ -1,29 +1,48 @@
 """Payment gateway adapter used by the order service.
 
 The order service never talks to a payment provider directly — it calls into
-this adapter so the eventual `payments` app (M-Pesa Daraja STK Push, an
-optional card gateway) can be dropped in without changing the checkout math or
+this adapter so the payments app (M-Pesa Daraja STK Push, an optional card
+gateway) can be swapped or extended without changing the checkout math or
 the status machine.
 
-Today no provider is configured, so every gateway reports ``is_available()``
-as False. That is deliberate: if an ``mpesa`` order were creatable but had no
-gateway behind it, it would sit in ``pending`` holding reserved stock with no
-callback to confirm or refund it. By rejecting the method before order
-creation, the storefront gets a clear error instead of a stuck order. When a
-gateway is implemented, registering it here (and in the site's enabled payment
-methods) flips the method on with no further changes to the order path.
+Each gateway reports whether it is available (credentials configured), whether
+it requires OTP verification, and how to initiate a charge.  The ``payments``
+app registers its gateways here so the order path stays decoupled from
+provider specifics.
 
-The completion handlers (`confirm_order_from_payment` /
-`cancel_order_from_payment`) are the contract a future callback adapter must
-drive. ``confirm_order_from_payment`` routes through the same
-reservation-fulfilment + coupon-redemption path the OTP flow uses, so a paid
-order can never skip the stock bookkeeping.
+The completion handlers (``confirm_order_from_payment`` /
+``cancel_order_from_payment``) are the contract a callback adapter must drive.
+``confirm_order_from_payment`` routes through the same reservation-fulfilment +
+coupon-redemption path the OTP flow uses, so a paid order can never skip the
+stock bookkeeping.
 """
+
+from decouple import config as _env_config
 
 from apps.orders.services import (
     cancel_pending_order,
     confirm_order_from_verification,
 )
+
+
+def _mpesa_credentials_configured():
+    """Return whether the Daraja credentials required for STK Push are set.
+
+    The gateway is available only when the consumer key, consumer secret,
+    shortcode, and passkey are all present.  An incomplete configuration
+    means orders using M-Pesa would get stuck in ``pending`` with no callback
+    to resolve them.
+
+    Returns:
+        bool: True when all required credentials are non-empty.
+    """
+    required = [
+        "MPESA_CONSUMER_KEY",
+        "MPESA_CONSUMER_SECRET",
+        "MPESA_SHORTCODE",
+        "MPESA_PASSKEY",
+    ]
+    return all(_env_config(key, default="") for key in required)
 
 
 class PaymentUnavailable(Exception):
@@ -104,11 +123,60 @@ class UnavailablePaymentGateway(PaymentGateway):
         )
 
 
+class MpesaGateway(PaymentGateway):
+    """M-Pesa Daraja STK Push gateway.
+
+    ``is_available()`` checks that the required Daraja credentials are
+    configured in the environment.  ``requires_otp()`` returns False because
+    a successful STK Push already proves the customer controls the phone
+    number — adding an OTP on top would be redundant friction.
+
+    ``initiate()`` delegates to the payments service which creates an
+    ``MpesaTransaction`` row and fires the STK Push request.  The callback
+    path (handled by ``MpesaSTKCallbackView``) drives confirmation or
+    cancellation through the same ``confirm_order_from_payment`` /
+    ``cancel_order_from_payment`` hooks the adapter exposes.
+    """
+
+    def is_available(self):
+        """Return whether the Daraja credentials are fully configured.
+
+        Returns:
+            bool: True when consumer key, secret, shortcode, and passkey
+                are all set.
+        """
+        return _mpesa_credentials_configured()
+
+    def requires_otp(self):
+        """Return False — STK Push proves the phone number.
+
+        Returns:
+            bool: always False.
+        """
+        return False
+
+    def initiate(self, order):
+        """Initiate the M-Pesa STK Push for the pending order.
+
+        Args:
+            order (Order): the order to charge.
+
+        Raises:
+            PaymentUnavailable: if the Daraja API call fails.
+        """
+        from apps.payments.services import initiate_stk_push
+
+        try:
+            initiate_stk_push(order)
+        except Exception as exc:
+            raise PaymentUnavailable(f"M-Pesa STK Push failed: {exc}") from exc
+
+
 # Registry of payment methods to their gateway. Only methods listed here with
 # an operational gateway are available; a method absent or reporting
 # unavailable is rejected at order placement.
 PAYMENT_GATEWAYS = {
-    "mpesa": UnavailablePaymentGateway(),
+    "mpesa": MpesaGateway(),
     "card": UnavailablePaymentGateway(),
 }
 

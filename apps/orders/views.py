@@ -256,12 +256,20 @@ class OrderListCreateView(APIView):
                 initiate_payment,
                 is_payment_method_available,
             )
+            from apps.payments.services import StkPushRateLimited
 
             otp_required = requires_otp_for_payment(order)
             if otp_required:
                 resend_order_otp(order)
             elif is_payment_method_available(order.payment_method):
-                initiate_payment(order)
+                try:
+                    initiate_payment(order)
+                except StkPushRateLimited as exc:
+                    return Response(
+                        {"detail": str(exc)},
+                        status=status.HTTP_429_TOO_MANY_REQUESTS,
+                        headers={"Retry-After": str(exc.retry_after)},
+                    )
 
             serializer = OrderDetailSerializer(order)
             response_data = {
