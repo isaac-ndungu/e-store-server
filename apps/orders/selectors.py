@@ -52,23 +52,45 @@ def get_order_for_user(user, order_id):
     )
 
 
-def get_order_by_phone(order_id, phone):
-    """Return a single order matching an id and contact phone, or None.
+def get_order_by_token(token):
+    """Return a single order matching an unguessable lookup token, or None.
 
-    Used to resolve a guest order for OTP verification and viewing, where the
-    order has no owning user. The phone must match exactly (normalized E.164)
-    so a caller cannot address another person's order just by guessing its id.
+    Used to resolve a guest order for viewing, OTP verification, and
+    cancellation, where the order has no owning user. The token is a random
+    UUID returned to the caller at order creation, so a guest can address
+    their order without a login and without another caller being able to
+    enumerate orders by guessing sequential ids or a phone number.
 
     Args:
-        order_id (int): the order primary key.
-        phone (str): the order's contact phone number.
+        token (str | UUID): the order's lookup token.
 
     Returns:
         Order | None: the order with items and status history pre-fetched, or
-            None when no order matches the id and phone.
+            None when no order matches the token.
     """
     return (
-        Order.objects.filter(pk=order_id, phone=phone)
+        Order.objects.filter(lookup_token=token)
+        .prefetch_related("items", "status_history", "verification")
+        .select_related("delivery_zone", "shipping_address")
+        .first()
+    )
+
+
+def get_order_for_staff(order_id):
+    """Return any order by id for a staff member, or None.
+
+    Used by admin/courier-facing views that operate across all orders rather
+    than only the caller's own. A missing id maps to a 404 by the caller.
+
+    Args:
+        order_id (int): the order primary key.
+
+    Returns:
+        Order | None: the order with items and status history pre-fetched, or
+            None when no order matches the id.
+    """
+    return (
+        Order.objects.filter(pk=order_id)
         .prefetch_related("items", "status_history", "verification")
         .select_related("delivery_zone", "shipping_address")
         .first()

@@ -53,6 +53,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "unit_price",
             "quantity",
             "total_price",
+            "applied_discount",
             "tax_rate",
             "tax",
             "fulfillment_warehouse",
@@ -136,6 +137,7 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             "id",
+            "lookup_token",
             "status",
             "payment_method",
             "currency",
@@ -164,21 +166,23 @@ class OTPVerifySerializer(serializers.Serializer):
     otp_code = serializers.CharField(max_length=6, min_length=6)
 
 
-class OTPResendSerializer(serializers.Serializer):
-    """Input for re-sending a COD verification code.
-
-    ``phone`` is optional: when omitted the order's own contact number is used;
-    when supplied it must match the order's number to prevent a caller from
-    redirecting another person's verification to their own device.
-    """
-
-    phone = serializers.CharField(max_length=15, required=False)
-
-
 class CancelOrderSerializer(serializers.Serializer):
     """Input for cancelling an order.
 
     ``note`` is optional and is recorded in the status-history audit trail.
     """
 
+    note = serializers.CharField(required=False, allow_blank=True)
+
+
+class OrderStatusUpdateSerializer(serializers.Serializer):
+    """Input for a staff user advancing an order's fulfilment status.
+
+    ``to_status`` is constrained to the order status choices; the legality of
+    the specific transition (against the current status) is enforced in the
+    service layer and surfaced as a 400. ``note`` is optional and goes into the
+    status-history audit trail.
+    """
+
+    to_status = serializers.ChoiceField(choices=Order.STATUS_CHOICES)
     note = serializers.CharField(required=False, allow_blank=True)

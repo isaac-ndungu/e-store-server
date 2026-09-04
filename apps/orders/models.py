@@ -57,6 +57,7 @@ class Order(models.Model):
         on_delete=models.SET_NULL,
         related_name="orders",
     )
+    lookup_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     phone = models.CharField(max_length=15)
     email = models.EmailField(blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
@@ -176,6 +177,10 @@ class OrderItem(models.Model):
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     quantity = models.PositiveIntegerField(default=1)
     total_price = models.DecimalField(max_digits=12, decimal_places=2)
+    # The per-line amount discounted by a promotion/action at checkout time
+    # (excluding any coupon), snapshotted so redemptions and historical order
+    # economics are reconstructable without re-pricing live catalogue state.
+    applied_discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2)
     tax = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     fulfillment_warehouse = models.ForeignKey(
@@ -266,6 +271,8 @@ class OrderVerification(models.Model):
     )
 
     MAX_ATTEMPTS = 5
+    MAX_RESENDS = 5
+    RESEND_COOLDOWN_SECONDS = 60
 
     order = models.OneToOneField(
         Order, related_name="verification", on_delete=models.CASCADE
@@ -275,6 +282,7 @@ class OrderVerification(models.Model):
     sent_at = models.DateTimeField(auto_now_add=True)
     verified_at = models.DateTimeField(null=True, blank=True)
     attempts = models.PositiveSmallIntegerField(default=0)
+    resend_count = models.PositiveSmallIntegerField(default=0)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     skip_reason = models.CharField(max_length=50, blank=True)
 
