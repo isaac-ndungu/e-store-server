@@ -57,4 +57,8 @@ urlpatterns = [
         "v1/",
         include(("apps.reviews.urls", "reviews"), namespace="reviews"),
     ),
+    path(
+        "v1/",
+        include(("apps.content.urls", "content"), namespace="content"),
+    ),
 ]
