@@ -59,6 +59,7 @@ LOCAL_APPS = [
     "apps.orders",
     "apps.payments",
     "apps.returns",
+    "apps.social_proof",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -214,6 +215,10 @@ SPECTACULAR_SETTINGS = {
         {
             "name": "returns",
             "description": "Post-delivery returns and pre-shipment cancellations",
+        },
+        {
+            "name": "social_proof",
+            "description": "Product view tracking and live-viewer counts",
         },
     ],
 }

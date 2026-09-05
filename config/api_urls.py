@@ -49,4 +49,8 @@ urlpatterns = [
         "v1/",
         include(("apps.returns.urls", "returns"), namespace="returns"),
     ),
+    path(
+        "v1/",
+        include(("apps.social_proof.urls", "social_proof"), namespace="social_proof"),
+    ),
 ]
