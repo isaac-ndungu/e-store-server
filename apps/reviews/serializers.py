@@ -5,16 +5,14 @@ reviewer's display handle (username) is shown, never their email or phone
 number, and moderation shapes keep author and product context for staff.
 
 Write serializers whitelist exactly what a caller may supply. A review names a
-rating, optional headline/body, optional photo URLs from the photo-upload
+rating, optional headline/body, optional photo ids from the photo-upload
 endpoint, and an optional order-line id for the verified-purchase badge; the
 reviewer identity always comes from the request's authenticated user, never a
-client-supplied field. The question and answer serializers accept a single
-free-form text field. Photo references must look like real http(s) URLs so a
-``javascript:`` or ``data:`` payload cannot be stored and later rendered.
+client-supplied field. Photos are referenced by id rather than URL, and the
+service only ever claims uploads owned by the caller, so a random URL or a
+stranger's photo cannot be planted on a review.
 """
 
-from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.validators import URLValidator
 from rest_framework import serializers
 
 from apps.reviews.constants import (
@@ -25,13 +23,25 @@ from apps.reviews.constants import (
     REVIEW_MAX_PHOTOS,
     REVIEW_TITLE_MAX_LENGTH,
 )
-from apps.reviews.models import ProductAnswer, ProductQuestion, Review
+from apps.reviews.models import ProductAnswer, ProductQuestion, Review, ReviewPhoto
 
 
 class ReviewAuthorSerializer(serializers.Serializer):
     """Public reviewer identity — the display handle only, never contact data."""
 
     username = serializers.CharField()
+
+
+class ReviewPhotoSerializer(serializers.ModelSerializer):
+    """A review photo with its processed variants and display URL."""
+
+    url = serializers.CharField(source="display_url")
+    variants = serializers.JSONField(source="image_sources")
+
+    class Meta:
+        model = ReviewPhoto
+        fields = ["id", "url", "variants"]
+        read_only_fields = fields
 
 
 class AnswerSerializer(serializers.ModelSerializer):
@@ -60,9 +70,10 @@ class AnswerSerializer(serializers.ModelSerializer):
 
 
 class ReviewSerializer(serializers.ModelSerializer):
-    """Storefront-facing review shape."""
+    """Storefront-facing review shape with its processed photos."""
 
     user = ReviewAuthorSerializer(read_only=True)
+    photos = ReviewPhotoSerializer(many=True, read_only=True)
     verified_purchase = serializers.SerializerMethodField()
 
     class Meta:
@@ -112,8 +123,9 @@ class ReviewCreateSerializer(serializers.Serializer):
 
     ``order_item_id`` optionally marks the review as a verified purchase; the
     service re-checks the line belongs to the caller's completed order.
-    ``photos`` cites URLs produced by the photo-upload endpoint and capped at
-    ``REVIEW_MAX_PHOTOS`` entries.
+    ``photo_ids`` cites uploads produced by the photo-upload endpoint and capped
+    at ``REVIEW_MAX_PHOTOS`` entries; the service only claims photos owned by
+    the caller.
     """
 
     rating = serializers.IntegerField(min_value=1, max_value=MAX_REVIEW_RATING)
@@ -129,8 +141,8 @@ class ReviewCreateSerializer(serializers.Serializer):
         allow_blank=True,
         default="",
     )
-    photos = serializers.ListField(
-        child=serializers.CharField(max_length=500),
+    photo_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
         required=False,
         allow_empty=True,
         max_length=REVIEW_MAX_PHOTOS,
@@ -139,25 +151,6 @@ class ReviewCreateSerializer(serializers.Serializer):
     order_item_id = serializers.IntegerField(
         required=False, allow_null=True, min_value=1
     )
-
-    def validate_photos(self, value):
-        """Reject anything that is not a valid absolute http(s) URL.
-
-        Args:
-            value (list[str]): the candidate photo URLs.
-
-        Returns:
-            list[str]: the validated photo URLs.
-        """
-        validator = URLValidator(schemes=("http", "https"))
-        for url in value:
-            try:
-                validator(url)
-            except DjangoValidationError as exc:
-                raise serializers.ValidationError(
-                    "Each photo must be a valid image URL."
-                ) from exc
-        return value
 
 
 class QuestionCreateSerializer(serializers.Serializer):
@@ -178,6 +171,7 @@ class ReviewModerationSerializer(serializers.ModelSerializer):
     user = ReviewAuthorSerializer(read_only=True)
     product_slug = serializers.CharField(source="product.slug")
     product_name = serializers.CharField(source="product.name")
+    photos = ReviewPhotoSerializer(many=True, read_only=True)
     verified_purchase = serializers.SerializerMethodField()
 
     class Meta:

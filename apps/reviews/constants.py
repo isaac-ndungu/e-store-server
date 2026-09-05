@@ -20,6 +20,14 @@ ANSWER_MAX_LENGTH = 2000
 # At most this many photos may be attached to one review.
 REVIEW_MAX_PHOTOS = 5
 
+# Unattached uploads are bounded per user so a caller cannot park an unbounded
+# pile of photos ahead of posting a review.
+MAX_UNATTACHED_PHOTOS_PER_USER = 20
+
+# A photo that is never attached to a review is swept (row and files) after it
+# has been orphaned for this long.
+ORPHAN_PHOTO_TTL_HOURS = 24
+
 # Order statuses that count as a completed purchase for the verified-purchase
 # badge. Pending, cancelled, refunded, and returned orders do not, because a
 # review should only verify a purchase that actually went through.

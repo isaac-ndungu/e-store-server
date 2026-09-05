@@ -93,6 +93,26 @@ def generate_variants(storage_name):
     return variants
 
 
+def delete_image_files(storage_name):
+    """Delete a stored original image and every possible processed variant.
+
+    Variant names are derived deterministically from the original's storage
+    path, so cleanup never needs a manifest of generated files. The storage
+    backend suppresses errors for files that do not exist, making this safe to
+    call repeatedly and safe to call for variant formats that were never
+    written.
+
+    Args:
+        storage_name (str): the storage key of the original image.
+    """
+    ext = os.path.splitext(storage_name)[1]
+    stem = storage_name[: -len(ext)] if ext else storage_name
+    for width in PROCESSED_IMAGE_WIDTHS:
+        for image_format in PROCESSED_IMAGE_FORMATS:
+            default_storage.delete(f"{stem}--{width}w.{image_format}")
+    default_storage.delete(storage_name)
+
+
 def preferred_image_url(storage_name, sources):
     """Return the best display URL for an image from its processed variants.
 

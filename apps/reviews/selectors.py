@@ -35,16 +35,20 @@ def get_active_product_by_slug(slug):
 def list_approved_reviews(product):
     """Return the storefront-visible reviews for a product, newest first.
 
+    Photos are pre-fetched so the photo list nested in the response never
+    triggers a per-review query.
+
     Args:
         product (Product): the product.
 
     Returns:
-        QuerySet: the product's approved reviews with the author fetched in
-            one join, ordered newest-first.
+        QuerySet: the product's approved reviews with the author and photos
+            fetched, ordered newest-first.
     """
     return (
         product.reviews.filter(is_approved=True)
         .select_related("user")
+        .prefetch_related("photos")
         .order_by("-created_at", "-pk")
     )
 
@@ -83,10 +87,13 @@ def list_all_reviews(*, approved=None):
             approval state.
 
     Returns:
-        QuerySet: reviews with author and product fetched, newest-first.
+        QuerySet: reviews with author, product, and photos fetched,
+            newest-first.
     """
-    queryset = Review.objects.select_related("user", "product").order_by(
-        "-created_at", "-pk"
+    queryset = (
+        Review.objects.select_related("user", "product")
+        .prefetch_related("photos")
+        .order_by("-created_at", "-pk")
     )
     if approved is not None:
         queryset = queryset.filter(is_approved=approved)
@@ -125,11 +132,12 @@ def get_review_for_staff(review_id):
         review_id (int): the review primary key.
 
     Returns:
-        Review | None: the review with author, product, and order line
+        Review | None: the review with author, product, order line, and photos
             fetched, or None when no review matches.
     """
     return (
         Review.objects.select_related("user", "product", "order_item")
+        .prefetch_related("photos")
         .filter(pk=review_id)
         .first()
     )

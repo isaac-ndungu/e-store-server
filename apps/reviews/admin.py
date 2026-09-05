@@ -9,7 +9,12 @@ stale.
 
 from django.contrib import admin
 
-from apps.reviews.models import ProductAnswer, ProductQuestion, Review
+from apps.reviews.models import (
+    ProductAnswer,
+    ProductQuestion,
+    Review,
+    ReviewPhoto,
+)
 from apps.reviews.services import set_question_approval, set_review_approval
 
 
@@ -78,6 +83,15 @@ class ReviewAdmin(admin.ModelAdmin):
         "body",
     )
     actions = [approve_selected, reject_selected]
+
+
+@admin.register(ReviewPhoto)
+class ReviewPhotoAdmin(admin.ModelAdmin):
+    """Admin page for inspecting and removing customer review photos."""
+
+    list_display = ("user", "review", "display_url", "created_at")
+    list_filter = ("created_at",)
+    search_fields = ("user__username", "storage_name")
 
 
 @admin.register(ProductQuestion)

@@ -16,11 +16,14 @@ Invariants upheld here:
   order, and must not already be claimed by an earlier review.
 - One review is allowed per buyer per product; a second attempt is rejected
   with a clean error rather than surfaced as an integrity violation.
-- Rating aggregates count only approved reviews, and every create or
-  moderation transition recomputes them in the same transaction.
+- Photos attach by ``ReviewPhoto`` id: each id must be an unattached upload of
+  the reviewer's own, so no reviewer can reference a stranger's photo.
+- Rating aggregates count only approved reviews. Every create, approval
+  change, or review deletion recomputes them in the same transaction, and the
+  product row is locked during the recompute so concurrent review writes to
+  the same product cannot commit a stale aggregate.
 """
 
-import logging
 from decimal import ROUND_HALF_UP, Decimal
 
 import bleach
@@ -36,11 +39,17 @@ from apps.reviews.constants import (
     MIN_REVIEW_RATING,
     VERIFIED_PURCHASE_STATUSES,
 )
-from apps.reviews.models import ProductAnswer, ProductQuestion, Review
-
-logger = logging.getLogger(__name__)
+from apps.reviews.models import ProductAnswer, ProductQuestion, Review, ReviewPhoto
 
 _RATING_QUANT = Decimal("0.01")
+
+
+class ReviewsDisabledError(Exception):
+    """Raised when the reviews feature is toggled off in the site settings.
+
+    Distinct from a validation error so views can answer with a service-status
+    response (503) rather than claim the request was malformed.
+    """
 
 
 def _sanitize(value):
@@ -67,40 +76,48 @@ def _require_reviews_enabled():
     stays readable.
 
     Raises:
-        ValidationError: when the reviews feature is disabled.
+        ReviewsDisabledError: when the reviews feature is disabled.
     """
     if not is_feature_enabled():
-        raise ValidationError("Posting reviews and questions is currently disabled.")
+        raise ReviewsDisabledError(
+            "Posting reviews and questions is currently disabled."
+        )
 
 
-def _recompute_rating(product):
+def _recompute_rating(product_id):
     """Recalculate and store the product's rating aggregate from approved views.
 
     Computes the average rating and count over approved reviews and writes
-    them to the ``Product`` row without a full model save, so the aggregate is
-    always in step with the visible review set. Called inside the transaction
-    of every create and moderation change.
+    them to the ``Product`` row without a full model save. The product row is
+    locked first so concurrent review writes to the same product serialize
+    here: each writer re-reads the committed review set before publishing its
+    aggregate, so the storefront number can never be left counting a stale
+    review set.
 
     Args:
-        product (Product): the reviewed product.
+        product_id (int): the primary key of the reviewed product.
 
     Returns:
         tuple[Decimal, int]: the new average rating and review count.
     """
-    stats = Review.objects.filter(product=product, is_approved=True).aggregate(
-        average=Avg("rating"),
-        count=Count("id"),
-    )
-    average = Decimal("0.00")
-    if stats["average"] is not None:
-        average = Decimal(str(stats["average"])).quantize(
-            _RATING_QUANT, rounding=ROUND_HALF_UP
+    with transaction.atomic():
+        Product.objects.select_for_update().only("pk").get(pk=product_id)
+        stats = Review.objects.filter(
+            product_id=product_id, is_approved=True
+        ).aggregate(
+            average=Avg("rating"),
+            count=Count("id"),
         )
-    count = stats["count"] or 0
-    Product.objects.filter(pk=product.pk).update(
-        average_rating=average,
-        review_count=count,
-    )
+        average = Decimal("0.00")
+        if stats["average"] is not None:
+            average = Decimal(str(stats["average"])).quantize(
+                _RATING_QUANT, rounding=ROUND_HALF_UP
+            )
+        count = stats["count"] or 0
+        Product.objects.filter(pk=product_id).update(
+            average_rating=average,
+            review_count=count,
+        )
     return average, count
 
 
@@ -145,16 +162,54 @@ def _resolve_verified_order_item(user, product, order_item_id):
     return order_item
 
 
+def _resolve_photo_ids(user, photo_ids):
+    """Resolve a list of photo ids into claimable uploads belonging to the caller.
+
+    Every id must reference an unattached upload owned by ``user``. A foreign,
+    already-attached, or duplicated id makes the whole set invalid so a
+    reviewer can never attach somebody else's photo or reuse one across two
+    reviews.
+
+    Args:
+        user (User): the authenticated reviewer.
+        photo_ids (list[int]): the candidate photo primary keys.
+
+    Returns:
+        list[ReviewPhoto]: the claimable, unclaimed uploads.
+
+    Raises:
+        ValidationError: when any id is not the caller's own unclaimed upload.
+    """
+    ids = list(dict.fromkeys(photo_ids))
+    if len(ids) != len(photo_ids):
+        raise ValidationError("Duplicate photos are not allowed.")
+    photos = list(
+        ReviewPhoto.objects.filter(pk__in=ids, user=user, review__isnull=True)
+    )
+    if len(photos) != len(ids):
+        raise ValidationError("Each photo must be your own unclaimed upload.")
+    return photos
+
+
 def create_review(
-    *, user, product, rating, title="", body="", photos=None, order_item_id=None
+    *,
+    user,
+    product,
+    rating,
+    title="",
+    body="",
+    photo_ids=None,
+    order_item_id=None,
 ):
     """Create a customer review for a product.
 
     A review may verify a purchase by referencing an ``OrderItem``; the line
     is validated against the caller's own completed orders and may only verify
-    one review. One review is allowed per user per product, and the product's
-    rating aggregate is recomputed in the same transaction as the create, so
-    the aggregate and the review set are never observed in different states.
+    one review. Photos are claimed as the review is created — each id must be
+    the caller's own unattached upload. One review is allowed per user per
+    product, and the product's rating aggregate is recomputed in the same
+    transaction as the create, so the aggregate and the review set are never
+    observed in different states.
 
     Args:
         user (User): the authenticated reviewer.
@@ -162,8 +217,8 @@ def create_review(
         rating (int): the star rating within the configured scale.
         title (str): an optional short headline.
         body (str): an optional written review.
-        photos (list[str] | None): validated image URLs from the photo-upload
-            endpoint, if any.
+        photo_ids (list[int] | None): ids of the reviewer's own unattached
+            uploads to attach, if any.
         order_item_id (int | None): a completed-purchase order line proving
             the review is verified, if any.
 
@@ -171,12 +226,14 @@ def create_review(
         Review: the created, approved review.
 
     Raises:
-        ValidationError: if reviews are disabled, the rating is out of range,
-            the caller already reviewed the product, or the referenced
-            purchase is not a qualifying verified purchase.
+        ReviewsDisabledError: if the reviews feature is toggled off.
+        ValidationError: if the rating is out of range, the caller already
+            reviewed the product, the referenced purchase is not a qualifying
+            verified purchase, or any photo id is not the caller's own
+            unclaimed upload.
     """
     _require_reviews_enabled()
-    photos = photos or []
+    photo_ids = photo_ids or []
     if not MIN_REVIEW_RATING <= rating <= MAX_REVIEW_RATING:
         raise ValidationError(
             f"Rating must be between {MIN_REVIEW_RATING} and {MAX_REVIEW_RATING}."
@@ -189,6 +246,7 @@ def create_review(
         order_item = None
         if order_item_id is not None:
             order_item = _resolve_verified_order_item(user, product, order_item_id)
+        photos = _resolve_photo_ids(user, photo_ids)
         try:
             review = Review.objects.create(
                 product=product,
@@ -197,11 +255,14 @@ def create_review(
                 rating=rating,
                 title=_sanitize(title),
                 body=_sanitize(body),
-                photos=photos,
             )
         except IntegrityError:
             raise ValidationError("You have already reviewed this product.") from None
-        _recompute_rating(product)
+        if photos:
+            ReviewPhoto.objects.filter(pk__in=[photo.pk for photo in photos]).update(
+                review=review
+            )
+        _recompute_rating(product.pk)
     return review
 
 
@@ -220,7 +281,7 @@ def create_product_question(*, user, product, question):
         ProductQuestion: the created question.
 
     Raises:
-        ValidationError: when the reviews feature is disabled.
+        ReviewsDisabledError: when the reviews feature is disabled.
     """
     _require_reviews_enabled()
     return ProductQuestion.objects.create(
@@ -228,6 +289,28 @@ def create_product_question(*, user, product, question):
         user=user,
         question=_sanitize(question),
     )
+
+
+def delete_review_photo(*, photo):
+    """Delete an unattached uploaded photo along with its stored files.
+
+    The photo row is removed and its ``post_delete`` signal deletes the stored
+    original and processed variants. A photo already attached to a review is
+    published content and is not removable through this route; ownership is
+    enforced by the calling view before this service is reached.
+
+    Args:
+        photo (ReviewPhoto): the unattached upload to delete.
+
+    Returns:
+        None
+
+    Raises:
+        ValidationError: when the photo is already attached to a review.
+    """
+    if photo.review_id is not None:
+        raise ValidationError("A photo attached to a review cannot be deleted.")
+    photo.delete()
 
 
 def add_product_answer(*, question, user, answer):
@@ -275,7 +358,7 @@ def set_review_approval(*, review, approved):
     with transaction.atomic():
         review.is_approved = approved
         review.save(update_fields=["is_approved"])
-        _recompute_rating(review.product)
+        _recompute_rating(review.product_id)
     return review
 
 

@@ -284,6 +284,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.social_proof.tasks.purge_old_view_events_task",
         "schedule": 86400.0,
     },
+    "cleanup-orphan-review-photos": {
+        "task": "apps.reviews.tasks.cleanup_orphan_review_photos",
+        "schedule": 86400.0,
+    },
 }
 
 EMAIL_BACKEND = config(

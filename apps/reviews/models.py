@@ -26,6 +26,9 @@ class Review(models.Model):
     completed order for that product) and drives the storefront's
     "Verified Purchase" badge.
 
+    Photos attach through ``ReviewPhoto``: the storefront reads only photos the
+    reviewer uploaded and that were attached here, never arbitrary URLs.
+
     ``is_approved`` gates storefront visibility. New reviews default to
     approved and staff can hide one later; the product's denormalised rating
     aggregate always counts only approved reviews.
@@ -51,7 +54,6 @@ class Review(models.Model):
     rating = models.PositiveSmallIntegerField()
     title = models.CharField(max_length=255, blank=True)
     body = models.TextField(blank=True)
-    photos = models.JSONField(default=list, blank=True)
     is_approved = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -79,6 +81,52 @@ class Review(models.Model):
     def __str__(self):
         """Return a compact label identifying the review."""
         return f"review of product {self.product_id} by user {self.user_id} ({self.rating}/5)"
+
+
+class ReviewPhoto(models.Model):
+    """A customer photo uploaded for attachment to a review.
+
+    ``storage_name`` identifies the stored original (never served to the
+    storefront); ``image_sources`` records the processed responsive set and
+    ``display_url`` the preferred rendered URL, mirroring the catalogue's
+    ``ProductImage``. ``review`` is null until the photo is attached to a
+    review; only the uploading ``user`` may claim an unattached photo, so a
+    reviewer can never reference somebody else's upload.
+
+    Deleting a photo (with its review, or in moderation) removes the stored
+    files through a ``post_delete`` signal, and unattached uploads older than
+    the orphan threshold are swept by a scheduled task.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="review_photos",
+        on_delete=models.CASCADE,
+    )
+    review = models.ForeignKey(
+        Review,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="photos",
+    )
+    storage_name = models.CharField(max_length=255)
+    image_sources = models.JSONField(default=list, blank=True)
+    display_url = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "pk"]
+        indexes = [
+            models.Index(
+                fields=["user", "created_at", "review"], name="revp_user_created_idx"
+            ),
+            models.Index(fields=["review", "created_at"], name="revp_review_idx"),
+        ]
+
+    def __str__(self):
+        """Return a compact label identifying the photo."""
+        return f"photo {self.pk} by user {self.user_id}"
 
 
 class ProductQuestion(models.Model):

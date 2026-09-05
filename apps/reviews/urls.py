@@ -19,6 +19,7 @@ from apps.reviews.views import (
     QuestionRejectView,
     ReviewApproveView,
     ReviewModerationListView,
+    ReviewPhotoDeleteView,
     ReviewPhotoUploadView,
     ReviewRejectView,
 )
@@ -38,6 +39,11 @@ urlpatterns = [
         "reviews/photo-upload/",
         ReviewPhotoUploadView.as_view(),
         name="review-photo-upload",
+    ),
+    path(
+        "reviews/photos/<int:photo_id>/",
+        ReviewPhotoDeleteView.as_view(),
+        name="review-photo-delete",
     ),
     path(
         "reviews/moderate/",
