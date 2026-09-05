@@ -506,7 +506,9 @@ def fulfill_reservation(reservation, user=None):
                     f"{locked.pk}."
                 )
             SerialUnit.objects.filter(pk__in=[unit.pk for unit in units]).update(
-                status="sold", reservation=None
+                status="sold",
+                reservation=None,
+                order_item=locked.order_item,
             )
 
         Inventory.objects.filter(pk=inventory.pk).update(
@@ -635,3 +637,164 @@ def update_serial_unit_status(unit, new_status, user=None):
             to_status=new_status,
         )
     return unit
+
+
+def restock_returned_item(*, order_item, quantity=None, user=None):
+    """Return sold stock for an order line back into available inventory.
+
+    This is the only sanctioned way to add stock back after a sale.  For a
+    count-tracked variant it raises the linked ``Inventory.quantity`` in the
+    line's fulfilment warehouse.  For a serialized variant it moves the sold
+    serial units owned by the line to ``returned``; the count ledger needs no
+    adjustment there because ``sold`` and ``returned`` units are both outside
+    the sellable count, and the manual ``returned`` -> ``in_stock`` transition
+    restores the unit to sellable stock after inspection.
+
+    Idempotent-safe: the function acts only on units still in ``sold`` status
+    (or, for the count case, adds whatever quantity the caller names), so a
+    replayed call cannot double-count.
+
+    Args:
+        order_item (OrderItem): the order line whose stock is returning.
+        quantity (int | None): the number of units to restock.  ``None``
+            restocks the full line quantity (or every sold unit linked to the
+            line for serialized products).
+        user (User | None): the acting user, recorded in the movement log.
+
+    Returns:
+        int: the number of units returned to stock.
+
+    Raises:
+        ValidationError: if the line's variant can no longer be resolved, the
+            requested quantity exceeds what is linked, or the line has no
+            fulfilment warehouse to restock into.
+    """
+    variant = (
+        ProductVariant.objects.select_related("product")
+        .filter(sku=order_item.variant_sku)
+        .first()
+    )
+    if variant is None:
+        raise ValidationError(
+            f"No live variant matches SKU '{order_item.variant_sku}'; "
+            "reconcile the line before restocking."
+        )
+    if order_item.fulfillment_warehouse_id is None:
+        raise ValidationError(
+            "The order line has no fulfilment warehouse recorded; choose one "
+            "before restocking."
+        )
+
+    if _variant_tracks_serial_numbers(variant.pk):
+        return _restock_returned_serial_units(
+            variant=variant, order_item=order_item, quantity=quantity, user=user
+        )
+    return _restock_returned_count(
+        variant=variant, order_item=order_item, quantity=quantity, user=user
+    )
+
+
+def _restock_returned_count(*, variant, order_item, quantity, user):
+    """Increment the count ledger for a returned count-tracked line.
+
+    Args:
+        variant (ProductVariant): the line's variant.
+        order_item (OrderItem): the order line being restocked.
+        quantity (int | None): units to return; ``None`` returns the full line.
+        user (User | None): the acting user.
+
+    Returns:
+        int: the number of units returned to stock.
+
+    Raises:
+        ValidationError: if the quantity is not positive.
+    """
+    quantity = order_item.quantity if quantity is None else quantity
+    if quantity <= 0:
+        raise ValidationError("Restock quantity must be a positive integer.")
+
+    with transaction.atomic():
+        inventory = (
+            Inventory.objects.select_for_update()
+            .filter(
+                variant=variant,
+                warehouse_id=order_item.fulfillment_warehouse_id,
+            )
+            .first()
+        )
+        if inventory is None:
+            inventory = Inventory.objects.create(
+                variant=variant,
+                warehouse_id=order_item.fulfillment_warehouse_id,
+                quantity=quantity,
+            )
+        else:
+            inventory.quantity = F("quantity") + quantity
+            inventory.save(update_fields=["quantity", "updated_at"])
+            inventory.refresh_from_db()
+        _log_movement(
+            user=user,
+            action="receive_count",
+            inventory=inventory,
+            quantity_change=quantity,
+        )
+    return quantity
+
+
+def _restock_returned_serial_units(*, variant, order_item, quantity, user):
+    """Move sold serial units owned by a line back to ``returned``.
+
+    Only units still in ``sold`` status and explicitly linked to the order
+    line are moved, so a replayed restock finds nothing left to do and the
+    physical identity of the returned unit is never guessed.
+
+    Args:
+        variant (ProductVariant): the line's variant.
+        order_item (OrderItem): the order line being restocked.
+        quantity (int | None): units to return; ``None`` returns every sold
+            unit linked to the line.
+        user (User | None): the acting user.
+
+    Returns:
+        int: the number of units returned to stock.
+
+    Raises:
+        ValidationError: if the requested quantity exceeds the sold units
+            linked to the line.
+    """
+    if quantity is None:
+        quantity = order_item.quantity
+
+    with transaction.atomic():
+        units = list(
+            SerialUnit.objects.select_for_update()
+            .filter(order_item=order_item, variant=variant, status="sold")
+            .order_by("received_at", "pk")[:quantity]
+        )
+        if len(units) < quantity:
+            raise ValidationError(
+                f"Only {len(units)} sold serial units are linked to this order "
+                f"line; cannot restock {quantity}."
+            )
+        inventory = (
+            Inventory.objects.select_for_update()
+            .filter(variant=variant, warehouse_id=order_item.fulfillment_warehouse_id)
+            .first()
+        )
+        if inventory is None:
+            raise ValidationError(
+                "No inventory ledger row exists for this variant at the "
+                "fulfilment warehouse; reconcile stock before restocking."
+            )
+        for unit in units:
+            unit.status = "returned"
+            unit.save(update_fields=["status"])
+            _log_movement(
+                user=user,
+                action="serial_status",
+                inventory=inventory,
+                serial_number=unit.serial_number,
+                from_status="sold",
+                to_status="returned",
+            )
+    return len(units)

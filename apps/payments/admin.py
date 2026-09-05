@@ -78,6 +78,7 @@ class MpesaB2CPayoutAdmin(admin.ModelAdmin):
     list_display = (
         "conversation_id",
         "order",
+        "return_request",
         "phone_number",
         "amount",
         "reason",
@@ -89,6 +90,7 @@ class MpesaB2CPayoutAdmin(admin.ModelAdmin):
     search_fields = ("conversation_id", "mpesa_receipt_number", "phone_number")
     readonly_fields = (
         "order",
+        "return_request",
         "reason",
         "phone_number",
         "amount",

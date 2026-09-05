@@ -96,6 +96,9 @@ class MpesaB2CPayout(models.Model):
     transfer, and the service layer must not process it twice.
 
     ``raw_callback`` stores the full Daraja B2C callback body for audit.
+    ``return_request`` links a payout that settles a return (or a
+    pre-shipment cancellation refund); the callback drives the linked
+    return request to ``refunded`` when the transfer succeeds.
     """
 
     REASON_CHOICES = (
@@ -113,6 +116,13 @@ class MpesaB2CPayout(models.Model):
         "orders.Order",
         related_name="b2c_payouts",
         on_delete=models.CASCADE,
+    )
+    return_request = models.ForeignKey(
+        "returns.ReturnRequest",
+        null=True,
+        blank=True,
+        related_name="b2c_payouts",
+        on_delete=models.SET_NULL,
     )
     reason = models.CharField(
         max_length=20, choices=REASON_CHOICES, default="return_refund"

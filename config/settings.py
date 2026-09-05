@@ -58,6 +58,7 @@ LOCAL_APPS = [
     "apps.cart",
     "apps.orders",
     "apps.payments",
+    "apps.returns",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -210,6 +211,10 @@ SPECTACULAR_SETTINGS = {
         {"name": "cart", "description": "Shopping cart and wishlist"},
         {"name": "orders", "description": "Order placement, status, and verification"},
         {"name": "payments", "description": "M-Pesa payments and transactions"},
+        {
+            "name": "returns",
+            "description": "Post-delivery returns and pre-shipment cancellations",
+        },
     ],
 }
 

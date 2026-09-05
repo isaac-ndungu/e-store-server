@@ -45,4 +45,8 @@ urlpatterns = [
         "v1/",
         include(("apps.payments.urls", "payments"), namespace="payments"),
     ),
+    path(
+        "v1/",
+        include(("apps.returns.urls", "returns"), namespace="returns"),
+    ),
 ]

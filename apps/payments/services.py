@@ -516,7 +516,38 @@ def handle_b2c_callback(callback_body):
             payout.order_id,
         )
 
+        if payout.return_request_id is not None:
+            _resolve_return_from_payout(payout)
+
     return payout
+
+
+def _resolve_return_from_payout(payout):
+    """Carry a settled B2C payout through to its return request.
+
+    A return refund is only recorded as complete once the money has actually
+    moved — M-Pesa confirming the B2C payout.  On success the linked return
+    request is marked refunded (and its order refreshed if fully covered);
+    on failure it stays where it is so staff can inspect and retry.
+
+    The import is deferred to avoid a circular dependency with the returns
+    service, and the call is made defensively so a returns-side failure can
+    never break the payment callback that just confirmed a transfer.
+
+    Args:
+        payout (MpesaB2CPayout): the settled payout with a linked return
+            request.
+    """
+    try:
+        from apps.returns.services import resolve_return_refund
+
+        resolve_return_refund(payout)
+    except Exception:
+        logger.exception(
+            "Failed to resolve return request %s from B2C payout %s",
+            payout.return_request_id,
+            payout.conversation_id[:12],
+        )
 
 
 def _amount_paid_for_order(order):
@@ -524,9 +555,14 @@ def _amount_paid_for_order(order):
 
     The cap for a refund is what was really received, summed from the order's
     completed ``Payment`` rows (created only after a successful STK callback
-    amount-verified and confirmed).  If no payment row exists yet — which
-    should not happen for a refundable order — the total falls back to zero
-    so a refund is never silently authorized against a negative or empty base.
+    amount-verified and confirmed).  A delivered COD order is special-cased:
+    its full ``grand_total`` counts as collected, because collection happens
+    at delivery rather than at placement and there is no ``Payment`` row for
+    it.  A COD order that has not been delivered has collected nothing, so a
+    pre-shipment cancellation of a COD order correctly refunds nothing.  If
+    no payment row exists yet — which should not happen for a refundable order
+    — the total falls back to zero so a refund is never silently authorized
+    against a negative or empty base.
 
     Args:
         order (Order): the order being refunded.
@@ -541,7 +577,25 @@ def _amount_paid_for_order(order):
     total = Payment.objects.filter(order=order, status="completed").aggregate(
         total=Sum("amount")
     )["total"] or Decimal("0")
+    if order.payment_method == "cod" and order.status == "delivered":
+        return Decimal(order.grand_total)
     return Decimal(total)
+
+
+def get_amount_collected_for_order(order):
+    """Return the total confirmed amount collected for an order.
+
+    Public contract for the refund cap: what was really received, summed from
+    the order's completed ``Payment`` rows.  Returns zero when nothing has
+    been collected, so a refund is never authorized against an empty base.
+
+    Args:
+        order (Order): the order being considered for a refund.
+
+    Returns:
+        Decimal: the total confirmed amount received for the order.
+    """
+    return _amount_paid_for_order(order)
 
 
 def _resolve_refund_destination(order):
@@ -571,7 +625,7 @@ def _resolve_refund_destination(order):
     return order.phone
 
 
-def initiate_b2c_refund(order, amount, reason="return_refund"):
+def initiate_b2c_refund(order, amount, reason="return_refund", *, return_request=None):
     """Initiate a B2C refund payout for an order.
 
     The destination phone number and the refund amount are both derived
@@ -586,13 +640,16 @@ def initiate_b2c_refund(order, amount, reason="return_refund"):
 
     Creates a ``MpesaB2CPayout`` record in ``pending`` status and calls the
     Daraja B2C API.  The payout record tracks the ``conversation_id`` for
-    idempotent callback processing.
+    idempotent callback processing.  When ``return_request`` is given the
+    payout is linked to it so the callback can drive the return's resolution.
 
     Args:
         order (Order): the order being refunded.
         amount (Decimal): the requested refund amount.  Silently capped at
             ``_amount_paid_for_order(order)`` if it exceeds what was collected.
         reason (str): the refund reason code.
+        return_request (ReturnRequest | None): the return request this payout
+            refunds, if any, linked for callback-driven resolution.
 
     Returns:
         MpesaB2CPayout: the newly created payout record.
@@ -625,6 +682,7 @@ def initiate_b2c_refund(order, amount, reason="return_refund"):
         amount=refund_amount,
         conversation_id="",
         status="pending",
+        return_request=return_request,
     )
 
     try:

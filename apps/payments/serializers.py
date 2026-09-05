@@ -64,6 +64,7 @@ class MpesaB2CPayoutSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "order",
+            "return_request",
             "reason",
             "phone_number",
             "amount",

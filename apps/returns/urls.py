@@ -1,0 +1,67 @@
+from django.urls import path
+
+from apps.returns.views import (
+    OrderPreShipmentCancelView,
+    OrderReturnRequestDetailView,
+    OrderReturnRequestListCreateView,
+    ReturnApproveView,
+    ReturnCloseView,
+    ReturnReceiveItemView,
+    ReturnRefundView,
+    ReturnRejectView,
+    ReturnRequestStaffDetailView,
+    ReturnRequestStaffListView,
+)
+
+urlpatterns = [
+    path(
+        "orders/<str:order_ref>/return-requests/",
+        OrderReturnRequestListCreateView.as_view(),
+        name="order-return-requests",
+    ),
+    path(
+        "orders/<str:order_ref>/return-requests/<int:return_request_id>/",
+        OrderReturnRequestDetailView.as_view(),
+        name="order-return-request-detail",
+    ),
+    path(
+        "returns/",
+        ReturnRequestStaffListView.as_view(),
+        name="return-request-staff-list",
+    ),
+    path(
+        "returns/<int:return_request_id>/",
+        ReturnRequestStaffDetailView.as_view(),
+        name="return-request-staff-detail",
+    ),
+    path(
+        "returns/<int:return_request_id>/approve/",
+        ReturnApproveView.as_view(),
+        name="return-request-approve",
+    ),
+    path(
+        "returns/<int:return_request_id>/reject/",
+        ReturnRejectView.as_view(),
+        name="return-request-reject",
+    ),
+    path(
+        "returns/<int:return_request_id>/close/",
+        ReturnCloseView.as_view(),
+        name="return-request-close",
+    ),
+    path(
+        "returns/<int:return_request_id>/receive-item/",
+        ReturnReceiveItemView.as_view(),
+        name="return-request-receive-item",
+    ),
+    path(
+        "returns/<int:return_request_id>/refund/",
+        ReturnRefundView.as_view(),
+        name="return-request-refund",
+    ),
+    path(
+        "orders/<int:order_id>/pre-shipment-cancel/",
+        OrderPreShipmentCancelView.as_view(),
+        name="order-pre-shipment-cancel",
+    ),
+]
