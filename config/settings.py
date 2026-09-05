@@ -60,6 +60,7 @@ LOCAL_APPS = [
     "apps.payments",
     "apps.returns",
     "apps.social_proof",
+    "apps.reviews",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -178,6 +179,8 @@ REST_FRAMEWORK = {
         "order_otp_resend": "5/min",
         "mpesa_callback": "500/min",
         "social_proof_view": "30/min",
+        "review_read": "60/min",
+        "review_write": "10/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
@@ -221,6 +224,10 @@ SPECTACULAR_SETTINGS = {
         {
             "name": "social_proof",
             "description": "Product view tracking and live-viewer counts",
+        },
+        {
+            "name": "reviews",
+            "description": "Product reviews, Q&A, and verified-purchase badges",
         },
     ],
 }
