@@ -1,16 +1,21 @@
 """API views for the social proof app.
 
-Two public endpoints: recording a product view and reading the current
-live-viewer count. Both are ``AllowAny`` deliberately — viewing a product (or
-asking how many people are viewing it) is never gated, and both are throttled
-with the shared public scope. Views stay thin: resolve the product through the
-selector, call the service, return the count.
+Public storefront endpoints: recording a product view, reading the live-viewer
+count for one product, reading counts for many products at once, and the
+recent-sales feed. All four are ``AllowAny`` deliberately — viewing a product,
+or asking how many people are viewing it, is never gated — and they declare no
+authentication classes so the common logged-in storefront path never trips the
+session CSRF check for an action that mutates nothing sensitive.
 
-A viewer's identity comes from an explicit ``session_key`` in the payload,
-the caller's established Django session, or a first-party visitor cookie the
-endpoint issues on first contact, so repeated views by the same shopper are
-counted once while distinct shoppers each count toward the live total.
+A viewer's identity comes exclusively from the first-party visitor cookie the
+server mints on first contact: a random hex value holding no personal data.
+Client-supplied identifiers are ignored, so a caller cannot impersonate another
+visitor or fabricate live-viewer counts by sending fake session keys. All of
+the routes are throttled; the recording route has its own stricter scope
+because every call can append a durable event row.
 """
+
+import re
 
 from django.conf import settings
 from rest_framework import permissions, status
@@ -18,41 +23,49 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.social_proof.cache import LIVE_VIEWER_WINDOW_SECONDS
-from apps.social_proof.selectors import get_active_product_by_slug
-from apps.social_proof.serializers import ProductViewSerializer
+from apps.social_proof.constants import (
+    BOT_USER_AGENT_PATTERN,
+    VISITOR_COOKIE,
+    VISITOR_COOKIE_MAX_AGE_DAYS,
+    VISITOR_KEY_MAX_LENGTH,
+)
+from apps.social_proof.selectors import (
+    get_active_product_by_slug,
+    list_products_by_slugs,
+    list_recent_sales,
+)
+from apps.social_proof.serializers import (
+    BatchViewersQuerySerializer,
+    LiveViewerCountSerializer,
+    RecentSaleSerializer,
+    RecentSalesQuerySerializer,
+)
 from apps.social_proof.services import (
     get_live_viewer_count,
+    get_live_viewer_counts,
+    is_feature_enabled,
     new_session_key,
     record_product_view,
 )
 
-# First-party cookie carrying the anonymous visitor identity the live-viewer
-# counters key on. It holds no token and no personal data — just a random hex
-# identifier that distinguishes one browser from another.
-_VISITOR_COOKIE = "e_store_visitor"
+_BOT_USER_AGENT_RE = re.compile(BOT_USER_AGENT_PATTERN, re.IGNORECASE)
 
 
-def _visitor_session_key(request, provided_key):
-    """Resolve the browsing session identifier for a request.
+def _visitor_key(request):
+    """Resolve the caller's browsing identity from its visitor cookie.
+
+    Returns a fresh, untrusted-free key when the cookie is absent or malformed
+    so the caller can be handed one on the way out.
 
     Args:
         request: the incoming request.
-        provided_key (str): an explicit ``session_key`` from the payload, or
-            empty.
 
     Returns:
-        tuple: ``(session_key or None, needs_cookie)`` where ``needs_cookie``
-            is True when a fresh identifier was generated and must be handed
-            back to the caller so the next request reuses it.
+        tuple: ``(session_key, needs_cookie)`` where ``needs_cookie`` is True
+            when a fresh identifier was minted and must be persisted.
     """
-    if provided_key:
-        return provided_key, False
-    request_session_key = getattr(request.session, "session_key", None)
-    if request_session_key:
-        return request_session_key, False
-    cookie_key = request.COOKIES.get(_VISITOR_COOKIE)
-    if cookie_key:
+    cookie_key = request.COOKIES.get(VISITOR_COOKIE, "")
+    if cookie_key and len(cookie_key) <= VISITOR_KEY_MAX_LENGTH:
         return cookie_key, False
     return new_session_key(), True
 
@@ -68,49 +81,72 @@ def _with_visitor_cookie(response, session_key):
         Response: the response with the cookie attached.
     """
     response.set_cookie(
-        _VISITOR_COOKIE,
+        VISITOR_COOKIE,
         session_key,
-        max_age=LIVE_VIEWER_WINDOW_SECONDS,
-        httponly=False,
+        max_age=VISITOR_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60,
+        httponly=True,
         samesite="Lax",
         secure=not settings.DEBUG,
     )
     return response
 
 
+def _is_bot_request(request):
+    """Return whether the request's user agent looks automated.
+
+    Bot and crawler traffic is acknowledged but never recorded, so automated
+    visits neither inflate live-viewer counts nor bloat the event table.
+
+    Args:
+        request: the incoming request.
+
+    Returns:
+        bool: True when the user agent matches a known bot pattern.
+    """
+    user_agent = request.META.get("HTTP_USER_AGENT", "")
+    return bool(user_agent) and bool(_BOT_USER_AGENT_RE.search(user_agent))
+
+
 class ProductViewRecordView(APIView):
-    """Record a product view for the current browsing session (public)."""
+    """Record a product view for the current visitor (public)."""
 
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public"
+    throttle_scope = "social_proof_view"
 
     def post(self, request, slug=None):
         """Record the view and return the refreshed live-viewer count.
 
+        Identity comes from the visitor cookie only; the request body is
+        ignored entirely. Bot traffic gets the current count without being
+        recorded.
+
         Args:
-            request: the POST request; the payload may carry an optional
-                ``session_key`` identifying the browsing session.
+            request: the POST request.
             slug (str): the product slug from the URL.
 
         Returns:
-            Response: ``201 Created`` with the live-viewer count, or ``404``
-                when the product does not exist or is hidden.
+            Response: ``201 Created`` with the live-viewer count (or ``200``
+                for acknowledged bot traffic), or ``404`` when the product
+                does not exist or is hidden.
         """
         product = get_active_product_by_slug(slug)
         if product is None:
             return Response(
                 {"detail": "No such product."}, status=status.HTTP_404_NOT_FOUND
             )
-        input_serializer = ProductViewSerializer(data=request.data)
-        input_serializer.is_valid(raise_exception=True)
-        provided_key = input_serializer.validated_data.get("session_key", "").strip()
-        session_key, needs_cookie = _visitor_session_key(request, provided_key)
-
-        response = Response(
-            {"live_viewers": record_product_view(product, session_key=session_key)},
-            status=status.HTTP_201_CREATED,
-        )
+        if _is_bot_request(request):
+            return Response(
+                LiveViewerCountSerializer(
+                    {"live_viewers": get_live_viewer_count(product)}
+                ).data
+            )
+        session_key, needs_cookie = _visitor_key(request)
+        data = LiveViewerCountSerializer(
+            {"live_viewers": record_product_view(product, session_key=session_key)}
+        ).data
+        response = Response(data, status=status.HTTP_201_CREATED)
         if needs_cookie:
             return _with_visitor_cookie(response, session_key)
         return response
@@ -120,6 +156,7 @@ class ProductViewersView(APIView):
     """Return the current live-viewer count for a product (public)."""
 
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
@@ -139,4 +176,71 @@ class ProductViewersView(APIView):
             return Response(
                 {"detail": "No such product."}, status=status.HTTP_404_NOT_FOUND
             )
-        return Response({"live_viewers": get_live_viewer_count(product)})
+        return Response(
+            LiveViewerCountSerializer(
+                {"live_viewers": get_live_viewer_count(product)}
+            ).data
+        )
+
+
+class ViewerCountsBatchView(APIView):
+    """Return live-viewer counts for several products at once (public).
+
+    Served on a ``social-proof/`` path (not ``products/<slug>/viewers/``) so
+    the catalog's ``products/<slug>`` pattern cannot capture the route.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public"
+
+    def get(self, request):
+        """Return a slug-to-count mapping for the requested products.
+
+        Slugs of missing or hidden products are filtered out, so their counts
+        are simply absent from the response.
+
+        Args:
+            request: the GET request with the ``products`` query.
+
+        Returns:
+            Response: ``200 OK`` with ``{slug: count}`` for each visible
+                product, or ``400`` when the query is invalid.
+        """
+        query = BatchViewersQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        products = list_products_by_slugs(query.validated_data["products"])
+        counts = get_live_viewer_counts(products)
+        payload = {product.slug: counts.get(product.pk, 0) for product in products}
+        return Response({"live_viewers": payload})
+
+
+class RecentSalesView(APIView):
+    """Return recently completed purchases for the social-proof feed (public).
+
+    The feed powers the storefront's "someone just bought X" popups. It
+    exposes only the product, quantity, and purchase time — no customer data.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public"
+
+    def get(self, request):
+        """Return the recent-sales feed, newest first.
+
+        Args:
+            request: the GET request with an optional ``limit``.
+
+        Returns:
+            Response: ``200 OK`` with the feed, or ``400`` when the query is
+                invalid. An empty list when social proof is disabled.
+        """
+        query = RecentSalesQuerySerializer(data=request.query_params)
+        query.is_valid(raise_exception=True)
+        if not is_feature_enabled():
+            return Response({"recent_sales": []})
+        sales = list_recent_sales(query.validated_data["limit"])
+        return Response({"recent_sales": RecentSaleSerializer(sales, many=True).data})

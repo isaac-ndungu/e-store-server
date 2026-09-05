@@ -161,6 +161,7 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
+    "NUM_PROXIES": config("NUM_PROXIES", default=0, cast=int),
     "DEFAULT_THROTTLE_RATES": {
         "public": "100/min",
         "auth_login": "3/min",
@@ -176,6 +177,7 @@ REST_FRAMEWORK = {
         "order_verify": "10/min",
         "order_otp_resend": "5/min",
         "mpesa_callback": "500/min",
+        "social_proof_view": "30/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
@@ -262,9 +264,6 @@ CELERY_TASK_EAGER_PROPAGATES = TESTING
 # Stock reserved at checkout expires after the configured grace period so
 # abandoned, unpaid orders cannot hold inventory indefinitely. The sweep
 # runs frequently enough that released stock returns to availability quickly.
-# Stock reserved at checkout expires after the configured grace period so
-# abandoned, unpaid orders cannot hold inventory indefinitely. The sweep
-# runs frequently enough that released stock returns to availability quickly.
 CELERY_BEAT_SCHEDULE = {
     "release-expired-stock-reservations": {
         "task": "apps.inventory.tasks.expire_stale_reservations",
@@ -273,6 +272,10 @@ CELERY_BEAT_SCHEDULE = {
     "refresh-smart-collections": {
         "task": "apps.collections.tasks.refresh_smart_collections",
         "schedule": 900.0,
+    },
+    "purge-old-view-events": {
+        "task": "apps.social_proof.tasks.purge_old_view_events_task",
+        "schedule": 86400.0,
     },
 }
 

@@ -24,6 +24,40 @@ LIVE_VIEWER_WINDOW_SECONDS = 5 * 60
 
 _locmem_lock = threading.Lock()
 
+# Cache key for the ``enable_social_proof`` site toggle. Read on every
+# social-proof request, so it is cached for a short window and invalidated
+# explicitly when ``SiteConfig`` changes (see ``apps.social_proof.signals``).
+FEATURE_FLAG_KEY = "social_proof:feature_enabled"
+_FEATURE_FLAG_TTL_SECONDS = 60
+
+
+def is_feature_enabled():
+    """Return whether the social-proof feature is switched on.
+
+    Reads the cached value, refreshing it from ``SiteConfig`` on a cache miss.
+    A cached ``False`` is distinct from a miss because the cache backend
+    returns ``None`` only when the key is absent.
+
+    Returns:
+        bool: the ``enable_social_proof`` setting, defaulting to True.
+    """
+    enabled = cache.get(FEATURE_FLAG_KEY)
+    if enabled is None:
+        from apps.core.models import SiteConfig
+
+        enabled = SiteConfig.load().settings.get("enable_social_proof", True)
+        cache.set(FEATURE_FLAG_KEY, enabled, _FEATURE_FLAG_TTL_SECONDS)
+    return bool(enabled)
+
+
+def invalidate_feature_enabled():
+    """Drop the cached feature flag so the next read reflects ``SiteConfig``.
+
+    Called from the ``SiteConfig`` post-save signal so the flag gate never
+    serves a stale value after staff change it in the admin.
+    """
+    cache.delete(FEATURE_FLAG_KEY)
+
 
 def _live_key(product_id):
     """Return the storage key holding a product's live-viewer set.
@@ -103,3 +137,26 @@ def get_live_viewer_count(product_id):
     key_and_ts = cache.get(_live_key(product_id)) or {}
     cutoff = time.time() - LIVE_VIEWER_WINDOW_SECONDS
     return sum(1 for ts in key_and_ts.values() if ts >= cutoff)
+
+
+def get_live_viewer_count_batch(product_ids):
+    """Return live-viewer counts for many products at once.
+
+    Uses a single Redis pipeline so a list page asking for counts across its
+    visible products costs one round trip rather than one per product.
+
+    Args:
+        product_ids (iterable of int): the product primary keys.
+
+    Returns:
+        dict: ``{product_id: count}`` for each distinct requested id.
+    """
+    ids = list(dict.fromkeys(product_ids))
+    if _backend_is_redis():
+        client = cache.client.get_client()
+        with client.pipeline() as pipe:
+            for product_id in ids:
+                pipe.scard(_live_key(product_id))
+            counts = pipe.execute()
+        return dict(zip(ids, counts, strict=True))
+    return {product_id: get_live_viewer_count(product_id) for product_id in ids}

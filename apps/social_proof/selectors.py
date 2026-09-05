@@ -1,14 +1,18 @@
 """Selectors for the social proof app.
 
-Read helpers for resolving active products and browsing the durable view-event
-history. Live-viewer counts are read from the Redis cache via
-``apps.social_proof.cache``; the product lookup here stays on the primary key
-only and the event queries below serve analytics and admin review, not the
-hot storefront read.
+Read helpers for resolving active products, the recent-sales feed, and
+batching live-viewer counts. Live-viewer counts are read from the Redis cache
+via ``apps.social_proof.cache``; the product lookups here stay on the slugs
+and primary keys the storefront passes in and never load the wide product row.
 """
 
+from datetime import timedelta
+
+from django.utils import timezone
+
 from apps.catalog.models import Product
-from apps.social_proof.models import ProductViewEvent
+from apps.orders.models import OrderItem
+from apps.social_proof.constants import RECENT_SALES_STATUSES, RECENT_SALES_WINDOW_HOURS
 
 
 def get_active_product_by_slug(slug):
@@ -30,25 +34,54 @@ def get_active_product_by_slug(slug):
     )
 
 
-def list_recent_view_events(limit=50):
-    """Return the most recent view events with their products.
+def list_products_by_slugs(slugs):
+    """Return the active products matching any of the given slugs.
 
     Args:
-        limit (int): how many rows to return, newest first.
+        slugs (iterable of str): the requested product slugs.
 
     Returns:
-        QuerySet: recent ``ProductViewEvent`` rows, products prefetched.
+        QuerySet: matching active, non-discontinued products, fields limited
+            to the slug and primary key.
     """
-    return ProductViewEvent.objects.select_related("product")[:limit]
+    return (
+        Product.objects.only("pk", "slug")
+        .filter(
+            slug__in=set(slugs),
+            is_active=True,
+            is_discontinued=False,
+        )
+        .order_by("pk")
+    )
 
 
-def count_views_for_product(product):
-    """Return the total durable view-events recorded for a product.
+def list_recent_sales(limit):
+    """Return the most recent completed purchases for the social-proof feed.
+
+    Surfaces only the product, quantity, and purchase time — never the
+    customer's identity — so the storefront can show "someone just bought X"
+    without leaking who. Bundle purchases appear as one row per component,
+    matching how they are stored.
 
     Args:
-        product (Product): the product.
+        limit (int): how many lines to return, newest first.
 
     Returns:
-        int: the number of recorded view events.
+        QuerySet: recent ``OrderItem`` rows for orders in a completed status,
+            products selected for the feed and fetched in one join.
     """
-    return ProductViewEvent.objects.filter(product=product).count()
+    cutoff = timezone.now() - timedelta(hours=RECENT_SALES_WINDOW_HOURS)
+    return (
+        OrderItem.objects.filter(
+            order__status__in=RECENT_SALES_STATUSES,
+            order__placed_at__gte=cutoff,
+        )
+        .select_related("product")
+        .only(
+            "product_name",
+            "quantity",
+            "order__placed_at",
+            "product__id",
+            "product__slug",
+        )[:limit]
+    )
