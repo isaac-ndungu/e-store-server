@@ -69,4 +69,8 @@ urlpatterns = [
         "v1/",
         include(("apps.analytics.urls", "analytics"), namespace="analytics"),
     ),
+    path(
+        "v1/",
+        include(("apps.dashboard.urls", "dashboard"), namespace="dashboard"),
+    ),
 ]

@@ -25,7 +25,10 @@ class Collection(models.Model):
 
     ``collection_type`` distinguishes a manually curated list from a rule-driven
     one. A smart collection carries exactly one ``smart_rule`` and its window/
-    threshold arguments; a manual one carries none. ``starts_at`` / ``ends_at``
+    threshold arguments; a manual one carries none. ``last_refreshed_at``
+    records when a smart collection's membership was last recomputed, so
+    staff can tell at a glance whether the automatic refresh is healthy.
+    ``starts_at`` / ``ends_at``
     optionally bound when the collection is active, and ``is_active`` is the
     staff override — an inactive collection is hidden from the storefront even
     within its window. ``display_location`` and ``sort_order`` are presentation
@@ -59,6 +62,7 @@ class Collection(models.Model):
     is_active = models.BooleanField(default=True)
     starts_at = models.DateTimeField(null=True, blank=True)
     ends_at = models.DateTimeField(null=True, blank=True)
+    last_refreshed_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

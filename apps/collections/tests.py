@@ -297,6 +297,19 @@ class SmartRefreshServiceTests(CollectionsAPITestCase):
         self.assertEqual(refreshed, 1)
         self.assertEqual(smart.memberships.count(), 1)
 
+    def test_refresh_sets_last_refreshed_at(self):
+        """A successful refresh records when the membership was rebuilt."""
+        product, _ = _make_product(name="Timed", slug="timed")
+        Product.objects.filter(pk=product.pk).update(
+            created_at=timezone.now() - timedelta(days=1)
+        )
+        collection = _make_collection(
+            collection_type="smart", smart_rule="new_arrivals"
+        )
+        refresh_smart_collection(collection)
+        refreshed = Collection.objects.get(pk=collection.pk)
+        self.assertIsNotNone(refreshed.last_refreshed_at)
+
     def test_refresh_is_idempotent(self):
         """A repeated refresh converges on the same membership and cache."""
         product, _ = _make_product(name="Repeat", slug="repeat")

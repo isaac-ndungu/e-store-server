@@ -303,6 +303,8 @@ def refresh_smart_collection(collection):
                 for index, pk in enumerate(product_pks)
             ]
         )
+        collection.last_refreshed_at = timezone.now()
+        collection.save(update_fields=["last_refreshed_at", "updated_at"])
     cache.cache_product_pks(collection.slug, product_pks)
     return True
 

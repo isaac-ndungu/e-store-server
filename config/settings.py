@@ -64,6 +64,7 @@ LOCAL_APPS = [
     "apps.content",
     "apps.support",
     "apps.analytics",
+    "apps.dashboard",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -189,6 +190,7 @@ REST_FRAMEWORK = {
         "support_read": "60/min",
         "support_write": "20/min",
         "analytics_read": "60/min",
+        "dashboard_read": "60/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
@@ -248,6 +250,10 @@ SPECTACULAR_SETTINGS = {
         {
             "name": "analytics",
             "description": "Staff-only dashboard summaries and reports",
+        },
+        {
+            "name": "dashboard",
+            "description": "Staff-only dashboard widgets and live alerts",
         },
     ],
 }
