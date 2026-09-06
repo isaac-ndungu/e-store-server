@@ -7,10 +7,9 @@ truth for where a request is; the returns service layer records every change
 in ``ReturnRequestStatusHistory`` alongside it, so the resolution trail —
 including the amounts computed at approval — is fully reconstructable.
 
-The upstream model sketch also lists an optional link to a support ticket.
-The support module is not built yet, so the field is intentionally absent
-here; it will be added by a follow-up migration on this app once the target
-model exists.
+A return request may also carry an optional link to the support ticket a
+customer opened about it, so a refund dispute and its conversation stay
+connected.
 """
 
 from django.conf import settings
@@ -80,6 +79,13 @@ class ReturnRequest(models.Model):
     )
     refund_method = models.CharField(
         max_length=20, choices=REFUND_METHOD_CHOICES, blank=True
+    )
+    ticket = models.ForeignKey(
+        "support.Ticket",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="return_requests",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)

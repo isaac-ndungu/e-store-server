@@ -17,11 +17,7 @@ Permission model:
   their own cart, and wishlist mutations are scoped to the authenticated user.
 """
 
-from functools import wraps
-
-from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import permissions, status
-from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -47,31 +43,7 @@ from apps.cart.services import (
     remove_item,
     update_item_quantity,
 )
-
-
-def _service_error_to_400(mutation):
-    """Convert a service-layer validation error into a DRF 400 response.
-
-    Services raise Django's ``ValidationError``; DRF only translates the
-    ``rest_framework`` variant automatically, so a mutation that raises for
-    a business rule would otherwise surface as a 500.
-
-    Args:
-        mutation (Callable): the service function to invoke.
-
-    Returns:
-        Callable: a wrapper that raises DRF's ``ValidationError`` on a
-            service validation failure.
-    """
-
-    @wraps(mutation)
-    def wrapper(*args, **kwargs):
-        try:
-            return mutation(*args, **kwargs)
-        except DjangoValidationError as exc:
-            raise DRFValidationError(exc.messages) from exc
-
-    return wrapper
+from apps.core.api import service_error_to_400 as _service_error_to_400
 
 
 def _ensure_guest_session(request):

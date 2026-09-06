@@ -38,7 +38,7 @@ from apps.catalog.images import (
     preferred_image_url,
 )
 from apps.catalog.validators import validate_image_upload
-from apps.orders.views import _service_error_to_400
+from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.reviews.constants import (
     MAX_UNATTACHED_PHOTOS_PER_USER,
     REVIEW_PHOTO_MAX_SIZE_MB,

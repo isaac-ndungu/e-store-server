@@ -43,7 +43,7 @@ from apps.content.services import (
     update_banner,
     update_page,
 )
-from apps.orders.views import _service_error_to_400
+from apps.core.api import service_error_to_400 as _service_error_to_400
 
 
 def _page_or_404(slug):

@@ -16,6 +16,7 @@ venv/
 db.sqlite3
 staticfiles/
 media/
+media_test/
 
 # Environment
 .env

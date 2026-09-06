@@ -23,8 +23,9 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsManagerOrSupport
+from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.orders.selectors import get_order_for_staff
-from apps.orders.views import _resolve_order, _service_error_to_400
+from apps.orders.views import _resolve_order
 from apps.payments.daraja import DarajaError
 from apps.returns.selectors import (
     get_return_request_for_order,

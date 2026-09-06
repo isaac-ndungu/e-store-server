@@ -62,6 +62,7 @@ LOCAL_APPS = [
     "apps.social_proof",
     "apps.reviews",
     "apps.content",
+    "apps.support",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -184,6 +185,8 @@ REST_FRAMEWORK = {
         "review_write": "10/min",
         "content_read": "60/min",
         "content_write": "10/min",
+        "support_read": "60/min",
+        "support_write": "20/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
@@ -235,6 +238,10 @@ SPECTACULAR_SETTINGS = {
         {
             "name": "content",
             "description": "Static content pages and promotional banners",
+        },
+        {
+            "name": "support",
+            "description": "Support tickets and live-chat sessions",
         },
     ],
 }
@@ -351,3 +358,4 @@ if TESTING:
     PASSWORD_HASHERS = [
         "django.contrib.auth.hashers.MD5PasswordHasher",
     ]
+    MEDIA_ROOT = BASE_DIR / "media_test"
