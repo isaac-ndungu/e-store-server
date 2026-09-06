@@ -65,4 +65,8 @@ urlpatterns = [
         "v1/",
         include(("apps.support.urls", "support"), namespace="support"),
     ),
+    path(
+        "v1/",
+        include(("apps.analytics.urls", "analytics"), namespace="analytics"),
+    ),
 ]
