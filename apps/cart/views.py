@@ -120,7 +120,6 @@ class CartView(APIView):
             {
                 "id": cart.pk,
                 "user": cart.user_id,
-                "session_key": cart.session_key,
                 "coupon_code": cart.coupon.code if cart.coupon_id else None,
                 "created_at": cart.created_at,
                 "updated_at": cart.updated_at,

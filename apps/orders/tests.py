@@ -446,6 +446,72 @@ class OrderCreationTests(APITestCase):
             )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_cart_cleared_after_successful_order(self):
+        """A successful order empties the caller's cart of placed items."""
+        from apps.cart.models import CartItem
+
+        _, variant = _make_product()
+        _stock_variant(variant)
+        cart = _guest_cart_for_client(self.client, variant, quantity=1)
+        with _mock_sms():
+            response = self.client.post(
+                self.url,
+                {
+                    "phone": self.phone,
+                    "payment_method": "cod",
+                    "delivery_zone_id": _active_zone().pk,
+                },
+                HTTP_IDEMPOTENCY_KEY="clear-cart-order",
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertFalse(CartItem.objects.filter(cart=cart).exists())
+
+    def test_mpesa_rate_limit_retry_reuses_order(self):
+        """A rate-limited STK push retries the same order, never a duplicate.
+
+        The first attempt answers 429 and keeps the created order; the second
+        attempt with the same key resumes that order and re-runs the payment,
+        so a flaky network tap cannot create two pending orders.
+        """
+        from apps.orders.payments import MpesaGateway
+        from apps.payments.services import StkPushRateLimited
+
+        _, variant = _make_product()
+        _stock_variant(variant)
+        _guest_cart_for_client(self.client, variant, quantity=1)
+        attempts = {"count": 0}
+
+        def _initiate(order):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise StkPushRateLimited(retry_after=30)
+            return None
+
+        with (
+            mock.patch.object(MpesaGateway, "is_available", return_value=True),
+            mock.patch(
+                "apps.payments.services.initiate_stk_push", side_effect=_initiate
+            ),
+        ):
+            payload = {
+                "phone": self.phone,
+                "payment_method": "mpesa",
+                "delivery_zone_id": _active_zone().pk,
+            }
+            first = self.client.post(
+                self.url, payload, HTTP_IDEMPOTENCY_KEY="mpesa-retry", format="json"
+            )
+            self.assertEqual(first.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+            second = self.client.post(
+                self.url, payload, HTTP_IDEMPOTENCY_KEY="mpesa-retry", format="json"
+            )
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Order.objects.count(), 1)
+        self.assertEqual(attempts["count"], 2)
+        self.assertIn("id", second.data)
+
 
 class OrderAccessTests(APITestCase):
     """Exercises ownership and role-based access to order endpoints."""

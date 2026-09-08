@@ -6,7 +6,11 @@ Content pages are public by slug; banners are fetched by placement so the
 storefront can slot them into predefined layout regions.
 """
 
+from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils.http import url_has_allowed_host_and_scheme
+
+from apps.catalog.validators import validate_image_upload
 
 
 class ContentPage(models.Model):
@@ -57,7 +61,9 @@ class Banner(models.Model):
     """
 
     title = models.CharField(max_length=255, blank=True)
-    image = models.ImageField(upload_to="content/banners/")
+    image = models.ImageField(
+        upload_to="content/banners/", validators=[validate_image_upload]
+    )
     link_url = models.CharField(max_length=500, blank=True)
     placement = models.CharField(max_length=50)
     sort_order = models.PositiveIntegerField(default=0)
@@ -67,13 +73,36 @@ class Banner(models.Model):
 
     class Meta:
         ordering = ["placement", "sort_order", "pk"]
-        indexes = [
-            models.Index(
-                fields=["is_active", "placement", "sort_order"],
-                name="bn_active_placement_idx",
-            ),
-            models.Index(fields=["starts_at", "ends_at"], name="bn_schedule_idx"),
-        ]
+
+    def clean(self):
+        """Validate that a link URL only reaches http(s) or relative targets.
+
+        Raises:
+            ValidationError: if ``link_url`` uses an unsafe scheme.
+        """
+        super().clean()
+        if not self.link_url:
+            return
+        if self.link_url.startswith("//"):
+            raise ValidationError(
+                {"link_url": "Protocol-relative URLs are not allowed."}
+            )
+        if not (
+            self.link_url.startswith("/")
+            or url_has_allowed_host_and_scheme(
+                self.link_url,
+                allowed_hosts=None,
+                require_https=False,
+            )
+        ):
+            raise ValidationError(
+                {
+                    "link_url": (
+                        "link_url must be an http(s) URL or a relative path "
+                        "starting with '/'."
+                    )
+                }
+            )
 
     def __str__(self):
         """Return a compact label identifying the banner."""

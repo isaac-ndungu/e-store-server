@@ -24,6 +24,7 @@ import uuid
 from datetime import timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
+import bleach
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
@@ -119,6 +120,24 @@ def _generate_otp():
     return f"{secrets.randbelow(1_000_000):06d}"
 
 
+def _sanitize_plain(value):
+    """Strip markup from a free-text note before it is stored.
+
+    Order notes are written by customers and staff and may later be rendered
+    in an admin or notification context. ``bleach`` removes any tag or event
+    handler so a stored note can never carry script content.
+
+    Args:
+        value (str): the raw note.
+
+    Returns:
+        str: the sanitized note.
+    """
+    if not value:
+        return ""
+    return bleach.clean(value, tags=set(), strip=True).strip()
+
+
 def _normalize_phone(value):
     """Normalize and validate a phone number to E.164 form.
 
@@ -168,7 +187,7 @@ def transition_order(order, to_status, *, changed_by=None, note=""):
             from_status=order.status,
             to_status=to_status,
             changed_by=changed_by,
-            note=note,
+            note=_sanitize_plain(note),
         )
         order.status = to_status
         order.save(update_fields=["status", "updated_at"])
@@ -251,6 +270,7 @@ def create_order_from_cart(
             insufficient for any line.
     """
     phone = _normalize_phone(phone)
+    notes = _sanitize_plain(notes)
     items = list(cart.items.select_related("variant__product", "bundle"))
     if not items:
         raise ValidationError("Cannot create an order from an empty cart.")
@@ -335,6 +355,11 @@ def create_order_from_cart(
                 if bundle_group_id is None:
                     bundle_group_id = uuid.uuid4()
                 _create_bundle_order_items(order, item, delivery_zone, bundle_group_id)
+
+        cart.items.all().delete()
+        if cart.coupon_id is not None:
+            cart.coupon = None
+            cart.save(update_fields=["coupon", "updated_at"])
 
     return order
 

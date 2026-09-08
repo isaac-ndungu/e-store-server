@@ -236,6 +236,11 @@ class ProductPriceView(APIView):
     def get(self, request, slug):
         """Return pricing data for all active variants of the product.
 
+        The advertised price is the server-computed effective price (catalogue
+        price after the best applicable discount), never the raw stored price
+        — a storefront that wires this endpoint into a checkout must never
+        show or charge a discount-ignoring amount.
+
         Args:
             request: the GET request.
             slug (str): the product slug.
@@ -243,6 +248,8 @@ class ProductPriceView(APIView):
         Returns:
             Response: 200 with variant pricing, or 404.
         """
+        from apps.promotions.services import get_effective_price
+
         product = get_product_by_slug(slug, include_inactive=False)
         if product is None:
             from django.http import Http404
@@ -254,12 +261,15 @@ class ProductPriceView(APIView):
         data = []
         for variant in variants:
             tiers = variant.pricing_tiers.all()
+            pricing = get_effective_price(variant)
             data.append(
                 {
                     "id": variant.id,
                     "sku": variant.sku,
                     "attributes": variant.attributes,
-                    "price": str(variant.price),
+                    "price": pricing["price"],
+                    "base_price": pricing["base_price"],
+                    "discount": pricing["discount"],
                     "compare_at_price": (
                         str(variant.compare_at_price)
                         if variant.compare_at_price
@@ -428,7 +438,13 @@ class AdminProductImageListCreateView(generics.ListCreateAPIView):
 
 
 class AdminProductImageDeleteView(generics.DestroyAPIView):
-    """Delete an image (admin only)."""
+    """Delete an image by pk (admin only).
+
+    The endpoint is deliberately kept flat (``/catalog/admin/images/<pk>/``)
+    to match the admin UI's delete flow; it is safe because it is admin-only
+    and a delete of an image only ever affects that image row, never a
+    sibling product's data.
+    """
 
     permission_classes = [permissions.IsAdminUser]
     queryset = ProductImage.objects.all()

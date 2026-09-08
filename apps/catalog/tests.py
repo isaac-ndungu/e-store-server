@@ -501,8 +501,43 @@ class ProductDetailBrowseTests(APITestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_price_endpoint_reflects_active_discount(self):
+        """The advertised price is the discount-reduced effective price.
+
+        A client must never be shown the raw stored price when a sitewide
+        discount applies — the endpoint advertises the discounted amount and
+        reports the undiscounted base and saving for comparison.
+        """
+        from datetime import timedelta
+        from decimal import Decimal
+
+        from django.utils import timezone
+
+        from apps.promotions.models import Discount
+
+        variant = self.product.variants.get()
+        Discount.objects.create(
+            name="Launch",
+            scope="sitewide",
+            discount_type="percent",
+            value=Decimal("10.00"),
+            starts_at=timezone.now() - timedelta(days=1),
+        )
+        cache.clear()
+        url = reverse("api:catalog:product-price", args=[self.product.slug])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        entry = response.data["variants"][0]
+        self.assertEqual(entry["base_price"], str(variant.price))
+        self.assertEqual(entry["price"], "40500.00")
+        self.assertEqual(entry["discount"], "4500.00")
+
     def test_price_endpoint_query_bound(self):
-        """Variant and tier data are prefetched, not queried per variant."""
+        """Variant, tier, and discount data are prefetched, not per-variant.
+
+        Two product queries, one variant, one tier, and one discount query —
+        the discount query resolves the effective (discounted) price server-side.
+        """
         product = _make_product(
             name="Price Bound", slug="price-bound", sku="PR-BND", with_variant=True
         )
@@ -511,7 +546,7 @@ class ProductDetailBrowseTests(APITestCase):
             variant=variant, min_quantity=5, unit_price="41000.00"
         )
         url = reverse("api:catalog:product-price", args=[product.slug])
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(5):
             response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -981,6 +1016,30 @@ class FacetDefinitionCRUDTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(FacetDefinition.objects.count(), 0)
+
+    def test_non_facetable_field_name_rejected(self):
+        """A facet over a non-allowlisted model column is rejected.
+
+        Money, timestamps, and other non-facet columns must never become a
+        facet source — each one would ship unbounded aggregation over data
+        storefronts do not filter by.
+        """
+        _login(self.client)
+        for field_name in ("created_at", "price", "review_count"):
+            response = self.client.post(
+                URLS["admin_facets"],
+                {
+                    "name": "Broken",
+                    "field_name": field_name,
+                    "source_field": "product_field",
+                    "facet_type": "choice",
+                },
+                format="json",
+            )
+            self.assertEqual(
+                response.status_code, status.HTTP_400_BAD_REQUEST, field_name
+            )
         self.assertEqual(FacetDefinition.objects.count(), 0)
 
     def test_admin_can_update_facet(self):

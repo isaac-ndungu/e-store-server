@@ -39,6 +39,13 @@ from apps.catalog.images import (
 )
 from apps.catalog.validators import validate_image_upload
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.idempotency import (
+    acquire_processing_lock,
+    read_cached_result,
+    release_processing_lock,
+    require_idempotency_key,
+    store_result,
+)
 from apps.reviews.constants import (
     MAX_UNATTACHED_PHOTOS_PER_USER,
     REVIEW_PHOTO_MAX_SIZE_MB,
@@ -337,6 +344,9 @@ class ReviewPhotoUploadView(APIView):
     def post(self, request):
         """Accept a multipart image upload and return its processed output.
 
+        The upload is tied to a caller-scoped idempotency key so a retried
+        tap on a patchy connection cannot upload the same photo twice.
+
         Args:
             request: the multipart POST request carrying ``image``.
 
@@ -345,6 +355,36 @@ class ReviewPhotoUploadView(APIView):
                 variants; ``400`` for a missing, invalid, or oversized file or
                 too many unclaimed uploads; or ``503`` when the reviews
                 feature is disabled.
+        """
+        key = require_idempotency_key(request)
+        scope = f"u{request.user.pk}"
+        cached = read_cached_result(scope, key)
+        if cached is not None:
+            return Response(cached["data"], status=cached["status"])
+        if not acquire_processing_lock(scope, key):
+            return Response(
+                {
+                    "detail": (
+                        "A request with this Idempotency-Key is already in progress."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            return self._process_upload(request, scope, key)
+        finally:
+            release_processing_lock(scope, key)
+
+    def _process_upload(self, request, scope, key):
+        """Run the upload and cache the result against the idempotency key.
+
+        Args:
+            request: the multipart POST request carrying ``image``.
+            scope (str): the caller's idempotency scope.
+            key (str): the caller's idempotency key.
+
+        Returns:
+            Response: the processed upload response.
         """
         try:
             _require_reviews_enabled()
@@ -385,7 +425,10 @@ class ReviewPhotoUploadView(APIView):
             delete_image_files(storage_name)
             raise
         serializer = ReviewPhotoSerializer(photo)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        response = Response(serializer.data, status=status.HTTP_201_CREATED)
+        if response.status_code == status.HTTP_201_CREATED:
+            store_result(scope, key, response.status_code, response.data)
+        return response
 
 
 class ReviewPhotoDeleteView(APIView):

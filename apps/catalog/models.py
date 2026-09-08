@@ -412,6 +412,26 @@ class FacetDefinition(models.Model):
         ("range", "Range"),
     )
 
+    # Direct model fields a facet may be defined over. Anything storefronts
+    # will never filter by — timestamps, prices, stock counts, internal IDs —
+    # is deliberately excluded so a misconfigured facet can't build a query
+    # over a non-facet column.
+    FACETABLE_PRODUCT_FIELDS = frozenset(
+        {
+            "product_type",
+            "condition",
+            "tax_class",
+            "warranty_type",
+            "country_of_origin",
+            "voltage_rating",
+            "frequency_rating",
+            "wattage",
+            "warranty_duration_months",
+            "is_featured",
+        }
+    )
+    FACETABLE_VARIANT_FIELDS = frozenset({"is_active", "stock_status_text", "price"})
+
     name = models.CharField(max_length=100)
     key = models.CharField(
         max_length=100,
@@ -440,14 +460,16 @@ class FacetDefinition(models.Model):
         return f"{self.name} ({self.get_source_field_display()})"
 
     def clean(self):
-        """Validate that ``key`` / ``field_name`` are set per the source type.
+        """Validate the ``key``/``field_name`` pairing and facetable sources.
+
+        ``key`` is required for JSON sources; ``field_name`` must name a
+        facetable column for relational sources.
 
         Raises:
             ValidationError: if the field pairing is inconsistent.
         """
         super().clean()
         json_sources = {"product_specs", "variant_attributes"}
-        field_sources = {"product_field", "variant_field"}
 
         if self.source_field in json_sources and not self.key:
             raise ValidationError(
@@ -458,12 +480,31 @@ class FacetDefinition(models.Model):
                     )
                 }
             )
-        if self.source_field in field_sources and not self.field_name:
-            raise ValidationError(
-                {
-                    "field_name": (
-                        f"'field_name' is required when source_field is "
-                        f"'{self.source_field}'."
-                    )
-                }
-            )
+        if self.source_field == "product_field":
+            if not self.field_name:
+                raise ValidationError(
+                    {"field_name": "'field_name' is required for this source."}
+                )
+            if self.field_name not in self.FACETABLE_PRODUCT_FIELDS:
+                raise ValidationError(
+                    {
+                        "field_name": (
+                            f"'{self.field_name}' is not in the allowlist of "
+                            "facetable product fields."
+                        )
+                    }
+                )
+        if self.source_field == "variant_field":
+            if not self.field_name:
+                raise ValidationError(
+                    {"field_name": "'field_name' is required for this source."}
+                )
+            if self.field_name not in self.FACETABLE_VARIANT_FIELDS:
+                raise ValidationError(
+                    {
+                        "field_name": (
+                            f"'{self.field_name}' is not in the allowlist of "
+                            "facetable variant fields."
+                        )
+                    }
+                )

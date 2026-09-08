@@ -354,13 +354,38 @@ class ChatTests(APITestCase):
         session_id = created.data["id"]
 
         message_url = reverse("api:support:chat-message-create", args=[session_id])
-        posted = self.client.post(message_url, {"body": "Hello"}, format="json")
+        posted = self.client.post(
+            message_url,
+            {"body": "Hello"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="guest-msg-1",
+        )
         self.assertEqual(posted.status_code, status.HTTP_201_CREATED)
         self.assertEqual(posted.data["sender_type"], "customer")
 
         detail_url = reverse("api:support:chat-session-detail", args=[session_id])
         detail = self.client.get(detail_url)
         self.assertEqual(len(detail.data["messages"]), 1)
+
+    def test_chat_message_replay_does_not_post_twice(self):
+        """A retried send with the same key returns the cached message.
+
+        A flaky connection may make the client replay the request; a single
+        message must exist and the repeated call must not create a second one.
+        """
+        session = ChatSession.objects.create(user=self.user)
+        _login(self.client)
+        message_url = reverse("api:support:chat-message-create", args=[session.pk])
+        payload = {"body": "Replayed"}
+        kwargs = {"format": "json", "HTTP_IDEMPOTENCY_KEY": "replay-msg-1"}
+        first = self.client.post(message_url, payload, **kwargs)
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        replay = self.client.post(message_url, payload, **kwargs)
+        self.assertEqual(replay.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(replay.data["id"], first.data["id"])
+        self.assertEqual(
+            ChatMessage.objects.filter(session=session, body="Replayed").count(), 1
+        )
 
     def test_guest_cannot_read_another_guests_session(self):
         """A session opened in one guest session is invisible to another."""
@@ -425,7 +450,12 @@ class ChatTests(APITestCase):
         create_url = reverse("api:support:chat-session-create")
         session_id = self.client.post(create_url, {}, format="json").data["id"]
         message_url = reverse("api:support:chat-message-create", args=[session_id])
-        response = self.client.post(message_url, {"body": "hello"}, format="json")
+        response = self.client.post(
+            message_url,
+            {"body": "hello"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="forced-customer-1",
+        )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["sender_type"], "customer")
         message = ChatMessage.objects.get(pk=response.data["id"])

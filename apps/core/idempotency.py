@@ -43,73 +43,76 @@ def require_idempotency_key(request):
     return key
 
 
-def _cache_key(user_pk, key):
-    """Return the storage key for a user + idempotency key pair.
+def _cache_key(scope, key):
+    """Return the storage key for a caller scope + idempotency key pair.
+
+    The scope is any stable string identifying the acting caller — an
+    authenticated user is ``u<id>`` and an anonymous guest is ``s<session>``.
+    Two guests must never share a scope, or one guest's stored response
+    (order detail, lookup token) could be replayed to another.
 
     Args:
-        user_pk (int): the acting user's primary key.
+        scope (str | int): the acting caller's scope.
         key (str): the idempotency key.
 
     Returns:
         str: the cache key.
     """
-    return f"idempotency:{user_pk}:{key}"
+    return f"idempotency:{scope}:{key}"
 
 
-def read_cached_result(user_pk, key):
+def read_cached_result(scope, key):
     """Return a previously stored response, if any.
 
     Args:
-        user_pk (int): the acting user's primary key.
+        scope (str | int): the acting caller's scope.
         key (str): the idempotency key.
 
     Returns:
         dict | None: ``{"status": int, "data": dict}`` for a prior success,
             else ``None``.
     """
-    return cache.get(_cache_key(user_pk, key))
+    return cache.get(_cache_key(scope, key))
 
 
-def store_result(user_pk, key, status_code, data):
+def store_result(scope, key, status_code, data):
     """Persist a successful response under an idempotency key.
 
     Args:
-        user_pk (int): the acting user's primary key.
+        scope (str | int): the acting caller's scope.
         key (str): the idempotency key.
         status_code (int): the HTTP status to replay.
         data: the response payload to replay.
     """
     cache.set(
-        _cache_key(user_pk, key),
+        _cache_key(scope, key),
         {"status": status_code, "data": data},
         IDEMPOTENCY_TTL_SECONDS,
     )
 
 
-def acquire_processing_lock(user_pk, key):
+def acquire_processing_lock(scope, key):
     """Mark an idempotency key as being processed.
 
     Args:
-        user_pk (int): the acting user's primary key.
+        scope (str | int): the acting caller's scope.
         key (str): the idempotency key.
 
     Returns:
         bool: True if this caller won the lock, False if another request
             with the same key is already being processed.
     """
-    return cache.add(
-        _cache_key(user_pk, key) + ":lock", "1", PROCESSING_LOCK_TTL_SECONDS
-    )
+    return cache.add(_cache_key(scope, key) + ":lock", "1", PROCESSING_LOCK_TTL_SECONDS)
 
 
-def release_processing_lock(user_pk, key):
+def release_processing_lock(scope, key):
     """Clear the in-progress marker for an idempotency key.
 
     Args:
-        user_pk (int): the acting user's primary key.
+        scope (str | int): the acting caller's scope.
         key (str): the idempotency key.
     """
-    cache.delete(_cache_key(user_pk, key) + ":lock")
+    cache.delete(_cache_key(scope, key) + ":lock")
 
 
 class IdempotentCreateMixin:
@@ -130,10 +133,11 @@ class IdempotentCreateMixin:
             Response: the replayed or freshly created response.
         """
         key = require_idempotency_key(request)
-        cached = read_cached_result(request.user.pk, key)
+        scope = f"u{request.user.pk}"
+        cached = read_cached_result(scope, key)
         if cached is not None:
             return Response(cached["data"], status=cached["status"])
-        if not acquire_processing_lock(request.user.pk, key):
+        if not acquire_processing_lock(scope, key):
             return Response(
                 {
                     "detail": "A request with this Idempotency-Key is already in progress."
@@ -143,7 +147,7 @@ class IdempotentCreateMixin:
         try:
             response = super().create(request, *args, **kwargs)
             if response.status_code in IDEMPOTENT_STATUS_CODES:
-                store_result(request.user.pk, key, response.status_code, response.data)
+                store_result(scope, key, response.status_code, response.data)
             return response
         finally:
-            release_processing_lock(request.user.pk, key)
+            release_processing_lock(scope, key)

@@ -20,6 +20,51 @@ from apps.inventory.services import (
 # Statuses an admin may set directly; the reservation lifecycle owns the rest.
 MANUAL_SERIAL_STATUSES = {"in_stock", "returned", "defective"}
 
+# Biggest batch an availability request may ask for in one call.
+MAX_BULK_AVAILABILITY = 50
+
+
+class BulkAvailabilitySerializer(serializers.Serializer):
+    """Validate a bulk stock-lookup request.
+
+    Exactly one of ``variant_ids`` (positive integers) or ``skus``
+    (non-blank strings) must be supplied, and either list is capped at
+    ``MAX_BULK_AVAILABILITY`` entries so a single request cannot fan out into
+    an unbounded query or a crafted-payload DoS.
+    """
+
+    variant_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        max_length=MAX_BULK_AVAILABILITY,
+    )
+    skus = serializers.ListField(
+        child=serializers.CharField(max_length=150, trim_whitespace=True),
+        required=False,
+        max_length=MAX_BULK_AVAILABILITY,
+    )
+
+    def validate(self, attrs):
+        """Require exactly one non-empty lookup list.
+
+        Args:
+            attrs (dict): the validated data.
+
+        Returns:
+            dict: the validated data.
+
+        Raises:
+            ValidationError: if both, neither, or a mixed pair of lists is
+                supplied.
+        """
+        variant_ids = attrs.get("variant_ids") or []
+        skus = attrs.get("skus") or []
+        if bool(variant_ids) == bool(skus):
+            raise serializers.ValidationError(
+                "Provide exactly one of 'variant_ids' or 'skus' (non-empty)."
+            )
+        return attrs
+
 
 def _request_user(serializer):
     """Return the authenticated user from a serializer's request context.

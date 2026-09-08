@@ -158,17 +158,26 @@ class MpesaGateway(PaymentGateway):
     def initiate(self, order):
         """Initiate the M-Pesa STK Push for the pending order.
 
+        A per-phone rate-limit is re-raised untouched so the order-placement
+        flow can answer 429 and the caller can retry the same order once the
+        window clears; every other provider failure surfaces as
+        ``PaymentUnavailable``.
+
         Args:
             order (Order): the order to charge.
 
         Raises:
             PaymentUnavailable: if the Daraja API call fails.
+            StkPushRateLimited: if the per-phone STK push rate limit is hit.
         """
-        from apps.payments.services import initiate_stk_push
+        from apps.payments.daraja import DarajaError
+        from apps.payments.services import StkPushRateLimited, initiate_stk_push
 
         try:
             initiate_stk_push(order)
-        except Exception as exc:
+        except StkPushRateLimited:
+            raise
+        except DarajaError as exc:
             raise PaymentUnavailable(f"M-Pesa STK Push failed: {exc}") from exc
 
 

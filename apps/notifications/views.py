@@ -1,3 +1,10 @@
+import hmac
+import logging
+import re
+
+from decouple import config
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -10,6 +17,99 @@ from apps.notifications.serializers import (
     SendTestSMSSerializer,
 )
 from apps.notifications.services import send_test_sms
+
+logger = logging.getLogger(__name__)
+
+_CALLBACK_IPS = config(
+    "NOTIFICATIONS_CALLBACK_IPS",
+    default="",
+    cast=lambda v: [ip.strip() for ip in v.split(",") if ip.strip()],
+)
+
+_CALLBACK_SECRET = config("NOTIFICATIONS_CALLBACK_SECRET", default="")
+_CALLBACK_TOKEN_PARAM = "token"
+
+# Matches an E.164 or a whitespace-padded local phone number in provider
+# payloads so the stored audit copy never holds a full unmasked number.
+_PHONE_RE = re.compile(r"(\+?[0-9][0-9\s\-]{7,})")
+
+
+def _client_ip(request):
+    """Return the client IP, honouring the configured proxy count.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        str: the client IP address.
+    """
+    xff = request.META.get("HTTP_X_FORWARDED_FOR")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR", "")
+
+
+def _is_callback_ip_allowed(request):
+    """Return whether the request's source IP is in the callback allowlist.
+
+    An empty allowlist disables the check (local dev friendly). A deny is
+    logged at warning level so operators can tune the allowlist.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        bool: True when the IP is allowed or the allowlist is empty.
+    """
+    if not _CALLBACK_IPS:
+        return True
+    ip = _client_ip(request)
+    allowed = ip in _CALLBACK_IPS
+    if not allowed:
+        logger.warning("Delivery-report callback rejected from unauthorized IP %s", ip)
+    return allowed
+
+
+def _callback_token_matches(request):
+    """Return whether the request carries the shared callback secret.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        bool: True when no secret is configured or the token query parameter
+            matches (constant-time comparison).
+    """
+    provided = request.query_params.get(_CALLBACK_TOKEN_PARAM, "")
+    if not _CALLBACK_SECRET:
+        return True
+    return hmac.compare_digest(provided, _CALLBACK_SECRET)
+
+
+def _mask_phone_numbers(payload):
+    """Return a copy of the payload with phone numbers masked.
+
+    Args:
+        payload (dict): the raw provider payload.
+
+    Returns:
+        dict: the payload with any phone-like digit runs replaced by
+            ``+2547*****31``-style placeholders.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    def _mask(value):
+        if not isinstance(value, str):
+            return value
+        return _PHONE_RE.sub(
+            lambda m: m.group(0)[:3]
+            + "*" * max(1, len(m.group(0)) - 5)
+            + m.group(0)[-2:],
+            value,
+        )
+
+    return {key: _mask(value) for key, value in payload.items()}
 
 
 class SendTestSMSView(APIView):
@@ -134,22 +234,32 @@ class FailedNotificationLogsView(generics.ListAPIView):
         return get_notification_logs(status="failed")
 
 
+@method_decorator(csrf_exempt, name="dispatch")
 class DeliveryReportView(APIView):
     """Receive SMS delivery-report callbacks from Africa's Talking.
 
     Africa's Talking POSTs delivery reports to this endpoint when an SMS
-    is delivered, expires, or fails.  The endpoint looks the log up by
+    is delivered, expires, or fails. The endpoint looks the log up by
     ``provider_message_id`` and updates its status to ``delivered`` or
     ``failed``.
 
-    The endpoint is unauthenticated because the provider (not a user)
-    calls it; the provider dashboard must be configured to POST here.
-    Source-IP allowlisting should be applied at the proxy/CDN layer per
-    the provider's documentation.  Update is idempotent: if the log is
-    already in a terminal state the report is ignored.
+    The endpoint is public because the provider (not a user) calls it, and
+    its trust is enforced by:
+        1. Source-IP validation against the ``NOTIFICATIONS_CALLBACK_IPS``
+           allowlist.
+        2. A shared ``token`` query parameter compared in constant time,
+           configured via ``NOTIFICATIONS_CALLBACK_SECRET``.
+        3. CSRF exemption, since this is a provider webhook, not a browser
+           form.
+    Update is idempotent: if the log is already in a terminal state the
+    report is ignored. Stored provider payloads are masked so a phone number
+    is never persisted in full.
     """
 
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "notifications_callback"
 
     def post(self, request):
         """Process a delivery-report payload.
@@ -158,8 +268,17 @@ class DeliveryReportView(APIView):
             request: the POST body containing the delivery report.
 
         Returns:
-            Response: ``200 OK`` once the report is handled (or ignored).
+            Response: ``200 OK`` once the report is handled (or ignored), or
+                ``403``/``401`` when the allowlist or token checks fail.
         """
+        if not _is_callback_ip_allowed(request):
+            return Response(status=status.HTTP_403_FORBIDDEN)
+        if not _callback_token_matches(request):
+            logger.warning(
+                "Delivery-report callback rejected: invalid or missing token"
+            )
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
         provider_message_id = request.data.get("id") or request.data.get("messageId")
         if not provider_message_id:
             return Response(status=status.HTTP_200_OK)
@@ -175,5 +294,8 @@ class DeliveryReportView(APIView):
             return Response(status=status.HTTP_200_OK)
 
         new_status = "failed" if (state and state.lower() == "failed") else "delivered"
-        log.update_status(new_status, provider_response=request.data)
+        log.update_status(
+            new_status,
+            provider_response=_mask_phone_numbers(request.data),
+        )
         return Response(status=status.HTTP_200_OK)

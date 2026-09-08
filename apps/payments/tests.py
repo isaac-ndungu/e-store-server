@@ -495,6 +495,32 @@ class MpesaSTKInitiationTests(APITestCase):
         txn.refresh_from_db()
         self.assertEqual(txn.status, "failed")
 
+    def test_repeated_empty_checkout_id_failures_do_not_collide(self):
+        """Two pushes with no CheckoutRequestID each store their own failure.
+
+        The transaction key is nullable, so a retried call that Daraja still
+        answers without an id cannot hit a unique-constraint collision on an
+        empty string and raise an IntegrityError instead of recording the
+        failure.
+        """
+        order = self._create_order()
+
+        with (
+            mock.patch(
+                "apps.payments.services._daraja_stk_push",
+                return_value={"ResponseCode": "0", "CheckoutRequestID": ""},
+            ),
+            mock.patch("apps.payments.daraja.get_access_token", return_value="token"),
+        ):
+            first = initiate_stk_push(order)
+            second = initiate_stk_push(order)
+
+        for txn in (first, second):
+            txn.refresh_from_db()
+            self.assertEqual(txn.status, "failed")
+            self.assertIsNone(txn.checkout_request_id)
+        self.assertEqual(MpesaTransaction.objects.filter(order=order).count(), 2)
+
 
 class MpesaTransactionStatusEndpointTests(APITestCase):
     """Test the GET /payments/mpesa/transactions/{id}/ endpoint."""

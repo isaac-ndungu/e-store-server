@@ -29,6 +29,7 @@ from apps.inventory.models import (
     StockReservation,
     Warehouse,
 )
+from apps.inventory.serializers import MAX_BULK_AVAILABILITY
 from apps.inventory.services import (
     create_reservation,
     fulfill_reservation,
@@ -38,7 +39,6 @@ from apps.inventory.services import (
     update_serial_unit_status,
 )
 from apps.inventory.tasks import expire_stale_reservations
-from apps.inventory.views import MAX_BULK_AVAILABILITY
 
 URLS = {
     "availability": reverse("api:inventory:availability"),
@@ -100,6 +100,7 @@ def _make_variant(*, tracks_serial=False, **kwargs):
         sku=kwargs.pop("sku", f"APP-{n}"),
         description=kwargs.pop("description", "A test appliance."),
         tracks_serial_numbers=tracks_serial,
+        **kwargs,
     )
     return ProductVariant.objects.create(
         product=product,
@@ -723,7 +724,7 @@ class IdempotencyTests(InventoryAPITestCase):
         _login(self.client)
         admin = User.objects.get(email="manager@example.com")
         key = "stock-locked"
-        acquire_processing_lock(admin.pk, key)
+        acquire_processing_lock(f"u{admin.pk}", key)
         response = self.client.post(
             URLS["admin_inventory"],
             self._payload(),
@@ -731,7 +732,123 @@ class IdempotencyTests(InventoryAPITestCase):
             HTTP_IDEMPOTENCY_KEY=key,
         )
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        release_processing_lock(admin.pk, key)
+        release_processing_lock(f"u{admin.pk}", key)
+
+
+class AdminDeleteGuardTests(InventoryAPITestCase):
+    """Exercises deletion guards on admin warehouse/inventory/unit endpoints."""
+
+    def setUp(self):
+        """Create the admin account used for the destructive calls."""
+        super().setUp()
+        _make_admin()
+
+    def detail_url(self, name, pk):
+        """Return the admin detail URL for a resource pk."""
+        return reverse(f"api:inventory:{name}", args=[pk])
+
+    def test_warehouse_with_stock_cannot_be_deleted(self):
+        """A warehouse holding inventory answers 400, not a cascade delete."""
+        _login(self.client)
+        variant = _make_variant()
+        warehouse = _make_warehouse()
+        receive_stock(variant=variant, warehouse=warehouse, quantity=10)
+        response = self.client.delete(
+            self.detail_url("admin-warehouse-detail", warehouse.pk)
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Warehouse.objects.filter(pk=warehouse.pk).exists())
+
+    def test_empty_warehouse_can_be_deleted(self):
+        """An unused warehouse can be removed."""
+        _login(self.client)
+        warehouse = _make_warehouse("Empty")
+        response = self.client.delete(
+            self.detail_url("admin-warehouse-detail", warehouse.pk)
+        )
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Warehouse.objects.filter(pk=warehouse.pk).exists())
+
+    def test_inventory_with_serial_units_cannot_be_deleted(self):
+        """An inventory row backing serial units cannot be dropped."""
+        _login(self.client)
+        variant = _make_variant(tracks_serial=True)
+        warehouse = _make_warehouse()
+        receive_serial_units(
+            variant=variant, warehouse=warehouse, serial_numbers=["SN-X001"]
+        )
+        row = Inventory.objects.get(variant=variant, warehouse=warehouse)
+        response = self.client.delete(self.detail_url("admin-inventory-detail", row.pk))
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Inventory.objects.filter(pk=row.pk).exists())
+
+    def test_serial_unit_linked_to_order_cannot_be_deleted(self):
+        """A reserved/sold serial unit must move through the lifecycle."""
+        _login(self.client)
+        variant = _make_variant(tracks_serial=True)
+        warehouse = _make_warehouse()
+        receive_serial_units(
+            variant=variant, warehouse=warehouse, serial_numbers=["SN-X002"]
+        )
+        unit = SerialUnit.objects.get(serial_number="SN-X002")
+        unit.status = "reserved"
+        unit.save(update_fields=["status"])
+        response = self.client.delete(
+            self.detail_url("admin-serial-unit-detail", unit.pk)
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(SerialUnit.objects.filter(pk=unit.pk).exists())
+
+
+class BulkAvailabilityValidationTests(InventoryAPITestCase):
+    """Exercises the bulk availability endpoint's input and scope rules."""
+
+    def setUp(self):
+        """Create a sellable and a non-sellable variant."""
+        super().setUp()
+        self.sellable = _make_variant(name="Sellable", slug="sellable", sku="SELL-1")
+        receive_stock(variant=self.sellable, warehouse=_make_warehouse(), quantity=4)
+        self.hidden = _make_variant(
+            name="Hidden", slug="hidden", sku="HID-SKU", is_discontinued=True
+        )
+
+    def test_bulk_availability_returns_per_variant_map(self):
+        """Two ids resolve to a single availability map keyed by variant id."""
+        response = self.client.post(
+            URLS["availability_bulk"],
+            {"variant_ids": [self.sellable.pk]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(self.sellable.pk, response.data["availability"])
+
+    def test_bulk_availability_rejects_discontinued_variant(self):
+        """Stock is not exposed for discontinued products."""
+        response = self.client.post(
+            URLS["availability_bulk"],
+            {"variant_ids": [self.hidden.pk]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_bulk_availability_requires_exactly_one_source(self):
+        """Supplying neither ids nor skus is a 400."""
+        empty = self.client.post(URLS["availability_bulk"], {}, format="json")
+        self.assertEqual(empty.status_code, status.HTTP_400_BAD_REQUEST)
+        both = self.client.post(
+            URLS["availability_bulk"],
+            {"variant_ids": [self.sellable.pk], "skus": ["SELL-1"]},
+            format="json",
+        )
+        self.assertEqual(both.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_bulk_availability_caps_request_size(self):
+        """More than the configured cap of variants is rejected."""
+        ids = list(range(1, MAX_BULK_AVAILABILITY + 2))
+        response = self.client.post(
+            URLS["availability_bulk"], {"variant_ids": ids}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class ExpirySweepTests(InventoryAPITestCase):

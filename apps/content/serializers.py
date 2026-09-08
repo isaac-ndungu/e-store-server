@@ -9,8 +9,10 @@ sanitised at the service boundary — the serializer enforces length and
 presence constraints only.
 """
 
+from django.utils.http import url_has_allowed_host_and_scheme
 from rest_framework import serializers
 
+from apps.catalog.validators import validate_image_upload
 from apps.content.constants import (
     BANNER_LINK_URL_MAX_LENGTH,
     BANNER_TITLE_MAX_LENGTH,
@@ -112,7 +114,7 @@ class BannerCreateSerializer(serializers.Serializer):
     title = serializers.CharField(
         max_length=BANNER_TITLE_MAX_LENGTH, required=False, allow_blank=True, default=""
     )
-    image = serializers.ImageField()
+    image = serializers.ImageField(validators=[validate_image_upload])
     link_url = serializers.CharField(
         max_length=BANNER_LINK_URL_MAX_LENGTH,
         required=False,
@@ -125,6 +127,35 @@ class BannerCreateSerializer(serializers.Serializer):
     ends_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
     is_active = serializers.BooleanField(default=True)
 
+    def validate_link_url(self, value):
+        """Return the link URL after rejecting unsafe schemes.
+
+        Args:
+            value (str): the submitted link URL.
+
+        Returns:
+            str: the validated link URL.
+
+        Raises:
+            serializers.ValidationError: if the scheme is not http(s) or
+                relative.
+        """
+        if not value or value.startswith("/"):
+            if value.startswith("//"):
+                raise serializers.ValidationError(
+                    "link_url must be an http(s) URL or a relative path "
+                    "starting with '/'."
+                )
+            return value
+        if not url_has_allowed_host_and_scheme(
+            value, allowed_hosts=None, require_https=False
+        ):
+            raise serializers.ValidationError(
+                "link_url must be an http(s) URL or a relative path starting "
+                "with '/'."
+            )
+        return value
+
 
 class BannerUpdateSerializer(serializers.Serializer):
     """Input for a staff member updating a banner.
@@ -135,7 +166,7 @@ class BannerUpdateSerializer(serializers.Serializer):
     title = serializers.CharField(
         max_length=BANNER_TITLE_MAX_LENGTH, required=False, allow_blank=True
     )
-    image = serializers.ImageField(required=False)
+    image = serializers.ImageField(required=False, validators=[validate_image_upload])
     link_url = serializers.CharField(
         max_length=BANNER_LINK_URL_MAX_LENGTH, required=False, allow_blank=True
     )
@@ -144,3 +175,32 @@ class BannerUpdateSerializer(serializers.Serializer):
     starts_at = serializers.DateTimeField(required=False, allow_null=True)
     ends_at = serializers.DateTimeField(required=False, allow_null=True)
     is_active = serializers.BooleanField(required=False)
+
+    def validate_link_url(self, value):
+        """Return the link URL after rejecting unsafe schemes.
+
+        Args:
+            value (str): the submitted link URL (may be blank or omitted).
+
+        Returns:
+            str: the validated link URL.
+
+        Raises:
+            serializers.ValidationError: if the scheme is not http(s) or
+                relative.
+        """
+        if not value or value.startswith("/"):
+            if value.startswith("//"):
+                raise serializers.ValidationError(
+                    "link_url must be an http(s) URL or a relative path "
+                    "starting with '/'."
+                )
+            return value
+        if not url_has_allowed_host_and_scheme(
+            value, allowed_hosts=None, require_https=False
+        ):
+            raise serializers.ValidationError(
+                "link_url must be an http(s) URL or a relative path starting "
+                "with '/'."
+            )
+        return value

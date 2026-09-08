@@ -449,8 +449,8 @@ class CollectionEndpointTests(CollectionsAPITestCase):
         response = self.client.get(detail_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["name"], "Home Appliances")
-        self.assertEqual(len(response.data["products"]), 1)
-        self.assertEqual(response.data["products"][0]["slug"], "fridge")
+        self.assertEqual(response.data["products"]["count"], 1)
+        self.assertEqual(response.data["products"]["results"][0]["slug"], "fridge")
 
     def test_collection_detail_is_found_by_slug(self):
         """The detail resolves by slug, not by id."""
@@ -482,7 +482,7 @@ class CollectionEndpointTests(CollectionsAPITestCase):
         with CaptureQueriesContext(connection) as captured:
             response = self.client.get(detail_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data["products"]), 1)
+        self.assertEqual(response.data["products"]["count"], 1)
         self.assertLess(len(captured), 8)
 
 

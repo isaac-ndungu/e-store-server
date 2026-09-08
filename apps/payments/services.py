@@ -16,7 +16,7 @@ Invariants:
 """
 
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
@@ -93,7 +93,6 @@ def initiate_stk_push(order):
         order=order,
         phone_number=order.phone,
         amount=order.grand_total,
-        checkout_request_id="",
         status="pending",
     )
 
@@ -122,7 +121,7 @@ def initiate_stk_push(order):
         logger.error(
             "Daraja STK Push returned no CheckoutRequestID for order %s: %s",
             order.pk,
-            response,
+            response.get("ResponseDescription", ""),
         )
         return transaction_record
 
@@ -216,7 +215,7 @@ def handle_stk_callback(callback_body):
     result_desc = stk.get("ResultDesc", "")
 
     if not checkout_request_id:
-        logger.warning("STK callback missing CheckoutRequestID: %s", callback_body)
+        logger.warning("STK callback missing CheckoutRequestID")
         return None
 
     with transaction.atomic():
@@ -409,7 +408,7 @@ def _amount_matches_requested(requested_amount, callback_amount):
         return False
     try:
         callback_decimal = Decimal(str(callback_amount))
-    except ValueError, TypeError:
+    except TypeError, ValueError, InvalidOperation:
         return False
     return Decimal(str(requested_amount)) == callback_decimal
 
@@ -463,7 +462,7 @@ def handle_b2c_callback(callback_body):
     transaction_id = result.get("TransactionID", "")
 
     if not conversation_id:
-        logger.warning("B2C callback missing ConversationID: %s", callback_body)
+        logger.warning("B2C callback missing ConversationID")
         return None
 
     with transaction.atomic():
@@ -680,7 +679,6 @@ def initiate_b2c_refund(order, amount, reason="return_refund", *, return_request
         reason=reason,
         phone_number=phone_number,
         amount=refund_amount,
-        conversation_id="",
         status="pending",
         return_request=return_request,
     )
@@ -710,7 +708,7 @@ def initiate_b2c_refund(order, amount, reason="return_refund", *, return_request
         logger.error(
             "Daraja B2C returned no ConversationID for order %s: %s",
             order.pk,
-            response,
+            response.get("ResponseDescription", response),
         )
         return payout
 

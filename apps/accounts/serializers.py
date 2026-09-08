@@ -49,7 +49,9 @@ class ConfirmPasswordResetSerializer(serializers.Serializer):
     uid = serializers.CharField()
     token = serializers.CharField()
     new_password = serializers.CharField(
-        write_only=True, style={"input_type": "password"}
+        write_only=True,
+        max_length=128,
+        style={"input_type": "password"},
     )
 
 
@@ -62,10 +64,14 @@ class ChangePasswordSerializer(serializers.Serializer):
     """
 
     current_password = serializers.CharField(
-        write_only=True, style={"input_type": "password"}
+        write_only=True,
+        max_length=128,
+        style={"input_type": "password"},
     )
     new_password = serializers.CharField(
-        write_only=True, style={"input_type": "password"}
+        write_only=True,
+        max_length=128,
+        style={"input_type": "password"},
     )
 
 
@@ -76,7 +82,9 @@ class DeactivateAccountSerializer(serializers.Serializer):
     cannot deactivate a victim's account. Write-only.
     """
 
-    password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    password = serializers.CharField(
+        write_only=True, max_length=128, style={"input_type": "password"}
+    )
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -88,7 +96,9 @@ class RegisterSerializer(serializers.ModelSerializer):
     validators.
     """
 
-    password = serializers.CharField(write_only=True, style={"input_type": "password"})
+    password = serializers.CharField(
+        write_only=True, max_length=128, style={"input_type": "password"}
+    )
 
     class Meta:
         model = User

@@ -9,6 +9,7 @@ membership from the Redis cache when warm so the storefront stays fast.
 
 from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 
@@ -76,19 +77,32 @@ class CollectionDetailView(generics.RetrieveAPIView):
         return collection
 
     def retrieve(self, request, *args, **kwargs):
-        """Return the collection payload plus its products.
+        """Return the collection payload plus its paginated products.
+
+        The product list is paginated (20 per page) so a large smart
+        collection is never shipped as one unbounded array.
 
         Args:
             request: the incoming request.
 
         Returns:
-            Response: the collection serialized with a ``products`` array.
+            Response: the collection serialized with a ``products`` object
+                carrying ``count``, ``next``, ``previous``, and ``results``.
         """
         collection = self.get_object()
         serializer = self.get_serializer(collection)
         products = get_collection_products(collection)
-        product_serializer = ProductListSerializer(products, many=True)
-        return Response({**serializer.data, "products": product_serializer.data})
+        paginator = PageNumberPagination()
+        paginator.page_size = 20
+        page = paginator.paginate_queryset(products, request)
+        product_serializer = ProductListSerializer(page, many=True)
+        products_payload = {
+            "count": paginator.page.paginator.count,
+            "next": paginator.get_next_link(),
+            "previous": paginator.get_previous_link(),
+            "results": product_serializer.data,
+        }
+        return Response({**serializer.data, "products": products_payload})
 
 
 # Admin views

@@ -612,6 +612,7 @@ class ReviewPhotoUploadTests(APITestCase):
             self.url,
             {"image": BytesIO(b"not an image")},
             format="multipart",
+            HTTP_IDEMPOTENCY_KEY="photo-nonimage-1",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -636,6 +637,7 @@ class ReviewPhotoUploadTests(APITestCase):
                 self.url,
                 {"image": _tiny_png()},
                 format="multipart",
+                HTTP_IDEMPOTENCY_KEY="photo-valid-1",
             )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         save_mock.assert_called_once()
@@ -655,6 +657,7 @@ class ReviewPhotoUploadTests(APITestCase):
                 self.url,
                 {"image": _tiny_png()},
                 format="multipart",
+                HTTP_IDEMPOTENCY_KEY="photo-bound-1",
             )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -669,6 +672,7 @@ class ReviewPhotoUploadTests(APITestCase):
             self.url,
             {"image": _tiny_png()},
             format="multipart",
+            HTTP_IDEMPOTENCY_KEY="photo-disabled-1",
         )
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -680,6 +684,7 @@ class ReviewPhotoUploadTests(APITestCase):
                 self.url,
                 {"image": _tiny_png()},
                 format="multipart",
+                HTTP_IDEMPOTENCY_KEY="photo-oversize-1",
             )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 

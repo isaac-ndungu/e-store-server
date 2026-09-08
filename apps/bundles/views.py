@@ -1,5 +1,3 @@
-
-
 import django.core.exceptions as django_exc
 from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound

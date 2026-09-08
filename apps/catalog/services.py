@@ -331,7 +331,7 @@ def _choice_counts_for_facet(queryset, facet):
                 counts[str(value)] = count
 
     elif facet.source_field == "product_field" and facet.field_name:
-        if hasattr(Product, facet.field_name):
+        if facet.field_name in FacetDefinition.FACETABLE_PRODUCT_FIELDS:
             rows = (
                 queryset.exclude(**{facet.field_name: None})
                 .values(facet.field_name)
@@ -343,7 +343,7 @@ def _choice_counts_for_facet(queryset, facet):
                     counts[str(value)] = count
 
     elif facet.source_field == "variant_field" and facet.field_name:
-        if hasattr(ProductVariant, facet.field_name):
+        if facet.field_name in FacetDefinition.FACETABLE_VARIANT_FIELDS:
             rows = (
                 ProductVariant.objects.filter(product__in=queryset)
                 .exclude(**{facet.field_name: None})
@@ -388,14 +388,14 @@ def _range_stats_for_facet(queryset, facet):
             .distinct()
         )
     elif facet.source_field == "product_field" and facet.field_name:
-        if hasattr(Product, facet.field_name):
+        if facet.field_name in FacetDefinition.FACETABLE_PRODUCT_FIELDS:
             values = (
                 queryset.exclude(**{facet.field_name: None})
                 .values_list(facet.field_name, flat=True)
                 .distinct()
             )
     elif facet.source_field == "variant_field" and facet.field_name:
-        if hasattr(ProductVariant, facet.field_name):
+        if facet.field_name in FacetDefinition.FACETABLE_VARIANT_FIELDS:
             values = (
                 ProductVariant.objects.filter(product__in=queryset)
                 .exclude(**{facet.field_name: None})

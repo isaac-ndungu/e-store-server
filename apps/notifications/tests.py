@@ -644,6 +644,61 @@ class SecurityHardeningTests(APITestCase):
         """Return a valid test-SMS payload."""
         return {"recipient": "+254712345678", "message": "Test SMS"}
 
+    def test_delivery_report_rejects_unlisted_source_ip(self):
+        """A callback from an IP outside the allowlist is refused with 403."""
+        with mock.patch("apps.notifications.views._CALLBACK_IPS", ["203.0.113.9"]):
+            response = self.client.post(
+                DLR_URL, {"id": "at-1", "status": "Delivered"}, format="json"
+            )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_delivery_report_rejects_missing_or_wrong_token(self):
+        """A callback without the shared token is refused with 401."""
+        with (
+            mock.patch("apps.notifications.views._CALLBACK_IPS", ["127.0.0.1"]),
+            mock.patch("apps.notifications.views._CALLBACK_SECRET", "sekrit"),
+        ):
+            missing = self.client.post(
+                DLR_URL, {"id": "at-1", "status": "Delivered"}, format="json"
+            )
+            wrong = self.client.post(
+                DLR_URL + "?token=nope",
+                {"id": "at-1", "status": "Delivered"},
+                format="json",
+            )
+        self.assertEqual(missing.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(wrong.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_delivery_report_stores_masked_phone_numbers(self):
+        """The stored provider payload never contains a full phone number."""
+        NotificationLog.objects.create(
+            recipient="+254712345678",
+            message="Hi",
+            status="pending",
+            provider_message_id="at-1",
+        )
+        with (
+            mock.patch("apps.notifications.views._CALLBACK_IPS", ["127.0.0.1"]),
+            mock.patch("apps.notifications.views._CALLBACK_SECRET", "sekrit"),
+        ):
+            response = self.client.post(
+                DLR_URL + "?token=sekrit",
+                {
+                    "id": "at-1",
+                    "status": "Delivered",
+                    "phoneNumber": "+254712345678",
+                    "recipient": "0712345678",
+                },
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        log = NotificationLog.objects.get(provider_message_id="at-1")
+        self.assertEqual(log.status, "delivered")
+        stored = log.provider_response
+        self.assertNotIn("2345678", stored["phoneNumber"])
+        self.assertNotIn("712345", stored["recipient"])
+        self.assertTrue(stored["phoneNumber"].startswith("+2"))
+
 
 class EmailServiceTests(APITestCase):
     """Exercises the email-sending service abstraction."""

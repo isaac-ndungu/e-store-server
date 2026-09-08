@@ -82,6 +82,28 @@ def _resolve_cart(request):
     return get_or_create_cart(session_key=session_key)
 
 
+def _idempotency_scope(request):
+    """Return the caller's idempotency storage scope.
+
+    Two different anonymous callers must never share an idempotency
+    namespace, or one guest's cached response — including the order detail
+    with its ``lookup_token`` — could be replayed to a different session
+    reusing the same key. The scope is the authenticated user's id, or the
+    server-issued guest session key, so a stored response is only ever
+    replayable to the caller who created it.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        str: the caller scope (``u<id>`` for a user, ``s<session>`` for a
+            guest).
+    """
+    if request.user.is_authenticated:
+        return f"u{request.user.pk}"
+    return f"s{_ensure_guest_session(request)}"
+
+
 def _resolve_order(request, order_ref):
     """Return the caller's order or raise HTTP 404.
 
@@ -183,20 +205,30 @@ class OrderListCreateView(APIView):
                 for validation/stock errors, or ``409`` when the same
                 idempotency key is already being processed.
         """
+        from django.core.cache import cache
+
         from apps.core.idempotency import (
+            IDEMPOTENCY_TTL_SECONDS,
             acquire_processing_lock,
             read_cached_result,
             release_processing_lock,
             require_idempotency_key,
             store_result,
         )
+        from apps.orders.models import Order
+        from apps.orders.payments import (
+            PaymentUnavailable,
+            initiate_payment,
+            is_payment_method_available,
+        )
+        from apps.payments.services import StkPushRateLimited
 
         key = require_idempotency_key(request)
-        user_pk = request.user.pk if request.user.is_authenticated else 0
-        cached = read_cached_result(user_pk, key)
+        scope = _idempotency_scope(request)
+        cached = read_cached_result(scope, key)
         if cached is not None:
             return Response(cached["data"], status=cached["status"])
-        if not acquire_processing_lock(user_pk, key):
+        if not acquire_processing_lock(scope, key):
             return Response(
                 {
                     "detail": "A request with this Idempotency-Key is already in progress."
@@ -204,31 +236,48 @@ class OrderListCreateView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
         try:
-            cart = _resolve_cart(request)
-            input_serializer = OrderCreateSerializer(data=request.data)
-            input_serializer.is_valid(raise_exception=True)
-            data = input_serializer.validated_data
+            order_marker_key = f"orders:ref:{scope}:{key}"
+            order_ref = cache.get(order_marker_key)
+            order = None
+            if order_ref is not None:
+                order = Order.objects.filter(pk=order_ref).first()
+                if order is not None and (
+                    request.user.is_authenticated and order.user_id != request.user.pk
+                ):
+                    order = None
 
-            order = _service_error_to_400(create_order_from_cart)(
-                cart=cart,
-                user=request.user if request.user.is_authenticated else None,
-                phone=data["phone"],
-                shipping_address=(
-                    _load_owned_address(request, data["shipping_address_id"])
-                    if data.get("shipping_address_id")
-                    else None
-                ),
-                delivery_zone_id=data.get("delivery_zone_id"),
-                payment_method=data["payment_method"],
-                email=data.get("email", ""),
-                notes=data.get("notes", ""),
-            )
+            if order is None:
+                cart = _resolve_cart(request)
+                input_serializer = OrderCreateSerializer(data=request.data)
+                input_serializer.is_valid(raise_exception=True)
+                data = input_serializer.validated_data
 
-            from apps.orders.payments import (
-                initiate_payment,
-                is_payment_method_available,
-            )
-            from apps.payments.services import StkPushRateLimited
+                order = _service_error_to_400(create_order_from_cart)(
+                    cart=cart,
+                    user=request.user if request.user.is_authenticated else None,
+                    phone=data["phone"],
+                    shipping_address=(
+                        _load_owned_address(request, data["shipping_address_id"])
+                        if data.get("shipping_address_id")
+                        else None
+                    ),
+                    delivery_zone_id=data.get("delivery_zone_id"),
+                    payment_method=data["payment_method"],
+                    email=data.get("email", ""),
+                    notes=data.get("notes", ""),
+                )
+                cache.set(order_marker_key, order.pk, IDEMPOTENCY_TTL_SECONDS)
+            elif order.status != "pending":
+                cache.delete(order_marker_key)
+                return Response(
+                    {
+                        "detail": (
+                            "The order from a previous attempt is no longer "
+                            "active; please place a new order."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             otp_required = requires_otp_for_payment(order)
             if otp_required:
@@ -242,16 +291,26 @@ class OrderListCreateView(APIView):
                         status=status.HTTP_429_TOO_MANY_REQUESTS,
                         headers={"Retry-After": str(exc.retry_after)},
                     )
+                except PaymentUnavailable:
+                    return Response(
+                        {
+                            "detail": (
+                                "The payment provider is temporarily unavailable; "
+                                "your order is kept and you can retry shortly."
+                            )
+                        },
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
 
             serializer = OrderDetailSerializer(order)
             response_data = {
                 **serializer.data,
                 "requires_otp": otp_required,
             }
-            store_result(user_pk, key, status.HTTP_201_CREATED, response_data)
+            store_result(scope, key, status.HTTP_201_CREATED, response_data)
             return Response(response_data, status=status.HTTP_201_CREATED)
         finally:
-            release_processing_lock(user_pk, key)
+            release_processing_lock(scope, key)
 
 
 def _load_owned_address(request, address_id):
@@ -356,11 +415,11 @@ class OrderCancelView(APIView):
         )
 
         key = require_idempotency_key(request)
-        user_pk = request.user.pk if request.user.is_authenticated else 0
-        cached = read_cached_result(user_pk, key)
+        scope = _idempotency_scope(request)
+        cached = read_cached_result(scope, key)
         if cached is not None:
             return Response(cached["data"], status=cached["status"])
-        if not acquire_processing_lock(user_pk, key):
+        if not acquire_processing_lock(scope, key):
             return Response(
                 {
                     "detail": "A request with this Idempotency-Key is already in progress."
@@ -377,10 +436,10 @@ class OrderCancelView(APIView):
                 note=input_serializer.validated_data.get("note", ""),
             )
             serializer = OrderDetailSerializer(cancelled)
-            store_result(user_pk, key, status.HTTP_200_OK, serializer.data)
+            store_result(scope, key, status.HTTP_200_OK, serializer.data)
             return Response(serializer.data)
         finally:
-            release_processing_lock(user_pk, key)
+            release_processing_lock(scope, key)
 
 
 class OrderStatusUpdateView(APIView):

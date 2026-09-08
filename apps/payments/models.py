@@ -47,7 +47,13 @@ class MpesaTransaction(models.Model):
     )
     phone_number = models.CharField(max_length=15)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    checkout_request_id = models.CharField(max_length=100, unique=True)
+    # Null while the initial Daraja call is still in flight — Safaricom
+    # assigns the key on success. ``unique=True`` plus ``null=True`` allows
+    # the multiple in-flight rows that a concurrent/retried order produces,
+    # while still rejecting two callbacks that claim the same key.
+    checkout_request_id = models.CharField(
+        max_length=100, unique=True, null=True, blank=True
+    )
     merchant_request_id = models.CharField(max_length=100, blank=True)
     mpesa_receipt_number = models.CharField(max_length=50, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
@@ -82,9 +88,9 @@ class MpesaTransaction(models.Model):
         """Return a compact label with status and masked phone."""
         from apps.accounts.services import mask_phone
 
+        checkout_id = self.checkout_request_id or "<in-flight>"
         return (
-            f"M-Pesa {self.checkout_request_id} "
-            f"({self.status}) {mask_phone(self.phone_number)}"
+            f"M-Pesa {checkout_id} " f"({self.status}) {mask_phone(self.phone_number)}"
         )
 
 
@@ -129,7 +135,11 @@ class MpesaB2CPayout(models.Model):
     )
     phone_number = models.CharField(max_length=15)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
-    conversation_id = models.CharField(max_length=100, unique=True)
+    # Null while the initial B2C call is still in flight — Safaricom
+    # assigns the conversation id on success.
+    conversation_id = models.CharField(
+        max_length=100, unique=True, null=True, blank=True
+    )
     originator_conversation_id = models.CharField(max_length=100, blank=True)
     mpesa_receipt_number = models.CharField(max_length=50, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
@@ -153,10 +163,8 @@ class MpesaB2CPayout(models.Model):
         """Return a compact label with status and masked phone."""
         from apps.accounts.services import mask_phone
 
-        return (
-            f"B2C {self.conversation_id[:12]}… "
-            f"({self.status}) {mask_phone(self.phone_number)}"
-        )
+        conversation = (self.conversation_id or "<in-flight>")[:12]
+        return f"B2C {conversation}… ({self.status}) {mask_phone(self.phone_number)}"
 
 
 class Payment(models.Model):

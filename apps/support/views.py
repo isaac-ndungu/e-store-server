@@ -29,6 +29,13 @@ from rest_framework.views import APIView
 from apps.accounts.models import User
 from apps.accounts.permissions import IsManagerOrSupport
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.idempotency import (
+    acquire_processing_lock,
+    read_cached_result,
+    release_processing_lock,
+    require_idempotency_key,
+    store_result,
+)
 from apps.orders.selectors import get_order_for_user
 from apps.returns.models import ReturnRequest
 from apps.support.selectors import (
@@ -594,7 +601,9 @@ class ChatMessageCreateView(APIView):
         """Append a customer message to the caller's session.
 
         The ``sender_type`` is fixed to ``customer`` server-side, so a caller
-        on this endpoint can never post as an agent.
+        on this endpoint can never post as an agent. The message is keyed to
+        the caller's idempotency scope so a retried send on a flaky connection
+        cannot post the same message twice.
 
         Args:
             request: the POST request carrying ``body``.
@@ -604,16 +613,40 @@ class ChatMessageCreateView(APIView):
             Response: ``201 Created`` with the message, ``400`` when the
                 session has ended, or ``404`` when not the caller's.
         """
-        session = _resolve_chat_session(request, session_id)
-        input_serializer = ChatMessageCreateSerializer(data=request.data)
-        input_serializer.is_valid(raise_exception=True)
-        message = _service_error_to_400(add_chat_message)(
-            session=session,
-            sender_type="customer",
-            body=input_serializer.validated_data["body"],
+        scope = (
+            f"u{request.user.pk}"
+            if request.user.is_authenticated
+            else f"s{_ensure_guest_session(request)}"
         )
-        serializer = ChatMessageSerializer(message)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
+        key = require_idempotency_key(request)
+        cached = read_cached_result(scope, key)
+        if cached is not None:
+            return Response(cached["data"], status=cached["status"])
+        if not acquire_processing_lock(scope, key):
+            return Response(
+                {
+                    "detail": (
+                        "A request with this Idempotency-Key is already in progress."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            session = _resolve_chat_session(request, session_id)
+            input_serializer = ChatMessageCreateSerializer(data=request.data)
+            input_serializer.is_valid(raise_exception=True)
+            message = _service_error_to_400(add_chat_message)(
+                session=session,
+                sender_type="customer",
+                body=input_serializer.validated_data["body"],
+            )
+            serializer = ChatMessageSerializer(message)
+            response = Response(serializer.data, status=status.HTTP_201_CREATED)
+            if response.status_code == status.HTTP_201_CREATED:
+                store_result(scope, key, response.status_code, response.data)
+            return response
+        finally:
+            release_processing_lock(scope, key)
 
 
 class ChatSessionEndView(APIView):

@@ -34,7 +34,7 @@ class OrderCreateSerializer(serializers.Serializer):
     delivery_zone_id = serializers.IntegerField(required=False, allow_null=True)
     payment_method = serializers.ChoiceField(choices=Order.PAYMENT_METHOD_CHOICES)
     email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
-    notes = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -58,6 +58,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "tax",
             "fulfillment_warehouse",
         ]
+        read_only_fields = fields
 
 
 class OrderStatusHistorySerializer(serializers.ModelSerializer):
@@ -72,6 +73,7 @@ class OrderStatusHistorySerializer(serializers.ModelSerializer):
             "note",
             "changed_at",
         ]
+        read_only_fields = fields
 
 
 class OrderVerificationSerializer(serializers.ModelSerializer):
@@ -113,6 +115,7 @@ class OrderListSerializer(serializers.ModelSerializer):
             "placed_at",
             "item_count",
         ]
+        read_only_fields = fields
 
     def get_item_count(self, obj):
         """Return the number of physical line items on the order.
@@ -158,6 +161,7 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "status_history",
             "verification",
         ]
+        read_only_fields = fields
 
 
 class OTPVerifySerializer(serializers.Serializer):
@@ -172,7 +176,7 @@ class CancelOrderSerializer(serializers.Serializer):
     ``note`` is optional and is recorded in the status-history audit trail.
     """
 
-    note = serializers.CharField(required=False, allow_blank=True)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 class OrderStatusUpdateSerializer(serializers.Serializer):
@@ -185,4 +189,4 @@ class OrderStatusUpdateSerializer(serializers.Serializer):
     """
 
     to_status = serializers.ChoiceField(choices=Order.STATUS_CHOICES)
-    note = serializers.CharField(required=False, allow_blank=True)
+    note = serializers.CharField(required=False, allow_blank=True, max_length=2000)

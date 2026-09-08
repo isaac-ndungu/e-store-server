@@ -906,20 +906,39 @@ class FacetDefinitionSerializer(serializers.ModelSerializer):
         field_name = data.get("field_name", getattr(self.instance, "field_name", ""))
 
         json_sources = {"product_specs", "variant_attributes"}
-        field_sources = {"product_field", "variant_field"}
 
         if source in json_sources and not key:
             raise serializers.ValidationError(
                 {"key": f"'key' is required when source_field is '{source}'."}
             )
-        if source in field_sources and not field_name:
-            raise serializers.ValidationError(
-                {
-                    "field_name": (
-                        f"'field_name' is required when source_field is " f"'{source}'."
-                    )
-                }
-            )
+        if source == "product_field":
+            if not field_name:
+                raise serializers.ValidationError(
+                    {"field_name": "'field_name' is required for this source."}
+                )
+            if field_name not in FacetDefinition.FACETABLE_PRODUCT_FIELDS:
+                raise serializers.ValidationError(
+                    {
+                        "field_name": (
+                            f"'{field_name}' is not in the allowlist of "
+                            "facetable product fields."
+                        )
+                    }
+                )
+        if source == "variant_field":
+            if not field_name:
+                raise serializers.ValidationError(
+                    {"field_name": "'field_name' is required for this source."}
+                )
+            if field_name not in FacetDefinition.FACETABLE_VARIANT_FIELDS:
+                raise serializers.ValidationError(
+                    {
+                        "field_name": (
+                            f"'{field_name}' is not in the allowlist of "
+                            "facetable variant fields."
+                        )
+                    }
+                )
         return data
 
     def create(self, validated_data):

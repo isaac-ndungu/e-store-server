@@ -98,7 +98,6 @@ class CartSummarySerializer(serializers.Serializer):
 
     id = serializers.IntegerField()
     user = serializers.IntegerField(allow_null=True)
-    session_key = serializers.CharField()
     coupon_code = serializers.CharField(allow_null=True)
     items = CartLineItemSerializer(many=True)
     item_count = serializers.IntegerField()

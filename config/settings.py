@@ -182,6 +182,7 @@ REST_FRAMEWORK = {
         "order_verify": "10/min",
         "order_otp_resend": "5/min",
         "mpesa_callback": "500/min",
+        "notifications_callback": "500/min",
         "social_proof_view": "30/min",
         "review_read": "60/min",
         "review_write": "10/min",

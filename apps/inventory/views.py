@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 
 from apps.catalog.models import ProductVariant
 from apps.core.idempotency import IdempotentCreateMixin
-from apps.inventory.models import StockReservation, Warehouse
+from apps.inventory.models import Inventory, SerialUnit, StockReservation, Warehouse
 from apps.inventory.selectors import (
     get_variant_availability,
     list_inventory,
@@ -25,6 +25,7 @@ from apps.inventory.selectors import (
     list_serial_units,
 )
 from apps.inventory.serializers import (
+    BulkAvailabilitySerializer,
     InventorySerializer,
     InventoryWriteSerializer,
     SerialUnitSerializer,
@@ -34,8 +35,21 @@ from apps.inventory.serializers import (
 )
 from apps.inventory.services import release_reservation
 
-# Biggest batch an availability request may ask for in one call.
-MAX_BULK_AVAILABILITY = 50
+
+def _is_sellable_variant(variant):
+    """Return whether a variant is currently sold through the storefront.
+
+    Stock availability is only exposed for active, non-discontinued products;
+    inactive or discontinued lines must not leak stock levels.
+
+    Args:
+        variant (ProductVariant): the variant to check.
+
+    Returns:
+        bool: True when the variant's product is active and not discontinued.
+    """
+    product = variant.product
+    return product.is_active and not product.is_discontinued
 
 
 # Public views
@@ -89,8 +103,7 @@ class AvailabilityView(APIView):
         Raises:
             Http404: if the product is inactive or discontinued.
         """
-        product = variant.product
-        if not product.is_active or product.is_discontinued:
+        if not _is_sellable_variant(variant):
             raise Http404
 
 
@@ -119,32 +132,44 @@ class BulkAvailabilityView(APIView):
 
         Raises:
             ValidationError: on an empty/oversized/invalid request body or a
-                missing variant/sku.
+                missing or non-sellable variant/sku.
         """
-        variant_ids = request.data.get("variant_ids")
-        skus = request.data.get("skus")
-        if bool(variant_ids) == bool(skus):
-            raise DRFValidationError(
-                "Provide exactly one of 'variant_ids' or 'skus' (non-empty)."
+        input_serializer = BulkAvailabilitySerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        lookup = input_serializer.validated_data
+        ids = lookup.get("variant_ids") or []
+        sku_list = lookup.get("skus") or []
+
+        if ids:
+            variants = list(
+                ProductVariant.objects.filter(pk__in=ids).select_related("product")
             )
-        ids = list(variant_ids or [])
-        sku_list = list(skus or [])
-        if len(ids) > MAX_BULK_AVAILABILITY or len(sku_list) > MAX_BULK_AVAILABILITY:
-            raise DRFValidationError(
-                f"At most {MAX_BULK_AVAILABILITY} lookups per request."
-            )
-        if variant_ids:
-            variants = list(ProductVariant.objects.filter(pk__in=ids))
             missing = set(ids) - {variant.pk for variant in variants}
             if missing:
                 raise DRFValidationError(
                     {"variant_ids": f"Unknown variant ids: {sorted(missing)}"}
                 )
         else:
-            variants = list(ProductVariant.objects.filter(sku__in=sku_list))
+            variants = list(
+                ProductVariant.objects.filter(sku__in=sku_list).select_related(
+                    "product"
+                )
+            )
             missing = set(sku_list) - {variant.sku for variant in variants}
             if missing:
                 raise DRFValidationError({"skus": f"Unknown skus: {sorted(missing)}"})
+
+        non_sellable = [
+            variant for variant in variants if not _is_sellable_variant(variant)
+        ]
+        if non_sellable:
+            raise DRFValidationError(
+                {
+                    "detail": (
+                        "Stock is not exposed for inactive or discontinued " "products."
+                    )
+                }
+            )
 
         results = {}
         for variant in variants:
@@ -170,13 +195,42 @@ class AdminWarehouseListCreateView(generics.ListCreateAPIView):
 
 
 class AdminWarehouseDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """Retrieve, update, or delete a warehouse (admin only)."""
+    """Retrieve, update, or delete a warehouse (admin only).
+
+    Deletion is rejected while the warehouse still holds inventory or serial
+    units — deleting the row would cascade away real stock and its
+    reservations instead of moving it through the lifecycle.
+    """
 
     permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "inventory_write"
     serializer_class = WarehouseSerializer
     queryset = Warehouse.objects.all()
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete the warehouse unless it still holds stock.
+
+        Args:
+            request: the DELETE request.
+
+        Returns:
+            Response: ``204 No Content`` on safe deletion, or ``400`` when the
+                warehouse cannot be emptied out.
+        """
+        warehouse = self.get_object()
+        holdings = Inventory.objects.filter(warehouse=warehouse).exists()
+        serial_units = SerialUnit.objects.filter(warehouse=warehouse).exists()
+        if holdings or serial_units:
+            raise DRFValidationError(
+                {
+                    "detail": (
+                        "This warehouse still holds inventory or serial "
+                        "units; move or clear them before deleting it."
+                    )
+                }
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class AdminInventoryListCreateView(IdempotentCreateMixin, generics.ListCreateAPIView):
@@ -209,6 +263,9 @@ class AdminInventoryDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete an inventory row (admin only).
 
     Updates may only increase stock; see ``InventoryWriteSerializer``.
+    Deletion is rejected while the row backs any reservation or serialized
+    unit — dropping the row would silently destroy the reservation lifecycle
+    and leave the serial-unit ledger unreconciled.
     """
 
     permission_classes = [permissions.IsAdminUser]
@@ -224,6 +281,33 @@ class AdminInventoryDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         """Return inventory rows with related data pre-fetched."""
         return list_inventory()
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete the row unless stock or reservations back it.
+
+        Args:
+            request: the DELETE request.
+
+        Returns:
+            Response: ``204 No Content`` on safe deletion, or ``400`` when
+                the row is still in use.
+        """
+        row = self.get_object()
+        in_use = StockReservation.objects.filter(inventory=row).exists()
+        has_units = SerialUnit.objects.filter(
+            variant=row.variant, warehouse=row.warehouse
+        ).exists()
+        if in_use or has_units:
+            raise DRFValidationError(
+                {
+                    "detail": (
+                        "This inventory row holds stock or backs open "
+                        "reservations; move stock through the reservation "
+                        "lifecycle instead of deleting it."
+                    )
+                }
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class AdminSerialUnitListCreateView(IdempotentCreateMixin, generics.ListCreateAPIView):
@@ -263,7 +347,10 @@ class AdminSerialUnitDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a serial unit (admin only).
 
     Updates only allow the manual status transitions enforced by the write
-    serializer.
+    serializer. Deletion is allowed only for a plain ``in_stock`` unit — a
+    reserved, sold, returned, or delivery-linked unit must move through the
+    reservation/returns lifecycle so the sibling inventory counts never
+    drift.
     """
 
     permission_classes = [permissions.IsAdminUser]
@@ -279,6 +366,33 @@ class AdminSerialUnitDetailView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         """Return serial units with related data pre-fetched."""
         return list_serial_units()
+
+    def destroy(self, request, *args, **kwargs):
+        """Delete only an unattached, in-stock serial unit.
+
+        Args:
+            request: the DELETE request.
+
+        Returns:
+            Response: ``204 No Content`` on safe deletion, or ``400`` when
+                the unit is linked to the stock lifecycle.
+        """
+        unit = self.get_object()
+        if (
+            unit.status != "in_stock"
+            or unit.reservation_id is not None
+            or unit.order_item_id is not None
+        ):
+            raise DRFValidationError(
+                {
+                    "detail": (
+                        "Only an in-stock unit with no reservation or order "
+                        "link can be deleted; other units must move through "
+                        "the reservation lifecycle."
+                    )
+                }
+            )
+        return super().destroy(request, *args, **kwargs)
 
 
 class AdminReservationListView(generics.ListAPIView):

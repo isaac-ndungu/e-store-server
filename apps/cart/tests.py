@@ -664,6 +664,12 @@ class CartApiTests(APITestCase):
         self.assertIn("items", response.data)
         self.assertIn("subtotal", response.data)
 
+    def test_cart_response_never_exposes_session_key(self):
+        """The cart payload omits the internal session-key field."""
+        response = self.client.get(reverse("api:cart:cart"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn("session_key", response.data)
+
     def test_get_cart_guest_with_session(self):
         """An anonymous guest gets a cart keyed to their Django session."""
         response = self.client.get(reverse("api:cart:cart"))
