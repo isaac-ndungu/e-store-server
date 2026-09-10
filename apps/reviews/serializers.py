@@ -1,16 +1,16 @@
 """API serializers for the reviews app.
 
 Read serializers expose only white-listed, storefront-safe fields: the
-reviewer's display handle (username) is shown, never their email or phone
-number, and moderation shapes keep author and product context for staff.
+submitter's display name is shown, never their contact details, and
+moderation shapes keep submitter and product context for staff.
 
-Write serializers whitelist exactly what a caller may supply. A review names a
-rating, optional headline/body, optional photo ids from the photo-upload
-endpoint, and an optional order-line id for the verified-purchase badge; the
-reviewer identity always comes from the request's authenticated user, never a
-client-supplied field. Photos are referenced by id rather than URL, and the
-service only ever claims uploads owned by the caller, so a random URL or a
-stranger's photo cannot be planted on a review.
+Write serializers whitelist exactly what a caller may supply. A review names
+a rating, the submitter's name and phone/email contact, an optional
+headline/body, optional photo ids from the photo-upload endpoint, and an
+optional order-line id for the verified-purchase badge. Photos are referenced
+by id rather than URL, and the service only ever claims uploads from the
+caller's own identity, so a random URL or a stranger's photo cannot be
+planted on a review.
 """
 
 from rest_framework import serializers
@@ -24,12 +24,6 @@ from apps.reviews.constants import (
     REVIEW_TITLE_MAX_LENGTH,
 )
 from apps.reviews.models import ProductAnswer, ProductQuestion, Review, ReviewPhoto
-
-
-class ReviewAuthorSerializer(serializers.Serializer):
-    """Public reviewer identity — the display handle only, never contact data."""
-
-    username = serializers.CharField()
 
 
 class ReviewPhotoSerializer(serializers.ModelSerializer):
@@ -72,7 +66,6 @@ class AnswerSerializer(serializers.ModelSerializer):
 class ReviewSerializer(serializers.ModelSerializer):
     """Storefront-facing review shape with its processed photos."""
 
-    user = ReviewAuthorSerializer(read_only=True)
     photos = ReviewPhotoSerializer(many=True, read_only=True)
     verified_purchase = serializers.SerializerMethodField()
 
@@ -85,7 +78,7 @@ class ReviewSerializer(serializers.ModelSerializer):
             "body",
             "photos",
             "verified_purchase",
-            "user",
+            "submitter_name",
             "created_at",
         ]
         read_only_fields = fields
@@ -94,8 +87,8 @@ class ReviewSerializer(serializers.ModelSerializer):
         """Return whether the review is backed by a purchase order line.
 
         The badge simply reflects whether an ``OrderItem`` was claimed and
-        validated at creation — the service guarantees that line belonged to
-        the reviewer's own completed order.
+        validated at creation — the service guarantees that line matched the
+        submitter's contact on a completed order.
 
         Args:
             obj (Review): the review being serialized.
@@ -109,23 +102,29 @@ class ReviewSerializer(serializers.ModelSerializer):
 class QuestionSerializer(serializers.ModelSerializer):
     """Storefront-facing question shape with its answers oldest-first."""
 
-    user = ReviewAuthorSerializer(read_only=True)
     answers = AnswerSerializer(many=True, read_only=True)
 
     class Meta:
         model = ProductQuestion
-        fields = ["id", "question", "user", "answers", "created_at"]
+        fields = ["id", "question", "submitter_name", "answers", "created_at"]
         read_only_fields = fields
 
 
-class ReviewCreateSerializer(serializers.Serializer):
-    """Input for a customer creating a review.
+class SubmitterSerializer(serializers.Serializer):
+    """Name + contact identity shared by review and question submissions."""
+
+    submitter_name = serializers.CharField(max_length=255)
+    submitter_contact = serializers.CharField(max_length=255)
+
+
+class ReviewCreateSerializer(SubmitterSerializer):
+    """Input for posting a review.
 
     ``order_item_id`` optionally marks the review as a verified purchase; the
-    service re-checks the line belongs to the caller's completed order.
-    ``photo_ids`` cites uploads produced by the photo-upload endpoint and capped
-    at ``REVIEW_MAX_PHOTOS`` entries; the service only claims photos owned by
-    the caller.
+    service re-checks the line sits on a completed order matching the
+    submitter's contact. ``photo_ids`` cites uploads produced by the
+    photo-upload endpoint and capped at ``REVIEW_MAX_PHOTOS`` entries; the
+    service only claims uploads from the caller's own identity.
     """
 
     rating = serializers.IntegerField(min_value=1, max_value=MAX_REVIEW_RATING)
@@ -153,8 +152,8 @@ class ReviewCreateSerializer(serializers.Serializer):
     )
 
 
-class QuestionCreateSerializer(serializers.Serializer):
-    """Input for a customer asking a product question."""
+class QuestionCreateSerializer(SubmitterSerializer):
+    """Input for asking a product question."""
 
     question = serializers.CharField(max_length=QUESTION_MAX_LENGTH)
 
@@ -166,9 +165,8 @@ class AnswerCreateSerializer(serializers.Serializer):
 
 
 class ReviewModerationSerializer(serializers.ModelSerializer):
-    """Staff-facing review shape with author and product context."""
+    """Staff-facing review shape with submitter and product context."""
 
-    user = ReviewAuthorSerializer(read_only=True)
     product_slug = serializers.CharField(source="product.slug")
     product_name = serializers.CharField(source="product.name")
     photos = ReviewPhotoSerializer(many=True, read_only=True)
@@ -186,7 +184,8 @@ class ReviewModerationSerializer(serializers.ModelSerializer):
             "photos",
             "verified_purchase",
             "is_approved",
-            "user",
+            "submitter_name",
+            "submitter_contact",
             "created_at",
         ]
         read_only_fields = fields
@@ -204,9 +203,8 @@ class ReviewModerationSerializer(serializers.ModelSerializer):
 
 
 class QuestionModerationSerializer(serializers.ModelSerializer):
-    """Staff-facing question shape with author, product, and answers."""
+    """Staff-facing question shape with submitter, product, and answers."""
 
-    user = ReviewAuthorSerializer(read_only=True)
     product_slug = serializers.CharField(source="product.slug")
     product_name = serializers.CharField(source="product.name")
     answers = AnswerSerializer(many=True, read_only=True)
@@ -219,7 +217,8 @@ class QuestionModerationSerializer(serializers.ModelSerializer):
             "product_name",
             "question",
             "is_approved",
-            "user",
+            "submitter_name",
+            "submitter_contact",
             "answers",
             "created_at",
         ]

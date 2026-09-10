@@ -2,9 +2,8 @@
 
 Selectors encapsulate query construction so views and serializers never build
 raw querysets directly. Public storefront reads select only approved rows and
-use ``select_related``/``prefetch_related`` so list endpoints never trigger an
-N+1 query against reviewers or answers; moderation reads are shaped for the
-staff inbox.
+prefetch photos/answers so list endpoints never trigger N+1 queries;
+moderation reads are shaped for the staff inbox.
 """
 
 from django.db.models import Prefetch
@@ -42,12 +41,10 @@ def list_approved_reviews(product):
         product (Product): the product.
 
     Returns:
-        QuerySet: the product's approved reviews with the author and photos
-            fetched, ordered newest-first.
+        QuerySet: the product's approved reviews with photos fetched, ordered newest-first.
     """
     return (
         product.reviews.filter(is_approved=True)
-        .select_related("user")
         .prefetch_related("photos")
         .order_by("-created_at", "-pk")
     )
@@ -63,12 +60,10 @@ def list_approved_questions(product):
         product (Product): the product.
 
     Returns:
-        QuerySet: the product's approved questions with the asker and answers
-            pre-fetched, ordered newest-first.
+        QuerySet: the product's approved questions with answers pre-fetched, ordered newest-first.
     """
     return (
         product.questions.filter(is_approved=True)
-        .select_related("user")
         .prefetch_related(
             Prefetch(
                 "answers",
@@ -87,11 +82,10 @@ def list_all_reviews(*, approved=None):
             approval state.
 
     Returns:
-        QuerySet: reviews with author, product, and photos fetched,
-            newest-first.
+        QuerySet: reviews with product and photos fetched, newest-first.
     """
     queryset = (
-        Review.objects.select_related("user", "product")
+        Review.objects.select_related("product")
         .prefetch_related("photos")
         .order_by("-created_at", "-pk")
     )
@@ -108,11 +102,10 @@ def list_all_questions(*, approved=None):
             approval state.
 
     Returns:
-        QuerySet: questions with asker, product, and answers fetched,
-            newest-first.
+        QuerySet: questions with product and answers fetched, newest-first.
     """
     queryset = (
-        ProductQuestion.objects.select_related("user", "product")
+        ProductQuestion.objects.select_related("product")
         .prefetch_related(
             Prefetch(
                 "answers", queryset=ProductAnswer.objects.select_related("answered_by")
@@ -132,11 +125,11 @@ def get_review_for_staff(review_id):
         review_id (int): the review primary key.
 
     Returns:
-        Review | None: the review with author, product, order line, and photos
+        Review | None: the review with product, order line, and photos
             fetched, or None when no review matches.
     """
     return (
-        Review.objects.select_related("user", "product", "order_item")
+        Review.objects.select_related("product", "order_item")
         .prefetch_related("photos")
         .filter(pk=review_id)
         .first()
@@ -150,11 +143,11 @@ def get_question_for_staff(question_id):
         question_id (int): the question primary key.
 
     Returns:
-        ProductQuestion | None: the question with asker, product, and answers
+        ProductQuestion | None: the question with product and answers
             fetched, or None when no question matches.
     """
     return (
-        ProductQuestion.objects.select_related("user", "product")
+        ProductQuestion.objects.select_related("product")
         .prefetch_related(
             Prefetch(
                 "answers", queryset=ProductAnswer.objects.select_related("answered_by")

@@ -7,21 +7,25 @@ the storefront rating read never drifts from what reviewers actually wrote.
 
 Invariants upheld here:
 
-- Free-form text (review title/body, question text, answer text) is sanitised
-  with ``bleach`` at this boundary, so markup and event handlers are stripped
-  before the text is stored and later rendered on the storefront.
+- Free-form text (submitter name, review title/body, question text, answer
+  text) is sanitised with ``bleach`` at this boundary, so markup and event
+  handlers are stripped before the text is stored and later rendered on the
+  storefront.
+- Submissions are anonymous: the public identity is the submitted name and
+  contact, never an account. One review is allowed per contact per product; a
+  second attempt is rejected with a clean error.
 - A review may reference at most one ``OrderItem`` as proof of purchase. The
-  line must belong to the reviewer's own order (``order.user`` must match the
-  authenticated caller), must be for the same product, must sit on a completed
-  order, and must not already be claimed by an earlier review.
-- One review is allowed per buyer per product; a second attempt is rejected
-  with a clean error rather than surfaced as an integrity violation.
-- Photos attach by ``ReviewPhoto`` id: each id must be an unattached upload of
-  the reviewer's own, so no reviewer can reference a stranger's photo.
-- Rating aggregates count only approved reviews. Every create, approval
-  change, or review deletion recomputes them in the same transaction, and the
-  product row is locked during the recompute so concurrent review writes to
-  the same product cannot commit a stale aggregate.
+  line must be for the same product, sit on a completed order, and match the
+  submitter's contact (order phone or email) — and must not already be
+  claimed by an earlier review.
+- Photos attach by ``ReviewPhoto`` id: each id must be an unattached upload
+  from the same identity (the authenticated user, or the same guest session
+  key), so no reviewer can reference a stranger's photo.
+- Rating aggregates count only approved reviews. New submissions default to
+  hidden; every create, approval change, or review deletion recomputes the
+  aggregate in the same transaction, and the product row is locked during the
+  recompute so concurrent review writes to the same product cannot commit a
+  stale aggregate.
 """
 
 from decimal import ROUND_HALF_UP, Decimal
@@ -121,18 +125,20 @@ def _recompute_rating(product_id):
     return average, count
 
 
-def _resolve_verified_order_item(user, product, order_item_id):
+def _resolve_verified_order_item(submitter_contact, product, order_item_id):
     """Resolve an order line as proof of purchase for a review.
 
-    The line must belong to the reviewer's own order, be for the reviewed
-    product, and sit on an order in a completed state. A line that is missing,
-    foreign, for a different product, or on a not-completed order all collapse
-    into the same opaque error so the response never reveals whether a given
-    order-line id exists or who owns it. An already-claimed line is rejected
-    so one purchase can verify only one review.
+    The line must be for the reviewed product, sit on an order in a completed
+    state, and match the submitter's contact — the order's phone (compared
+    after normalization) or email (compared case-insensitively). A line that
+    is missing, foreign, for a different product, contact-mismatched, or on a
+    not-completed order all collapse into the same opaque error so the
+    response never reveals whether a given order-line id exists or who owns
+    it. An already-claimed line is rejected so one purchase can verify only
+    one review.
 
     Args:
-        user (User): the authenticated reviewer.
+        submitter_contact (str): the reviewer's phone or email.
         product (Product): the reviewed product.
         order_item_id (int): the candidate order-line primary key.
 
@@ -140,38 +146,52 @@ def _resolve_verified_order_item(user, product, order_item_id):
         OrderItem: the qualifying, unclaimed order line.
 
     Raises:
-        ValidationError: when the line does not qualify as this reviewer's
+        ValidationError: when the line does not qualify as this submitter's
             verified purchase, or is already claimed by another review.
     """
-    order_item = (
+    from apps.accounts.services import normalize_email, normalize_phone_number
+
+    contact = (submitter_contact or "").strip()
+    candidates = (
         OrderItem.objects.select_related("order")
         .filter(
             pk=order_item_id,
             product=product,
-            order__user=user,
             order__status__in=VERIFIED_PURCHASE_STATUSES,
         )
         .first()
     )
-    if order_item is None:
+    match = False
+    if candidates is not None:
+        if "@" in contact:
+            match = candidates.order.email and (
+                normalize_email(candidates.order.email) == normalize_email(contact)
+            )
+        elif contact:
+            match = normalize_phone_number(
+                candidates.order.phone
+            ) == normalize_phone_number(contact)
+    if not match:
         raise ValidationError(
             "The selected purchase does not qualify as a verified purchase."
         )
-    if Review.objects.filter(order_item=order_item).exists():
+    if Review.objects.filter(order_item=candidates).exists():
         raise ValidationError("That purchase has already been used to verify a review.")
-    return order_item
+    return candidates
 
 
-def _resolve_photo_ids(user, photo_ids):
-    """Resolve a list of photo ids into claimable uploads belonging to the caller.
+def _resolve_photo_ids(user, session_key, photo_ids):
+    """Resolve photo ids into claimable uploads from the same identity.
 
-    Every id must reference an unattached upload owned by ``user``. A foreign,
-    already-attached, or duplicated id makes the whole set invalid so a
-    reviewer can never attach somebody else's photo or reuse one across two
-    reviews.
+    Every id must reference an unattached upload from the caller's own
+    identity: the authenticated ``user``, or the guest ``session_key`` when
+    anonymous. A foreign, already-attached, or duplicated id makes the whole
+    set invalid so a reviewer can never attach somebody else's photo or reuse
+    one across two reviews.
 
     Args:
-        user (User): the authenticated reviewer.
+        user (User | None): the authenticated reviewer, if any.
+        session_key (str): the guest session key, when anonymous.
         photo_ids (list[int]): the candidate photo primary keys.
 
     Returns:
@@ -183,9 +203,15 @@ def _resolve_photo_ids(user, photo_ids):
     ids = list(dict.fromkeys(photo_ids))
     if len(ids) != len(photo_ids):
         raise ValidationError("Duplicate photos are not allowed.")
-    photos = list(
-        ReviewPhoto.objects.filter(pk__in=ids, user=user, review__isnull=True)
-    )
+    if not ids:
+        return []
+    if user is not None and user.is_authenticated:
+        lookup = {"user": user}
+    elif session_key:
+        lookup = {"user__isnull": True, "session_key": session_key}
+    else:
+        raise ValidationError("Each photo must be your own unclaimed upload.")
+    photos = list(ReviewPhoto.objects.filter(pk__in=ids, review__isnull=True, **lookup))
     if len(photos) != len(ids):
         raise ValidationError("Each photo must be your own unclaimed upload.")
     return photos
@@ -193,44 +219,51 @@ def _resolve_photo_ids(user, photo_ids):
 
 def create_review(
     *,
-    user,
+    user=None,
     product,
     rating,
+    submitter_name=None,
+    submitter_contact=None,
+    session_key="",
     title="",
     body="",
     photo_ids=None,
     order_item_id=None,
 ):
-    """Create a customer review for a product.
+    """Create an anonymous review for a product, pending staff approval.
 
-    A review may verify a purchase by referencing an ``OrderItem``; the line
-    is validated against the caller's own completed orders and may only verify
-    one review. Photos are claimed as the review is created — each id must be
-    the caller's own unattached upload. One review is allowed per user per
-    product, and the product's rating aggregate is recomputed in the same
-    transaction as the create, so the aggregate and the review set are never
-    observed in different states.
+    The public identity is the submitted name/contact, never an account. One
+    review is allowed per contact per product (per account per product when an
+    authenticated user submits). A review may verify a purchase by referencing
+    an ``OrderItem`` whose order phone/email matches the submitter's contact.
+    Photos are claimed as the review is created — each id must be an
+    unattached upload from the same identity. The review starts hidden; staff
+    approval surfaces it and recomputes the product aggregate.
 
     Args:
-        user (User): the authenticated reviewer.
+        user (User | None): the authenticated submitter, if any (recorded for
+            audit, not displayed).
         product (Product): the reviewed product.
         rating (int): the star rating within the configured scale.
+        submitter_name (str): the public display name.
+        submitter_contact (str): the submitter's phone or email.
+        session_key (str): the guest session key, when anonymous.
         title (str): an optional short headline.
         body (str): an optional written review.
-        photo_ids (list[int] | None): ids of the reviewer's own unattached
+        photo_ids (list[int] | None): ids of the caller's own unattached
             uploads to attach, if any.
         order_item_id (int | None): a completed-purchase order line proving
             the review is verified, if any.
 
     Returns:
-        Review: the created, approved review.
+        Review: the created, unapproved review.
 
     Raises:
         ReviewsDisabledError: if the reviews feature is toggled off.
-        ValidationError: if the rating is out of range, the caller already
-            reviewed the product, the referenced purchase is not a qualifying
-            verified purchase, or any photo id is not the caller's own
-            unclaimed upload.
+        ValidationError: if the rating is out of range, the name/contact is
+            missing, the contact already reviewed the product, the referenced
+            purchase is not a qualifying verified purchase, or any photo id
+            is not the caller's own unclaimed upload.
     """
     _require_reviews_enabled()
     photo_ids = photo_ids or []
@@ -238,19 +271,32 @@ def create_review(
         raise ValidationError(
             f"Rating must be between {MIN_REVIEW_RATING} and {MAX_REVIEW_RATING}."
         )
+    name = _sanitize(submitter_name or "").strip()
+    contact = (submitter_contact or "").strip()
+    if not name:
+        raise ValidationError("A name is required to post a review.")
+    if not contact:
+        raise ValidationError("A phone number or email is required to post a review.")
 
-    if Review.objects.filter(user=user, product=product).exists():
+    if user is not None and user.is_authenticated:
+        if Review.objects.filter(user=user, product=product).exists():
+            raise ValidationError("You have already reviewed this product.")
+    elif Review.objects.filter(
+        product=product, submitter_contact__iexact=contact
+    ).exists():
         raise ValidationError("You have already reviewed this product.")
 
     with transaction.atomic():
         order_item = None
         if order_item_id is not None:
-            order_item = _resolve_verified_order_item(user, product, order_item_id)
-        photos = _resolve_photo_ids(user, photo_ids)
+            order_item = _resolve_verified_order_item(contact, product, order_item_id)
+        photos = _resolve_photo_ids(user, session_key, photo_ids)
         try:
             review = Review.objects.create(
                 product=product,
-                user=user,
+                user=user if user is not None and user.is_authenticated else None,
+                submitter_name=name,
+                submitter_contact=contact,
                 order_item=order_item,
                 rating=rating,
                 title=_sanitize(title),
@@ -266,27 +312,40 @@ def create_review(
     return review
 
 
-def create_product_question(*, user, product, question):
-    """Ask a question about a product as a customer.
+def create_product_question(
+    *, user=None, product, question, submitter_name=None, submitter_contact=None
+):
+    """Ask a question about a product anonymously, pending staff approval.
 
-    The question text is sanitised and the question defaults to approved, so a
-    storefront staff answer can surface it or staff can hide it later.
+    The question text is sanitised and the question starts hidden so spam
+    never reaches the storefront before a staff member sees it.
 
     Args:
-        user (User): the authenticated asker.
+        user (User | None): the authenticated asker, if any (audit only).
         product (Product): the product being asked about.
         question (str): the question text.
+        submitter_name (str): the public display name.
+        submitter_contact (str): the asker's phone or email.
 
     Returns:
-        ProductQuestion: the created question.
+        ProductQuestion: the created, unapproved question.
 
     Raises:
         ReviewsDisabledError: when the reviews feature is disabled.
+        ValidationError: when the name or contact is missing.
     """
     _require_reviews_enabled()
+    name = _sanitize(submitter_name or "").strip()
+    contact = (submitter_contact or "").strip()
+    if not name:
+        raise ValidationError("A name is required to ask a question.")
+    if not contact:
+        raise ValidationError("A phone number or email is required to ask a question.")
     return ProductQuestion.objects.create(
         product=product,
-        user=user,
+        user=user if user is not None and user.is_authenticated else None,
+        submitter_name=name,
+        submitter_contact=contact,
         question=_sanitize(question),
     )
 

@@ -1,17 +1,17 @@
 """API views for the reviews app.
 
-Storefront paths render reviews and Q&A outside the login wall (a deliberate
-``IsAuthenticatedOrReadOnly`` — catalog browsing and social proof are public)
-while creating a review, asking a question, or uploading a photo requires an
-authenticated customer whose identity always comes from the token, never the
-body. Moderation — approving/rejecting content and answering questions — is
-gated behind the manager/support role.
+Storefront paths are fully public: listing reviews/Q&A and submitting a
+review, a question, or a photo needs no account — the submitter's name and
+contact travel in the body, and uploads are bound to the server-issued guest
+session. Moderation — approving/rejecting content and answering questions —
+is gated behind the manager/support role.
 
 Ownership: the only caller-supplied references to other resources are a
-review's ``order_item_id`` and ``photo_ids``. The service resolves them
-against the caller's own orders and the caller's own unattached uploads, and
-returns a single opaque 400 for any miss, so the response never reveals
-whether a given order line or photo exists or whom it belongs to.
+review's ``order_item_id`` and ``photo_ids``. The service resolves the order
+line against the submitter's contact on a completed order, and photos against
+the caller's own identity (account or guest session), returning a single
+opaque 400 for any miss, so the response never reveals whether a given order
+line or photo exists or whom it belongs to.
 
 All mutations go through the reviews service; no view writes a model field or
 the product's rating aggregate directly.
@@ -48,6 +48,7 @@ from apps.core.idempotency import (
     store_result,
 )
 from apps.reviews.constants import (
+    MAX_UNATTACHED_PHOTOS_PER_SESSION,
     MAX_UNATTACHED_PHOTOS_PER_USER,
     REVIEW_PHOTO_MAX_SIZE_MB,
 )
@@ -145,6 +146,43 @@ def _parse_approved_param(request):
     return None
 
 
+def _ensure_guest_session(request):
+    """Return the request's Django session key, creating a session if needed.
+
+    The key binds anonymous photo uploads to the browser that made them, so a
+    review can only claim uploads from its own session.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        str: the session key.
+    """
+    if request.session.session_key is None:
+        request.session.create()
+    return request.session.session_key
+
+
+def _caller_identity(request):
+    """Split the caller into an audit user and a photo-claim identity.
+
+    An authenticated caller claims uploads by account; an anonymous caller by
+    server-issued session key. The idempotency scope follows the same split
+    so two anonymous browsers never share a retry namespace.
+
+    Args:
+        request: the incoming HTTP request.
+
+    Returns:
+        tuple: ``(user_or_None, session_key, scope)`` where ``session_key``
+            is ``""`` for authenticated callers.
+    """
+    if request.user.is_authenticated:
+        return request.user, "", f"u{request.user.pk}"
+    session_key = _ensure_guest_session(request)
+    return None, session_key, f"s{session_key}"
+
+
 def _product_or_404(slug):
     """Resolve an active product by slug or raise HTTP 404.
 
@@ -200,14 +238,15 @@ def _staff_question_or_404(question_id):
 
 
 class ProductReviewsView(APIView):
-    """List a product's reviews or create one as the caller.
+    """List a product's reviews or submit one anonymously.
 
-    Listing is public by design — the storefront renders reviews outside the
-    login wall; creating requires an authenticated customer. Read and write
-    rate scopes differ, so ``throttle_scope`` resolves per method.
+    Fully public by design — the storefront renders and collects reviews
+    outside any login wall. Submissions start hidden pending staff approval.
+    Read and write rate scopes differ, so ``throttle_scope`` resolves per
+    method.
     """
 
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
 
     @property
@@ -246,7 +285,7 @@ class ProductReviewsView(APIView):
         responses={201: ReviewSerializer},
     )
     def post(self, request, slug):
-        """Create a review for the product as the authenticated caller.
+        """Submit an anonymous review for the product.
 
         Args:
             request: the POST request carrying the review payload.
@@ -261,10 +300,14 @@ class ProductReviewsView(APIView):
         input_serializer = ReviewCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         data = input_serializer.validated_data
+        user, session_key, _scope = _caller_identity(request)
         review = _service_error_to_503(_service_error_to_400(create_review))(
-            user=request.user,
+            user=user,
             product=product,
             rating=data["rating"],
+            submitter_name=data["submitter_name"],
+            submitter_contact=data["submitter_contact"],
+            session_key=session_key,
             title=data.get("title", ""),
             body=data.get("body", ""),
             photo_ids=data.get("photo_ids", []),
@@ -275,12 +318,12 @@ class ProductReviewsView(APIView):
 
 
 class ProductQuestionsView(APIView):
-    """List a product's questions or ask one as the caller.
+    """List a product's questions or ask one anonymously.
 
-    Listing is public by design; asking requires an authenticated customer.
+    Fully public by design; submissions start hidden pending staff approval.
     """
 
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
 
     @property
@@ -319,7 +362,7 @@ class ProductQuestionsView(APIView):
         responses={201: QuestionSerializer},
     )
     def post(self, request, slug):
-        """Ask a question about the product as the authenticated caller.
+        """Ask a question about the product anonymously.
 
         Args:
             request: the POST request carrying the question text.
@@ -333,30 +376,34 @@ class ProductQuestionsView(APIView):
         product = _product_or_404(slug)
         input_serializer = QuestionCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        user, _session_key, _scope = _caller_identity(request)
         question = _service_error_to_503(
             _service_error_to_400(create_product_question)
         )(
-            user=request.user,
+            user=user,
             product=product,
-            question=input_serializer.validated_data["question"],
+            question=data["question"],
+            submitter_name=data["submitter_name"],
+            submitter_contact=data["submitter_contact"],
         )
         serializer = QuestionSerializer(question)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class ReviewPhotoUploadView(APIView):
-    """Upload and process a single review photo as an authenticated customer.
+    """Upload and process a single review photo, no account needed.
 
     The image is validated by content (Pillow decode plus the allowed format
     set) and by size, then re-encoded into the responsive variant set. The
-    resulting ``ReviewPhoto`` row is owned by the caller and stays unclaimed
-    until it is attached to a review by id. Original uploads are never served
-    to the storefront. Callers may hold at most
-    ``MAX_UNATTACHED_PHOTOS_PER_USER`` unclaimed photos at once, which bounds
-    how much storage the upload endpoint can consume ahead of a review.
+    resulting ``ReviewPhoto`` row is bound to the caller's identity (account
+    or guest session) and stays unclaimed until it is attached to a review by
+    id. Original uploads are never served to the storefront. Unclaimed photos
+    are bounded per identity, which caps how much storage the upload endpoint
+    can consume ahead of a review.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "review_write"
 
@@ -381,7 +428,7 @@ class ReviewPhotoUploadView(APIView):
                 feature is disabled.
         """
         key = require_idempotency_key(request)
-        scope = f"u{request.user.pk}"
+        _user, _session_key, scope = _caller_identity(request)
         cached = read_cached_result(scope, key)
         if cached is not None:
             return Response(cached["data"], status=cached["status"])
@@ -422,10 +469,18 @@ class ReviewPhotoUploadView(APIView):
         except DjangoValidationError as exc:
             raise serializers.ValidationError({"image": exc.messages}) from exc
 
-        unclaimed_count = ReviewPhoto.objects.filter(
-            user=request.user, review__isnull=True
-        ).count()
-        if unclaimed_count >= MAX_UNATTACHED_PHOTOS_PER_USER:
+        user, session_key, _scope = _caller_identity(request)
+        if user is not None:
+            unclaimed_count = ReviewPhoto.objects.filter(
+                user=user, review__isnull=True
+            ).count()
+            cap = MAX_UNATTACHED_PHOTOS_PER_USER
+        else:
+            unclaimed_count = ReviewPhoto.objects.filter(
+                user__isnull=True, session_key=session_key, review__isnull=True
+            ).count()
+            cap = MAX_UNATTACHED_PHOTOS_PER_SESSION
+        if unclaimed_count >= cap:
             raise serializers.ValidationError(
                 {"image": "Delete existing uploaded photos before uploading more."}
             )
@@ -440,7 +495,8 @@ class ReviewPhotoUploadView(APIView):
                 storage_name, variants
             ) or default_storage.url(storage_name)
             photo = ReviewPhoto.objects.create(
-                user=request.user,
+                user=user,
+                session_key="" if user is not None else session_key,
                 storage_name=storage_name,
                 image_sources=variants,
                 display_url=display_url,
@@ -458,18 +514,19 @@ class ReviewPhotoUploadView(APIView):
 class ReviewPhotoDeleteView(APIView):
     """Delete one of the caller's own unattached uploaded photos.
 
-    Ownership is enforced in ``get_object``: a photo that does not belong to
-    the caller is indistinguishable from one that does not exist, so a missing
-    or foreign id collapses into the same opaque 404. A photo already attached
-    to a review is published content and is rejected with a 400 instead.
+    Identity is the account or the guest session: a photo that does not belong
+    to the caller is indistinguishable from one that does not exist, so a
+    missing or foreign id collapses into the same opaque 404. A photo already
+    attached to a review is published content and is rejected with a 400
+    instead.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "review_write"
 
     def get_object(self, request, photo_id):
-        """Resolve a photo belonging to the caller or raise HTTP 404.
+        """Resolve an unattached photo from the caller's identity or 404.
 
         Args:
             request: the HTTP request.
@@ -479,9 +536,17 @@ class ReviewPhotoDeleteView(APIView):
             ReviewPhoto: the caller's own photo.
 
         Raises:
-            Http404: when the photo does not exist or belongs to another user.
+            Http404: when the photo does not exist or belongs to another
+                identity.
         """
-        photo = ReviewPhoto.objects.filter(pk=photo_id, user=request.user).first()
+        user, session_key, _scope = _caller_identity(request)
+        lookup = {"pk": photo_id}
+        if user is not None:
+            lookup["user"] = user
+        else:
+            lookup["user__isnull"] = True
+            lookup["session_key"] = session_key
+        photo = ReviewPhoto.objects.filter(**lookup).first()
         if photo is None:
             raise Http404
         return photo

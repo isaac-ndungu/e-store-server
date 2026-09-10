@@ -2,10 +2,9 @@
 
 Mounted at ``/api/v1/`` from ``config/api_urls.py``. Product-scoped routes
 live under ``products/<slug>`` to match the catalog's URL style; the
-storefront reads a product's reviews and Q&A publicly while creating content
-and uploading photos require the authenticated customer. Moderation routes
-sitting under their own ``reviews/`` and ``questions/`` prefixes are reachable
-only by manager/support tokens.
+storefront reads and submits reviews, Q&A, and photos with no account.
+Moderation routes sitting under their own ``reviews/`` and ``questions/``
+prefixes are reachable only by manager/support tokens.
 """
 
 from django.urls import path

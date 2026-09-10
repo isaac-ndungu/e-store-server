@@ -20,9 +20,10 @@ ANSWER_MAX_LENGTH = 2000
 # At most this many photos may be attached to one review.
 REVIEW_MAX_PHOTOS = 5
 
-# Unattached uploads are bounded per user so a caller cannot park an unbounded
-# pile of photos ahead of posting a review.
+# Unattached uploads are bounded per identity (account or guest session) so a
+# caller cannot park an unbounded pile of photos ahead of posting a review.
 MAX_UNATTACHED_PHOTOS_PER_USER = 20
+MAX_UNATTACHED_PHOTOS_PER_SESSION = 20
 
 # A photo that is never attached to a review is swept (row and files) after it
 # has been orphaned for this long.

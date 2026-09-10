@@ -68,7 +68,7 @@ class ReviewAdmin(admin.ModelAdmin):
 
     list_display = (
         "product",
-        "user",
+        "submitter_name",
         "rating",
         "is_approved",
         "order_item",
@@ -78,7 +78,8 @@ class ReviewAdmin(admin.ModelAdmin):
     search_fields = (
         "product__name",
         "product__slug",
-        "user__username",
+        "submitter_name",
+        "submitter_contact",
         "title",
         "body",
     )
@@ -89,18 +90,24 @@ class ReviewAdmin(admin.ModelAdmin):
 class ReviewPhotoAdmin(admin.ModelAdmin):
     """Admin page for inspecting and removing customer review photos."""
 
-    list_display = ("user", "review", "display_url", "created_at")
+    list_display = ("review", "display_url", "created_at")
     list_filter = ("created_at",)
-    search_fields = ("user__username", "storage_name")
+    search_fields = ("storage_name", "session_key")
 
 
 @admin.register(ProductQuestion)
 class ProductQuestionAdmin(admin.ModelAdmin):
     """Admin page for browsing and moderating product questions."""
 
-    list_display = ("product", "user", "is_approved", "created_at")
+    list_display = ("product", "submitter_name", "is_approved", "created_at")
     list_filter = ("is_approved", "created_at")
-    search_fields = ("product__name", "product__slug", "user__username", "question")
+    search_fields = (
+        "product__name",
+        "product__slug",
+        "submitter_name",
+        "submitter_contact",
+        "question",
+    )
     actions = [approve_selected, reject_selected]
 
 

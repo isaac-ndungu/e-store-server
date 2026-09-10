@@ -17,20 +17,22 @@ from apps.reviews.constants import MAX_REVIEW_RATING
 
 
 class Review(models.Model):
-    """A customer's rating and written review of a product.
+    """An anonymous rating and written review of a product.
 
-    ``user`` is required — reviews come from registered accounts, which is
-    what gives every review a stable identity for moderation and for the
-    per-buyer single-review rule. ``order_item`` is optional: when present it
-    marks the purchase as verified (the line must belong to the reviewer's own
-    completed order for that product) and drives the storefront's
-    "Verified Purchase" badge.
+    There are no customer accounts, so anyone may submit — which is why new
+    reviews stay hidden until staff approve them. ``submitter_name`` is the
+    public display handle and ``submitter_contact`` a phone or email; the
+    contact doubles as the verified-purchase cross-check (matched against the
+    claimed order line's phone/email) and as the one-review-per-buyer key.
+    ``user`` survives only for legacy rows and staff-attributed writes.
+    ``order_item`` is optional: when present and qualifying it drives the
+    storefront's "Verified Purchase" badge.
 
-    Photos attach through ``ReviewPhoto``: the storefront reads only photos the
-    reviewer uploaded and that were attached here, never arbitrary URLs.
+    Photos attach through ``ReviewPhoto``: the storefront reads only photos
+    uploaded in the caller's session and attached here, never arbitrary URLs.
 
-    ``is_approved`` gates storefront visibility. New reviews default to
-    approved and staff can hide one later; the product's denormalised rating
+    ``is_approved`` gates storefront visibility. New reviews default to hidden
+    and surface only after staff approval; the product's denormalised rating
     aggregate always counts only approved reviews.
     """
 
@@ -42,8 +44,12 @@ class Review(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         related_name="reviews",
-        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
     )
+    submitter_name = models.CharField(max_length=255, blank=True)
+    submitter_contact = models.CharField(max_length=255, blank=True)
     order_item = models.ForeignKey(
         "orders.OrderItem",
         null=True,
@@ -54,7 +60,7 @@ class Review(models.Model):
     rating = models.PositiveSmallIntegerField()
     title = models.CharField(max_length=255, blank=True)
     body = models.TextField(blank=True)
-    is_approved = models.BooleanField(default=True)
+    is_approved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -76,22 +82,27 @@ class Review(models.Model):
             ),
             models.Index(fields=["order_item"], name="rev_order_item_idx"),
             models.Index(fields=["user", "-created_at"], name="rev_user_created_idx"),
+            models.Index(
+                fields=["product", "submitter_contact"],
+                name="rev_product_contact_idx",
+            ),
         ]
 
     def __str__(self):
         """Return a compact label identifying the review."""
-        return f"review of product {self.product_id} by user {self.user_id} ({self.rating}/5)"
+        return f"review of product {self.product_id} by {self.submitter_name} ({self.rating}/5)"
 
 
 class ReviewPhoto(models.Model):
-    """A customer photo uploaded for attachment to a review.
+    """A photo uploaded for attachment to a review.
 
     ``storage_name`` identifies the stored original (never served to the
     storefront); ``image_sources`` records the processed responsive set and
     ``display_url`` the preferred rendered URL, mirroring the catalogue's
     ``ProductImage``. ``review`` is null until the photo is attached to a
-    review; only the uploading ``user`` may claim an unattached photo, so a
-    reviewer can never reference somebody else's upload.
+    review; only an upload from the same identity (authenticated ``user`` or
+    server-issued guest ``session_key``) may be claimed, so a reviewer can
+    never reference somebody else's upload.
 
     Deleting a photo (with its review, or in moderation) removes the stored
     files through a ``post_delete`` signal, and unattached uploads older than
@@ -101,7 +112,14 @@ class ReviewPhoto(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         related_name="review_photos",
-        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+    )
+    session_key = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Server-issued guest session that uploaded the photo.",
     )
     review = models.ForeignKey(
         Review,
@@ -122,19 +140,22 @@ class ReviewPhoto(models.Model):
                 fields=["user", "created_at", "review"], name="revp_user_created_idx"
             ),
             models.Index(fields=["review", "created_at"], name="revp_review_idx"),
+            models.Index(fields=["session_key"], name="revp_session_idx"),
         ]
 
     def __str__(self):
         """Return a compact label identifying the photo."""
-        return f"photo {self.pk} by user {self.user_id}"
+        return f"photo {self.pk} ({self.display_url})"
 
 
 class ProductQuestion(models.Model):
-    """A customer's question about a product on the storefront.
+    """An anonymous question about a product on the storefront.
 
-    ``is_approved`` gates visibility exactly as on ``Review``. Questions are
-    answered by staff through ``ProductAnswer``; adding an answer also approves
-    the question so the thread becomes storefront-visible together.
+    Submitters are identified by name/contact rather than an account, and new
+    questions stay hidden until staff approve them. ``is_approved`` gates
+    visibility exactly as on ``Review``. Questions are answered by staff
+    through ``ProductAnswer``; adding an answer also approves the question so
+    the thread becomes storefront-visible together.
     """
 
     product = models.ForeignKey(
@@ -145,10 +166,14 @@ class ProductQuestion(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         related_name="product_questions",
-        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
     )
+    submitter_name = models.CharField(max_length=255, blank=True)
+    submitter_contact = models.CharField(max_length=255, blank=True)
     question = models.TextField()
-    is_approved = models.BooleanField(default=True)
+    is_approved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

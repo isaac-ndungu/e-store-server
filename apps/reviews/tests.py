@@ -1,13 +1,13 @@
 """Tests for the reviews app.
 
-Covers the storefront review and Q&A lifecycle: rating aggregation on create
-and moderation, verified-purchase proof against the caller's own completed
-orders, single-review-per-buyer enforcement, text sanitisation, the feature
-toggle, the access-control matrix (anonymous read vs. write, customer vs.
-manager/support/analyst on moderation paths, photo-upload validation), and the
-photo lifecycle: ownership, claim-once, per-review and per-user caps, file
-cleanup on every deletion path (including owner-only self-delete of unattached
-uploads), and the orphan sweep.
+Covers the anonymous storefront review and Q&A lifecycle: submissions start
+hidden pending staff approval, rating aggregation on approval, one review per
+submitter contact per product, verified-purchase proof by matching the
+submitter's contact against the order's phone/email, text sanitisation, the
+feature toggle, the access-control matrix (fully public reads and writes,
+manager/support-only moderation), and the photo lifecycle: session-bound
+uploads, claim-once, per-review and per-identity caps, file cleanup on every
+deletion path, and the orphan sweep.
 """
 
 from datetime import timedelta
@@ -48,9 +48,14 @@ from apps.shipping.models import DeliveryZone
 
 _SEQ = [0]
 
+SUBMITTER = {
+    "submitter_name": "Jane Buyer",
+    "submitter_contact": "+254712345678",
+}
+
 
 def _make_user(email="buyer@example.com", username="buyer", **kwargs):
-    """Create a plain customer user for tests."""
+    """Create a user for tests (staff login or legacy attribution)."""
     return User.objects.create_user(
         email=email,
         username=username,
@@ -114,16 +119,15 @@ def _delivery_zone():
     return zone
 
 
-def _place_cod_order(variant, user=None, quantity=1):
-    """Place a COD order for a stocked variant and confirm it."""
+def _place_cod_order(variant, phone="+254712345678", quantity=1):
+    """Place a guest COD order for a stocked variant and confirm it."""
     _stock_variant(variant)
     _SEQ[0] += 1
     cart = get_or_create_cart(session_key=f"review-cart-{_SEQ[0]}")
     add_item(cart, variant_id=variant.pk, quantity=quantity)
     order = create_order_from_cart(
         cart=cart,
-        user=user,
-        phone=user.phone_number if user else "+254712345678",
+        phone=phone,
         payment_method="cod",
         delivery_zone_id=_delivery_zone().pk,
     )
@@ -153,48 +157,52 @@ def _tiny_png():
     return buffer
 
 
-def _make_unattached_photo(user, name):
-    """Create an uploaded-but-unclaimed photo row owned by the given user."""
+def _make_unattached_photo(name, user=None, session_key="test-session"):
+    """Create an uploaded-but-unclaimed photo row for the given identity."""
     return ReviewPhoto.objects.create(
         user=user,
+        session_key="" if user is not None else session_key,
         storage_name=f"reviews/photos/{name}",
         display_url=f"/media/{name}",
     )
 
 
 class ReviewRatingServiceTests(APITestCase):
-    """Exercises rating aggregation and verified-purchase logic directly."""
+    """Exercises anonymous submission, approval gating, and verification."""
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
         self.product, self.variant = _make_product()
         _stock_variant(self.variant)
 
-    def test_create_review_recomputes_product_rating(self):
-        """A new approved review moves the product's average and count."""
+    def test_new_review_starts_hidden(self):
+        """A fresh submission is unapproved and moves no aggregate."""
+        review = create_review(
+            product=self.product, rating=5, body="Lovely.", **SUBMITTER
+        )
+        self.assertFalse(review.is_approved)
         self.product.refresh_from_db()
         self.assertEqual(self.product.average_rating, Decimal("0.00"))
         self.assertEqual(self.product.review_count, 0)
 
-        create_review(user=self.buyer, product=self.product, rating=5, body="Lovely.")
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.average_rating, Decimal("5.00"))
-        self.assertEqual(self.product.review_count, 1)
-
-        create_review(
-            user=_make_user(email="second@example.com", username="second"),
+    def test_approval_recomputes_product_rating(self):
+        """Approving reviews moves the product's average and count."""
+        first = create_review(product=self.product, rating=5, **SUBMITTER)
+        second = create_review(
             product=self.product,
             rating=3,
+            submitter_name="John",
+            submitter_contact="+254700000001",
         )
+        set_review_approval(review=first, approved=True)
+        set_review_approval(review=second, approved=True)
         self.product.refresh_from_db()
         self.assertEqual(self.product.average_rating, Decimal("4.00"))
         self.assertEqual(self.product.review_count, 2)
 
     def test_rejected_reviews_do_not_count_towards_rating(self):
         """A hidden review leaves the product aggregate untouched."""
-        review = create_review(user=self.buyer, product=self.product, rating=1)
-        set_review_approval(review=review, approved=False)
+        review = create_review(product=self.product, rating=1, **SUBMITTER)
         self.product.refresh_from_db()
         self.assertEqual(self.product.average_rating, Decimal("0.00"))
         self.assertEqual(self.product.review_count, 0)
@@ -204,26 +212,48 @@ class ReviewRatingServiceTests(APITestCase):
         self.assertEqual(self.product.average_rating, Decimal("1.00"))
         self.assertEqual(self.product.review_count, 1)
 
-    def test_duplicate_review_per_buyer_is_rejected(self):
-        """A buyer cannot review the same product twice, even from a service call."""
-        create_review(user=self.buyer, product=self.product, rating=4)
+    def test_duplicate_review_per_contact_is_rejected(self):
+        """A contact cannot review the same product twice."""
+        create_review(product=self.product, rating=4, **SUBMITTER)
         with self.assertRaisesMessage(ValidationError, "already reviewed"):
-            create_review(user=self.buyer, product=self.product, rating=5)
+            create_review(product=self.product, rating=5, **SUBMITTER)
 
-    def test_database_unique_constraint_blocks_duplicate_review(self):
+    def test_different_contact_may_review_same_product(self):
+        """The one-per-contact rule does not block other submitters."""
+        create_review(product=self.product, rating=4, **SUBMITTER)
+        review = create_review(
+            product=self.product,
+            rating=5,
+            submitter_name="John",
+            submitter_contact="+254700000001",
+        )
+        self.assertIsNotNone(review.pk)
+
+    def test_authenticated_duplicate_hits_unique_constraint(self):
         """The unique constraint is a second line of defence below the service."""
-        create_review(user=self.buyer, product=self.product, rating=4)
+        user = _make_user()
+        create_review(user=user, product=self.product, rating=4, **SUBMITTER)
         with self.assertRaises(IntegrityError):
-            Review.objects.create(user=self.buyer, product=self.product, rating=5)
+            Review.objects.create(user=user, product=self.product, rating=5)
+
+    def test_missing_name_or_contact_is_rejected(self):
+        """Anonymous submissions require both a name and a contact."""
+        with self.assertRaises(ValidationError):
+            create_review(
+                product=self.product, rating=4, submitter_contact="+254712345678"
+            )
+        with self.assertRaises(ValidationError):
+            create_review(product=self.product, rating=4, submitter_name="Jane")
+        self.assertEqual(Review.objects.count(), 0)
 
     def test_free_form_text_is_sanitised(self):
         """Markup and event handlers are stripped from review text before storage."""
         review = create_review(
-            user=self.buyer,
             product=self.product,
             rating=5,
             title="<script>alert(1)</script>Great",
             body="Lovely <img src=x onerror=alert(1)> kettle.",
+            **SUBMITTER,
         )
         self.assertEqual(review.title, "alert(1)Great")
         self.assertNotIn("<img", review.body)
@@ -232,32 +262,31 @@ class ReviewRatingServiceTests(APITestCase):
     def test_rating_out_of_range_is_rejected(self):
         """Ratings outside the configured scale raise a clean validation error."""
         with self.assertRaises(ValidationError):
-            create_review(user=self.buyer, product=self.product, rating=0)
+            create_review(product=self.product, rating=0, **SUBMITTER)
         with self.assertRaises(ValidationError):
-            create_review(user=self.buyer, product=self.product, rating=6)
+            create_review(product=self.product, rating=6, **SUBMITTER)
 
-    def test_verified_purchase_accepts_own_completed_order_line(self):
-        """A line from the reviewer's own confirmed order verifies the review."""
-        order = _place_cod_order(self.variant, user=self.buyer)
+    def test_verified_purchase_accepts_matching_phone(self):
+        """A line from a confirmed order with the same phone verifies."""
+        order = _place_cod_order(self.variant, phone="+254712345678")
         order_item = order.items.first()
         review = create_review(
-            user=self.buyer,
             product=self.product,
             rating=4,
             order_item_id=order_item.pk,
+            **SUBMITTER,
         )
         self.assertEqual(review.order_item_id, order_item.pk)
 
-    def test_verified_purchase_rejects_foreign_order_line(self):
-        """Another buyer's order line never verifies a review."""
-        other = _make_user(email="other@example.com", username="other")
-        order = _place_cod_order(self.variant, user=other)
+    def test_verified_purchase_rejects_contact_mismatch(self):
+        """An order line for another contact never verifies a review."""
+        order = _place_cod_order(self.variant, phone="+254700000009")
         with self.assertRaisesMessage(ValidationError, "does not qualify"):
             create_review(
-                user=self.buyer,
                 product=self.product,
                 rating=4,
                 order_item_id=order.items.first().pk,
+                **SUBMITTER,
             )
         self.assertEqual(Review.objects.count(), 0)
 
@@ -273,50 +302,48 @@ class ReviewRatingServiceTests(APITestCase):
         )
         with self.assertRaisesMessage(ValidationError, "does not qualify"):
             create_review(
-                user=self.buyer,
                 product=self.product,
                 rating=4,
                 order_item_id=order.items.first().pk,
+                **SUBMITTER,
             )
 
     def test_verified_purchase_rejects_wrong_product_line(self):
         """A verified line must reference the product actually reviewed."""
         other_product, other_variant = _make_product(price="8000.00")
-        order = _place_cod_order(other_variant, user=self.buyer)
+        order = _place_cod_order(other_variant, phone="+254712345678")
         with self.assertRaisesMessage(ValidationError, "does not qualify"):
             create_review(
-                user=self.buyer,
                 product=self.product,
                 rating=4,
                 order_item_id=order.items.first().pk,
+                **SUBMITTER,
             )
         _ = other_product
 
     def test_verified_purchase_line_can_be_claimed_only_once(self):
         """One purchase verifies only one review, guarded inside the service."""
-        order = _place_cod_order(self.variant, user=self.buyer, quantity=2)
+        order = _place_cod_order(self.variant, phone="+254712345678", quantity=2)
         order_item = order.items.first()
         create_review(
-            user=self.buyer,
             product=self.product,
             rating=4,
             order_item_id=order_item.pk,
+            **SUBMITTER,
         )
-        # The public create path blocks a second review before the purchase is
-        # resolved, so the already-claimed guard is exercised at the resolver —
-        # it must never let the same line verify a review twice.
         from apps.reviews.services import _resolve_verified_order_item
 
         with self.assertRaisesMessage(ValidationError, "already been used"):
-            _resolve_verified_order_item(self.buyer, self.product, order_item.pk)
+            _resolve_verified_order_item(
+                SUBMITTER["submitter_contact"], self.product, order_item.pk
+            )
 
 
 class ReviewEndpointTests(APITestCase):
-    """Exercises the storefront review endpoints over HTTP."""
+    """Exercises the anonymous storefront review endpoints over HTTP."""
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
         self.product, self.variant = _make_product()
         _stock_variant(self.variant)
         self.review_url = reverse(
@@ -324,123 +351,128 @@ class ReviewEndpointTests(APITestCase):
         )
 
     def test_anonymous_can_read_reviews(self):
-        """Reading a product's reviews is deliberately public."""
-        create_review(user=self.buyer, product=self.product, rating=4)
+        """Reading a product's approved reviews is public."""
+        review = create_review(product=self.product, rating=4, **SUBMITTER)
+        set_review_approval(review=review, approved=True)
         response = self.client.get(self.review_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["submitter_name"], "Jane Buyer")
 
-    def test_anonymous_cannot_create_review(self):
-        """Creating a review requires an authenticated customer."""
-        response = self.client.post(
-            self.review_url, {"rating": 4, "body": "Nice."}, format="json"
-        )
-        self.assertIn(
-            response.status_code,
-            (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
-        )
-
-    def test_client_supplied_identity_is_ignored(self):
-        """The reviewer identity always comes from the token, never the body."""
-        other = _make_user(email="other@example.com", username="other")
-        _login(self.client)
+    def test_anonymous_can_create_review(self):
+        """Posting a review needs no account; it starts hidden."""
         response = self.client.post(
             self.review_url,
-            {"rating": 4, "body": "Nice.", "user": other.pk},
+            {"rating": 4, "body": "Nice.", **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         review = Review.objects.get()
-        self.assertEqual(review.user, self.buyer)
+        self.assertFalse(review.is_approved)
+        self.assertIsNone(review.user)
+        self.assertEqual(self.client.get(self.review_url).data["count"], 0)
+
+    def test_create_requires_name_and_contact(self):
+        """A submission without identity is rejected."""
+        response = self.client.post(
+            self.review_url, {"rating": 4, "body": "Nice."}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Review.objects.count(), 0)
 
     def test_posting_review_with_verified_order_item(self):
-        """A completed purchase attached at creation surfaces the badge."""
-        order = _place_cod_order(self.variant, user=self.buyer)
-        _login(self.client)
+        """A completed purchase matching the contact surfaces the badge."""
+        order = _place_cod_order(self.variant, phone="+254712345678")
         response = self.client.post(
             self.review_url,
-            {"rating": 5, "order_item_id": order.items.first().pk},
+            {"rating": 5, "order_item_id": order.items.first().pk, **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(response.data["verified_purchase"])
 
-    def test_posting_review_with_foreign_order_item_returns_400(self):
-        """A foreign order line collapses into a plain 400, no leak."""
-        other = _make_user(email="other@example.com", username="other")
-        order = _place_cod_order(self.variant, user=other)
-        _login(self.client)
+    def test_posting_review_with_mismatched_order_item_returns_400(self):
+        """Another contact's order line collapses into a plain 400, no leak."""
+        order = _place_cod_order(self.variant, phone="+254700000009")
         response = self.client.post(
             self.review_url,
-            {"rating": 5, "order_item_id": order.items.first().pk},
+            {"rating": 5, "order_item_id": order.items.first().pk, **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Review.objects.count(), 0)
 
     def test_duplicate_review_via_api_returns_400(self):
-        """A second review from the same buyer is rejected, not duplicated."""
-        create_review(user=self.buyer, product=self.product, rating=4)
-        _login(self.client)
+        """A second review from the same contact is rejected, not duplicated."""
+        create_review(product=self.product, rating=4, **SUBMITTER)
         response = self.client.post(
-            self.review_url, {"rating": 5, "body": "Still great."}, format="json"
+            self.review_url,
+            {"rating": 5, "body": "Still great.", **SUBMITTER},
+            format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_inactive_product_slug_is_404(self):
         """Hidden and discontinued products are not reviewable."""
-        _login(self.client)
         self.product.is_active = False
         self.product.save()
         response = self.client.post(
             reverse("api:reviews:product-reviews", kwargs={"slug": self.product.slug}),
-            {"rating": 4},
+            {"rating": 4, **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_rejected_review_is_invisible_on_storefront(self):
         """Hidden reviews leave the public listing but stay in the database."""
-        review = create_review(user=self.buyer, product=self.product, rating=1)
+        review = create_review(product=self.product, rating=1, **SUBMITTER)
         set_review_approval(review=review, approved=False)
         response = self.client.get(self.review_url)
         self.assertEqual(response.data["count"], 0)
 
 
 class QuestionEndpointTests(APITestCase):
-    """Exercises the Q&A storefront endpoints over HTTP."""
+    """Exercises the anonymous Q&A storefront endpoints over HTTP."""
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
         self.staff = _make_staff()
         self.product, _ = _make_product()
         self.question_url = reverse(
             "api:reviews:product-questions", kwargs={"slug": self.product.slug}
         )
 
-    def test_anonymous_read_allowed_write_rejected(self):
-        """Questions are public to read but only customers may ask."""
+    def test_anonymous_read_and_ask_allowed(self):
+        """Questions are public to read and ask; new ones start hidden."""
         response = self.client.get(self.question_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         response = self.client.post(
-            self.question_url, {"question": "Does it boil fast?"}, format="json"
-        )
-        self.assertIn(
-            response.status_code,
-            (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
-        )
-
-    def test_customer_asks_and_staff_answers(self):
-        """Answering approves the question so the thread becomes visible."""
-        _login(self.client)
-        response = self.client.post(
-            self.question_url, {"question": "Does it boil fast?"}, format="json"
+            self.question_url,
+            {"question": "Does it boil fast?", **SUBMITTER},
+            format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         question = ProductQuestion.objects.get()
-        self.assertTrue(question.is_approved)
+        self.assertFalse(question.is_approved)
+        self.assertEqual(self.client.get(self.question_url).data["count"], 0)
+
+    def test_ask_requires_name_and_contact(self):
+        """A question without identity is rejected."""
+        response = self.client.post(
+            self.question_url, {"question": "Does it boil fast?"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_staff_answer_approves_and_surfaces_thread(self):
+        """Answering approves the question so the thread becomes visible."""
+        response = self.client.post(
+            self.question_url,
+            {"question": "Does it boil fast?", **SUBMITTER},
+            format="json",
+        )
+        question = ProductQuestion.objects.get()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         _login(self.client, email="staff@example.com", password="StrongPass123!")
         answer_url = reverse(
@@ -453,6 +485,7 @@ class QuestionEndpointTests(APITestCase):
         self.assertTrue(response.data["answers"])
         self.assertTrue(ProductAnswer.objects.get().is_staff_answer)
 
+        self.client.credentials()
         listing = self.client.get(self.question_url)
         self.assertEqual(listing.data["count"], 1)
         self.assertEqual(
@@ -462,10 +495,12 @@ class QuestionEndpointTests(APITestCase):
 
     def test_question_text_is_sanitised(self):
         """Raw question markup never reaches storage."""
-        _login(self.client)
         response = self.client.post(
             self.question_url,
-            {"question": "<script>alert(1)</script>Does it boil fast?"},
+            {
+                "question": "<script>alert(1)</script>Does it boil fast?",
+                **SUBMITTER,
+            },
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -478,15 +513,14 @@ class ModerationEndpointTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
+        self.customer = _make_user()
         self.manager = _make_staff(email="manager@example.com", role="manager")
         self.support = _make_staff(email="support@example.com", role="support")
         self.analyst = _make_staff(email="analyst@example.com", role="analyst")
         self.product, self.variant = _make_product()
-        self.review = create_review(user=self.buyer, product=self.product, rating=2)
-        set_review_approval(review=self.review, approved=False)
+        self.review = create_review(product=self.product, rating=2, **SUBMITTER)
         self.question = create_product_question(
-            user=self.buyer, product=self.product, question="Is it in stock?"
+            product=self.product, question="Is it in stock?", **SUBMITTER
         )
 
     def _login_as(self, email, password="StrongPass123!"):
@@ -512,9 +546,10 @@ class ModerationEndpointTests(APITestCase):
     def test_garbage_approved_param_does_not_filter(self):
         """An unrecognised ``approved`` value leaves the inbox unfiltered."""
         create_review(
-            user=_make_user(email="third@example.com", username="third"),
             product=self.product,
             rating=5,
+            submitter_name="John",
+            submitter_contact="+254700000001",
         )
         self._login_as("manager@example.com")
         response = self.client.get(
@@ -541,6 +576,7 @@ class ModerationEndpointTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data["is_approved"])
+        self.assertEqual(response.data["submitter_contact"], "+254712345678")
         self.product.refresh_from_db()
         self.assertEqual(self.product.review_count, 1)
 
@@ -563,7 +599,6 @@ class FeatureFlagTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
         self.product, _ = _make_product()
         self.review_url = reverse(
             "api:reviews:product-reviews", kwargs={"slug": self.product.slug}
@@ -571,11 +606,13 @@ class FeatureFlagTests(APITestCase):
 
     def test_disabled_feature_blocks_new_writes_but_not_reads(self):
         """Turning the toggle off stops creation while published content stays."""
-        _login(self.client)
         response = self.client.post(
-            self.review_url, {"rating": 4, "body": "Nice."}, format="json"
+            self.review_url, {"rating": 4, "body": "Nice.", **SUBMITTER}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        review = Review.objects.get()
+        set_review_approval(review=review, approved=True)
 
         config = SiteConfig.load()
         config.settings["enable_reviews"] = False
@@ -583,7 +620,14 @@ class FeatureFlagTests(APITestCase):
         invalidate_feature_enabled()
 
         response = self.client.post(
-            self.review_url, {"rating": 4, "body": "Nice."}, format="json"
+            self.review_url,
+            {
+                "rating": 4,
+                "body": "Nice.",
+                "submitter_name": "John",
+                "submitter_contact": "+254700000001",
+            },
+            format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
 
@@ -593,32 +637,14 @@ class FeatureFlagTests(APITestCase):
 
 
 class ReviewPhotoUploadTests(APITestCase):
-    """Exercises review photo upload validation and processing."""
+    """Exercises anonymous review photo upload validation and processing."""
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
         self.url = reverse("api:reviews:review-photo-upload")
 
-    def test_anonymous_upload_rejected(self):
-        """Photo uploads require an authenticated customer."""
-        response = self.client.post(self.url, {}, format="multipart")
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
-    def test_non_image_upload_rejected(self):
-        """A text file is rejected before any storage happens."""
-        _login(self.client)
-        response = self.client.post(
-            self.url,
-            {"image": BytesIO(b"not an image")},
-            format="multipart",
-            HTTP_IDEMPOTENCY_KEY="photo-nonimage-1",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_valid_image_upload_returns_processed_urls(self):
-        """A valid image creates an owned, unclaimed photo row with variants."""
-        _login(self.client)
+    def test_anonymous_upload_binds_session(self):
+        """A guest upload creates a session-bound, unclaimed photo row."""
         with (
             mock.patch(
                 "apps.reviews.views.default_storage.save",
@@ -642,17 +668,69 @@ class ReviewPhotoUploadTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         save_mock.assert_called_once()
         photo = ReviewPhoto.objects.get()
-        self.assertEqual(photo.user, self.buyer)
+        self.assertIsNone(photo.user)
+        self.assertTrue(photo.session_key)
         self.assertIsNone(photo.review)
         self.assertEqual(response.data["id"], photo.pk)
         self.assertEqual(response.data["url"], "/media/v.webp")
         self.assertEqual(response.data["variants"][0]["format"], "webp")
 
-    def test_unattached_upload_bound_blocks_extra_uploads(self):
-        """A caller holding the cap of unclaimed photos cannot upload more."""
+    def test_authenticated_upload_binds_user(self):
+        """A logged-in upload keeps the account attribution."""
+        user = _make_user()
         _login(self.client)
-        with mock.patch("apps.reviews.views.MAX_UNATTACHED_PHOTOS_PER_USER", 1):
-            _make_unattached_photo(self.buyer, "held.png")
+        with (
+            mock.patch(
+                "apps.reviews.views.default_storage.save",
+                return_value="reviews/photos/abc.png",
+            ),
+            mock.patch(
+                "apps.reviews.views.generate_variants",
+                return_value=[{"width": 640, "format": "webp", "url": "/media/v.webp"}],
+            ),
+            mock.patch(
+                "apps.reviews.views.preferred_image_url",
+                return_value="/media/v.webp",
+            ),
+        ):
+            response = self.client.post(
+                self.url,
+                {"image": _tiny_png()},
+                format="multipart",
+                HTTP_IDEMPOTENCY_KEY="photo-valid-2",
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        photo = ReviewPhoto.objects.get()
+        self.assertEqual(photo.user, user)
+        self.assertEqual(photo.session_key, "")
+
+    def test_non_image_upload_rejected(self):
+        """A text file is rejected before any storage happens."""
+        response = self.client.post(
+            self.url,
+            {"image": BytesIO(b"not an image")},
+            format="multipart",
+            HTTP_IDEMPOTENCY_KEY="photo-nonimage-1",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unattached_upload_bound_blocks_extra_uploads(self):
+        """A session holding the cap of unclaimed photos cannot upload more."""
+        upload_kwargs = {"format": "multipart", "HTTP_IDEMPOTENCY_KEY": "photo-b1"}
+        with (
+            mock.patch(
+                "apps.reviews.views.default_storage.save",
+                return_value="reviews/photos/held.png",
+            ),
+            mock.patch("apps.reviews.views.generate_variants", return_value=[]),
+            mock.patch(
+                "apps.reviews.views.preferred_image_url",
+                return_value="/media/held.webp",
+            ),
+        ):
+            first = self.client.post(self.url, {"image": _tiny_png()}, **upload_kwargs)
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        with mock.patch("apps.reviews.views.MAX_UNATTACHED_PHOTOS_PER_SESSION", 1):
             response = self.client.post(
                 self.url,
                 {"image": _tiny_png()},
@@ -663,7 +741,6 @@ class ReviewPhotoUploadTests(APITestCase):
 
     def test_disabled_feature_blocks_upload(self):
         """A disabled reviews toggle stops photo uploads with a 503."""
-        _login(self.client)
         config = SiteConfig.load()
         config.settings["enable_reviews"] = False
         config.save()
@@ -678,7 +755,6 @@ class ReviewPhotoUploadTests(APITestCase):
 
     def test_oversized_image_rejected(self):
         """Files over the configured ceiling are refused."""
-        _login(self.client)
         with mock.patch("apps.reviews.views.REVIEW_PHOTO_MAX_SIZE_MB", 0):
             response = self.client.post(
                 self.url,
@@ -690,58 +766,83 @@ class ReviewPhotoUploadTests(APITestCase):
 
 
 class ReviewPhotoDeleteTests(APITestCase):
-    """Exercises owner-only deletion of unattached uploaded photos."""
+    """Exercises identity-scoped deletion of unattached uploaded photos."""
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
-        self.other = _make_user(email="other@example.com", username="other")
-        self.photo = _make_unattached_photo(self.buyer, "mine.png")
-        self.foreign = _make_unattached_photo(self.other, "theirs.png")
+        self.owner = _make_user()
+        self.upload_url = reverse("api:reviews:review-photo-upload")
 
     def _url(self, photo_id):
         """Return the delete endpoint for the given photo id."""
         return reverse("api:reviews:review-photo-delete", kwargs={"photo_id": photo_id})
 
-    def test_anonymous_delete_rejected(self):
-        """An unauthenticated caller cannot delete a photo."""
-        response = self.client.delete(self._url(self.photo.pk))
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-        self.assertTrue(ReviewPhoto.objects.filter(pk=self.photo.pk).exists())
+    def _upload(self, key):
+        """Upload a photo, establishing this client's guest session."""
+        with (
+            mock.patch(
+                "apps.reviews.views.default_storage.save",
+                return_value="reviews/photos/mine.png",
+            ),
+            mock.patch("apps.reviews.views.generate_variants", return_value=[]),
+            mock.patch(
+                "apps.reviews.views.preferred_image_url",
+                return_value="/media/mine.webp",
+            ),
+        ):
+            return self.client.post(
+                self.upload_url,
+                {"image": _tiny_png()},
+                format="multipart",
+                HTTP_IDEMPOTENCY_KEY=key,
+            )
 
-    def test_owner_can_delete_unattached_photo(self):
-        """Deleting one's own unattached photo removes the row and its files."""
-        _login(self.client)
+    def test_owner_session_can_delete_unattached_photo(self):
+        """Deleting one's own session photo removes the row and its files."""
+        response = self._upload("photo-del-1")
+        photo_id = response.data["id"]
         with mock.patch("apps.reviews.signals.delete_image_files") as deleter:
-            response = self.client.delete(self._url(self.photo.pk))
+            response = self.client.delete(self._url(photo_id))
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertFalse(ReviewPhoto.objects.filter(pk=self.photo.pk).exists())
+        self.assertFalse(ReviewPhoto.objects.filter(pk=photo_id).exists())
         deleter.assert_called_once_with("reviews/photos/mine.png")
 
-    def test_foreign_photo_delete_returns_404(self):
-        """Another user's photo is indistinguishable from a missing one."""
-        _login(self.client)
-        response = self.client.delete(self._url(self.foreign.pk))
+    def test_foreign_session_photo_delete_returns_404(self):
+        """Another session's photo is indistinguishable from a missing one."""
+        self._upload("photo-del-2")
+        foreign = _make_unattached_photo("theirs.png", session_key="other-session")
+        response = self.client.delete(self._url(foreign.pk))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertTrue(ReviewPhoto.objects.filter(pk=self.foreign.pk).exists())
+        self.assertTrue(ReviewPhoto.objects.filter(pk=foreign.pk).exists())
 
     def test_missing_photo_delete_returns_404(self):
         """A nonexistent photo id is a clean 404."""
-        _login(self.client)
+        self._upload("photo-del-3")
         response = self.client.delete(self._url(999999))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_authenticated_owner_can_delete_unattached_photo(self):
+        """A logged-in owner deletes their own upload."""
+        owned = _make_unattached_photo("owned.png", user=self.owner)
+        _login(self.client)
+        with mock.patch("apps.reviews.signals.delete_image_files") as deleter:
+            response = self.client.delete(self._url(owned.pk))
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(ReviewPhoto.objects.filter(pk=owned.pk).exists())
+        deleter.assert_called_once_with("reviews/photos/owned.png")
+
     def test_attached_photo_delete_rejected(self):
         """A photo already on a review is published content and stays put."""
+        upload = self._upload("photo-del-4")
+        session_key = ReviewPhoto.objects.get(pk=upload.data["id"]).session_key
         product, _ = _make_product()
-        review = create_review(user=self.buyer, product=product, rating=4)
+        review = create_review(product=product, rating=4, **SUBMITTER)
         attached = ReviewPhoto.objects.create(
-            user=self.buyer,
             review=review,
+            session_key=session_key,
             storage_name="reviews/photos/attached.png",
             display_url="/media/attached.png",
         )
-        _login(self.client)
         response = self.client.delete(self._url(attached.pk))
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertTrue(ReviewPhoto.objects.filter(pk=attached.pk).exists())
@@ -752,44 +853,47 @@ class RatingIntegrityTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
         self.product, _ = _make_product()
 
     def test_deleting_review_recomputes_product_rating(self):
         """Deleting a review with the ORM keeps the aggregate right."""
-        review = create_review(user=self.buyer, product=self.product, rating=5)
-        create_review(
-            user=_make_user(email="second@example.com", username="second"),
+        first = create_review(product=self.product, rating=5, **SUBMITTER)
+        set_review_approval(review=first, approved=True)
+        second = create_review(
             product=self.product,
             rating=3,
+            submitter_name="John",
+            submitter_contact="+254700000001",
         )
-        review.delete()
+        set_review_approval(review=second, approved=True)
+        first.delete()
         self.product.refresh_from_db()
         self.assertEqual(self.product.review_count, 1)
         self.assertEqual(self.product.average_rating, Decimal("3.00"))
 
-    def test_user_cascade_deletes_recompute_product_rating(self):
-        """Losing a reviewer's account never leaves a stale aggregate."""
-        second = _make_user(email="second@example.com", username="second")
-        create_review(user=self.buyer, product=self.product, rating=5)
-        create_review(user=second, product=self.product, rating=3)
-        second.delete()
+    def test_user_delete_keeps_review_and_aggregate(self):
+        """Losing a linked account nulls the link; the review survives."""
+        user = _make_user()
+        review = create_review(user=user, product=self.product, rating=5, **SUBMITTER)
+        set_review_approval(review=review, approved=True)
+        user.delete()
+        review.refresh_from_db()
+        self.assertIsNone(review.user_id)
         self.product.refresh_from_db()
         self.assertEqual(self.product.review_count, 1)
         self.assertEqual(self.product.average_rating, Decimal("5.00"))
 
     def test_photo_delete_removes_stored_files(self):
         """Deleting a photo row deletes its stored files."""
-        photo = _make_unattached_photo(self.buyer, "x.png")
+        photo = _make_unattached_photo("x.png")
         with mock.patch("apps.reviews.signals.delete_image_files") as deleter:
             photo.delete()
         deleter.assert_called_once_with("reviews/photos/x.png")
 
     def test_review_delete_cascades_photo_file_cleanup(self):
         """Deleting a review removes its photos and their files."""
-        review = create_review(user=self.buyer, product=self.product, rating=4)
+        review = create_review(product=self.product, rating=4, **SUBMITTER)
         photo = ReviewPhoto.objects.create(
-            user=self.buyer,
             review=review,
             storage_name="reviews/photos/x.png",
             display_url="/media/x.png",
@@ -801,12 +905,10 @@ class RatingIntegrityTests(APITestCase):
 
 
 class ReviewPhotoClaimTests(APITestCase):
-    """Exercises photo ownership and claim-once rules over the API."""
+    """Exercises session-bound photo claims over the API."""
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
-        self.other = _make_user(email="other@example.com", username="other")
         self.product, self.variant = _make_product()
         _stock_variant(self.variant)
         self.other_product, _ = _make_product(price="9000.00")
@@ -817,28 +919,49 @@ class ReviewPhotoClaimTests(APITestCase):
             "api:reviews:product-reviews", kwargs={"slug": self.other_product.slug}
         )
 
+    def _upload(self, key, name="claim.png"):
+        """Upload a photo through the endpoint, binding it to this session."""
+        url = reverse("api:reviews:review-photo-upload")
+        with (
+            mock.patch(
+                "apps.reviews.views.default_storage.save",
+                return_value=f"reviews/photos/{name}",
+            ),
+            mock.patch("apps.reviews.views.generate_variants", return_value=[]),
+            mock.patch(
+                "apps.reviews.views.preferred_image_url",
+                return_value=f"/media/{name}",
+            ),
+        ):
+            response = self.client.post(
+                url,
+                {"image": _tiny_png()},
+                format="multipart",
+                HTTP_IDEMPOTENCY_KEY=key,
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        return response.data["id"]
+
     def test_claiming_photos_attaches_them_to_the_review(self):
-        """A caller's own unclaimed upload lands on the created review."""
-        _login(self.client)
-        photo = _make_unattached_photo(self.buyer, "one.png")
+        """The session's own unclaimed upload lands on the created review."""
+        photo_id = self._upload("claim-1", "one.png")
         response = self.client.post(
             self.review_url,
-            {"rating": 5, "photo_ids": [photo.pk]},
+            {"rating": 5, "photo_ids": [photo_id], **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(len(response.data["photos"]), 1)
-        self.assertEqual(response.data["photos"][0]["id"], photo.pk)
-        photo.refresh_from_db()
+        self.assertEqual(response.data["photos"][0]["id"], photo_id)
+        photo = ReviewPhoto.objects.get(pk=photo_id)
         self.assertEqual(photo.review_id, response.data["id"])
 
-    def test_foreign_photo_cannot_be_attached(self):
-        """Another user's upload is never attachable, and stays unclaimed."""
-        foreign = _make_unattached_photo(self.other, "theirs.png")
-        _login(self.client)
+    def test_foreign_session_photo_cannot_be_attached(self):
+        """Another session's upload is never attachable, and stays unclaimed."""
+        foreign = _make_unattached_photo("theirs.png", session_key="other-session")
         response = self.client.post(
             self.review_url,
-            {"rating": 5, "photo_ids": [foreign.pk]},
+            {"rating": 5, "photo_ids": [foreign.pk], **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -848,11 +971,10 @@ class ReviewPhotoClaimTests(APITestCase):
 
     def test_duplicate_photo_ids_rejected(self):
         """The same photo cannot be cited twice in one review."""
-        _login(self.client)
-        photo = _make_unattached_photo(self.buyer, "dup.png")
+        photo_id = self._upload("claim-2", "dup.png")
         response = self.client.post(
             self.review_url,
-            {"rating": 5, "photo_ids": [photo.pk, photo.pk]},
+            {"rating": 5, "photo_ids": [photo_id, photo_id], **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -860,28 +982,31 @@ class ReviewPhotoClaimTests(APITestCase):
 
     def test_too_many_photos_rejected(self):
         """The per-review photo cap is enforced at the serializer."""
-        _login(self.client)
-        photos = [_make_unattached_photo(self.buyer, f"p{i}.png") for i in range(6)]
+        photo_ids = [self._upload(f"claim-cap-{i}", f"p{i}.png") for i in range(6)]
         response = self.client.post(
             self.review_url,
-            {"rating": 5, "photo_ids": [photo.pk for photo in photos]},
+            {"rating": 5, "photo_ids": photo_ids, **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_claimed_photo_cannot_be_attached_again(self):
         """A photo used on one review cannot back a second review."""
-        _login(self.client)
-        photo = _make_unattached_photo(self.buyer, "used.png")
+        photo_id = self._upload("claim-3", "used.png")
         response = self.client.post(
             self.review_url,
-            {"rating": 5, "photo_ids": [photo.pk]},
+            {"rating": 5, "photo_ids": [photo_id], **SUBMITTER},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         response = self.client.post(
             self.other_review_url,
-            {"rating": 4, "photo_ids": [photo.pk]},
+            {
+                "rating": 4,
+                "photo_ids": [photo_id],
+                "submitter_name": "John",
+                "submitter_contact": "+254700000001",
+            },
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -892,20 +1017,18 @@ class OrphanPhotoSweepTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.buyer = _make_user()
         self.product, _ = _make_product()
-        self.orphan = _make_unattached_photo(self.buyer, "orphan.png")
+        self.orphan = _make_unattached_photo("orphan.png")
 
     def test_sweep_removes_only_expired_orphans(self):
         """Old unattached photos are purged; attached and fresh ones survive."""
-        review = create_review(user=self.buyer, product=self.product, rating=4)
+        review = create_review(product=self.product, rating=4, **SUBMITTER)
         attached = ReviewPhoto.objects.create(
-            user=self.buyer,
             review=review,
             storage_name="reviews/photos/attached.png",
             display_url="/media/attached.png",
         )
-        fresh = _make_unattached_photo(self.buyer, "fresh.png")
+        fresh = _make_unattached_photo("fresh.png")
         self.orphan.created_at = timezone.now() - timedelta(hours=48)
         self.orphan.save(update_fields=["created_at"])
 
