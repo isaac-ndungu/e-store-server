@@ -1,9 +1,9 @@
 """Data models for the accounts app.
 
-Holds the custom ``User`` and the delivery ``Address``. Authentication identity
-is email + password; ``phone_number`` is captured at registration and used for
-order contact, M-Pesa, OTP delivery, and guest/loyalty identification, but never
-to authenticate a login.
+Holds the ``User`` model, used only for staff/admin authentication, and the
+shared delivery ``Address`` directory staff reuse across orders.
+Authentication identity is email + password; ``phone_number`` is the contact
+record kept per staff account.
 """
 
 from django.conf import settings
@@ -16,10 +16,8 @@ class User(AbstractUser):
 
     ``email`` is unique and is the login credential via ``USERNAME_FIELD``.
     ``username`` and ``password`` are inherited as-is; ``username`` remains
-    required at registration (``REQUIRED_FIELDS``) for display/uniqueness.
-    ``phone_number`` is the platform-wide contact identifier — order contact,
-    M-Pesa transactions, OTP delivery, and guest/loyalty lookup — but is never
-    used to authenticate a login.
+    required (``REQUIRED_FIELDS``) for display/uniqueness. ``phone_number``
+    is the contact number kept on the staff record.
     """
 
     email = models.EmailField(unique=True)
@@ -67,18 +65,22 @@ class User(AbstractUser):
 
 
 class Address(models.Model):
-    """A delivery address belonging to a user.
+    """A reusable delivery address in the staff directory.
 
-    ``phone_number`` is the delivery-contact number and may differ from the
-    account's own ``phone_number`` (ordering delivery to a different contact).
-    ``is_default`` marks the preferred address; exactly one is not enforced at
-    the database level, the owning code keeps it consistent.
+    There are no customer accounts, so addresses are not owned by shoppers:
+    staff keep repeat-delivery addresses (regulars, repeat business buyers)
+    here to avoid retyping them on every intake, and reference one from an
+    order via ``shipping_address_id``. ``user`` is null for directory entries;
+    surviving rows from retired customer accounts keep their link for history.
+    ``is_default`` marks the entry staff pre-fill intake with.
     """
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         related_name="addresses",
-        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
     )
     label = models.CharField(max_length=50, blank=True)
     recipient_name = models.CharField(max_length=255)

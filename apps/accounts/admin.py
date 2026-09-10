@@ -2,7 +2,7 @@
 
 The custom ``User`` reuses Django's ``UserAdmin`` (which already handles
 password hashing, staff flags, and password-change) adjusted for email login;
-``Address`` gets a lightweight admin scoped by user.
+``Address`` gets a lightweight admin for the shared directory.
 """
 
 from django.contrib import admin
@@ -31,8 +31,8 @@ class UserAdmin(DjangoUserAdmin):
 
 @admin.register(Address)
 class AddressAdmin(admin.ModelAdmin):
-    """Admin page for user delivery addresses, viewable by account."""
+    """Admin page for the shared delivery-address directory."""
 
-    list_display = ("recipient_name", "user", "county", "area_name", "is_default")
+    list_display = ("recipient_name", "county", "area_name", "is_default")
     search_fields = ("recipient_name", "county", "area_name")
     list_filter = ("county", "is_default")

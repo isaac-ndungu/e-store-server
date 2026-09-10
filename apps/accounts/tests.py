@@ -1,11 +1,11 @@
 """Tests for the accounts app.
 
-Covers registration (including email normalization and password validation),
-JWT login/refresh/rotation/logout, password reset (request + confirm),
-password change and account deactivation, the ``/me/`` retrieve/update
-endpoint, per-user Address CRUD with ownership enforcement (cross-user and
-missing resources both return 404), and the ``auth_login`` / ``auth_write``
-throttle scopes.
+Covers staff JWT login/refresh/rotation/logout, password reset (request +
+confirm), password change, the ``/me/`` retrieve/update endpoint, the shared
+staff Address directory (any manager/support staff reads every entry;
+customer-role tokens are rejected), and the ``auth_login`` / ``auth_write``
+throttle scopes. Public registration is gone — posting to the retired path
+returns 404 and creates nothing.
 """
 
 from django.contrib.auth.tokens import default_token_generator
@@ -19,138 +19,39 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import Address, User
 
-REGISTER_URL = reverse("api:accounts:register")
 LOGIN_URL = reverse("api:accounts:login")
 REFRESH_URL = reverse("api:accounts:refresh")
 LOGOUT_URL = reverse("api:accounts:logout")
 PASSWORD_RESET_URL = reverse("api:accounts:password-reset-request")
 PASSWORD_RESET_CONFIRM_URL = reverse("api:accounts:password-reset-confirm")
 PASSWORD_CHANGE_URL = reverse("api:accounts:password-change")
-ACCOUNT_DEACTIVATE_URL = reverse("api:accounts:account-deactivate")
 ME_URL = reverse("api:accounts:me")
 ADDRESS_LIST_URL = reverse("api:accounts:address-list-create")
 
-# Throttle scopes configured in settings.py; keep in sync.
+# Throttle scope configured in settings.py; keep in sync.
 AUTH_LOGIN_RATE_LIMIT = 3
-AUTH_WRITE_RATE_LIMIT = 10
 
 
-class RegisterTests(APITestCase):
-    """Exercises the public account-registration endpoint."""
+class RegistrationRemovedTests(APITestCase):
+    """Locks the removal of public registration."""
 
     def setUp(self):
         cache.clear()
-        self.payload = {
-            "email": "buyer@example.com",
-            "username": "buyer",
-            "password": "StrongPass123!",
-            "phone_number": "+254712345678",
-        }
 
-    def test_register_is_public_and_creates_user(self):
-        """An anonymous caller can register and a user is created."""
-        response = self.client.post(REGISTER_URL, self.payload, format="json")
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(User.objects.count(), 1)
-        user = User.objects.get()
-        self.assertEqual(user.email, "buyer@example.com")
-        self.assertEqual(user.username, "buyer")
-        self.assertEqual(user.phone_number, "+254712345678")
-        self.assertFalse(user.phone_verified)
-
-    def test_register_rejects_duplicate_email(self):
-        """Registering the same email twice yields a 400, not a second account."""
-        self.client.post(REGISTER_URL, self.payload, format="json")
-        response = self.client.post(REGISTER_URL, self.payload, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(User.objects.count(), 1)
-
-    def test_register_rejects_duplicate_username(self):
-        """Registering the same username with a different email is rejected."""
-        self.client.post(REGISTER_URL, self.payload, format="json")
+    def test_register_path_is_gone(self):
+        """Posting to the retired registration path returns 404, no account."""
         response = self.client.post(
-            REGISTER_URL,
+            "/api/v1/auth/register/",
             {
-                "email": "other@example.com",
+                "email": "buyer@example.com",
                 "username": "buyer",
                 "password": "StrongPass123!",
-                "phone_number": "+254700000000",
+                "phone_number": "+254712345678",
             },
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(User.objects.count(), 1)
-
-    def test_register_rejects_weak_password(self):
-        """A one-character password fails Django's password validators."""
-        response = self.client.post(
-            REGISTER_URL, {**self.payload, "password": "a"}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(User.objects.count(), 0)
-
-    def test_register_normalizes_email(self):
-        """A mixed-case address is stored lowercase so login always matches."""
-        response = self.client.post(
-            REGISTER_URL,
-            {**self.payload, "email": "  Buyer@Example.COM  "},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(User.objects.get().email, "buyer@example.com")
-
-    def test_register_email_lookup_is_case_insensitive(self):
-        """A second registration differing only by case is rejected as a dup."""
-        self.client.post(REGISTER_URL, self.payload, format="json")
-        response = self.client.post(
-            REGISTER_URL,
-            {**self.payload, "email": "BUYER@EXAMPLE.COM"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(User.objects.count(), 1)
-
-    def test_register_normalizes_phone_number(self):
-        """A local-format phone number is normalized to E.164 on registration."""
-        response = self.client.post(
-            REGISTER_URL, {**self.payload, "phone_number": "0712345678"}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(User.objects.get().phone_number, "+254712345678")
-
-    def test_register_rejects_malformed_phone_number(self):
-        """A clearly invalid phone number is rejected with a 400."""
-        response = self.client.post(
-            REGISTER_URL, {**self.payload, "phone_number": "not-a-phone"}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(User.objects.count(), 0)
-
-    def test_register_throttles_after_rate_limit(self):
-        """Bursting past the auth_write rate limit yields HTTP 429."""
-        for i in range(AUTH_WRITE_RATE_LIMIT):
-            response = self.client.post(
-                REGISTER_URL,
-                {
-                    "email": f"u{i}@example.com",
-                    "username": f"u{i}",
-                    "password": "StrongPass123!",
-                    "phone_number": f"+25470000000{i}",
-                },
-                format="json",
-            )
-            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        response = self.client.post(
-            REGISTER_URL,
-            {
-                "email": "throttled@example.com",
-                "username": "throttled",
-                "password": "StrongPass123!",
-                "phone_number": "+254700000001",
-            },
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
 
 class LoginTests(APITestCase):
@@ -389,25 +290,20 @@ class RefreshRotationAndLogoutTests(APITestCase):
 
 
 class AddressTests(APITestCase):
-    """Exercises per-user Address CRUD with ownership enforcement."""
+    """Exercises the shared staff address directory."""
 
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(
-            email="buyer@example.com",
-            username="buyer",
+            email="staff@example.com",
+            username="staff",
             password="StrongPass123!",
             phone_number="+254712345678",
-        )
-        self.other = User.objects.create_user(
-            email="other@example.com",
-            username="other",
-            password="StrongPass123!",
-            phone_number="+254700000000",
+            role="support",
         )
         login = self.client.post(
             LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            {"email": "staff@example.com", "password": "StrongPass123!"},
             format="json",
         )
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
@@ -455,7 +351,7 @@ class AddressTests(APITestCase):
         self.assertEqual(Address.objects.count(), 1)
 
     def test_create_and_list_address(self):
-        """A logged-in user can create then list their own addresses."""
+        """Staff can create then list directory entries."""
         create = self.client.post(ADDRESS_LIST_URL, self.address_payload, format="json")
         self.assertEqual(create.status_code, status.HTTP_201_CREATED)
         address_id = create.data["id"]
@@ -470,7 +366,7 @@ class AddressTests(APITestCase):
         self.assertEqual(listing.data["count"], 1)
 
     def test_update_and_delete_address(self):
-        """A logged-in user can update then delete their own address."""
+        """Staff can update then delete a directory entry."""
         created = self.client.post(
             ADDRESS_LIST_URL, self.address_payload, format="json"
         )
@@ -520,67 +416,20 @@ class AddressTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Address.objects.count(), 0)
 
-    def test_cannot_access_another_users_address(self):
-        """User B cannot retrieve or modify user A's address (IDOR guard)."""
-        created = self.client.post(
-            ADDRESS_LIST_URL, self.address_payload, format="json"
-        )
-        address_id = created.data["id"]
-        detail_url = reverse("api:accounts:address-detail", args=[address_id])
-
-        other_login = self.client.post(
-            LOGIN_URL,
-            {"email": "other@example.com", "password": "StrongPass123!"},
-            format="json",
-        )
-        self.client.credentials(
-            HTTP_AUTHORIZATION=f"Bearer {other_login.data['access']}"
-        )
-
-        retrieve = self.client.get(detail_url)
-        self.assertEqual(retrieve.status_code, status.HTTP_404_NOT_FOUND)
-
-        update = self.client.patch(detail_url, {"label": "Stolen"}, format="json")
-        self.assertEqual(update.status_code, status.HTTP_404_NOT_FOUND)
-
-        self.assertEqual(Address.objects.get(id=address_id).label, "Home")
-
-    def test_missing_address_is_indistinguishable_from_another_users(self):
-        """A nonexistent id and another user's id both return 404, not 403.
-
-        This locks the convention: cross-user access must not be reported
-        differently from a plain missing record, or the id scheme would leak
-        which ids other accounts use.
-        """
+    def test_any_staff_can_read_every_entry(self):
+        """The directory is shared: one staff member sees all entries."""
         self.client.post(ADDRESS_LIST_URL, self.address_payload, format="json")
 
-        missing_url = reverse("api:accounts:address-detail", args=[99999])
-        missing = self.client.get(missing_url)
-        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
-
+        User.objects.create_user(
+            email="manager@example.com",
+            username="manager",
+            password="StrongPass123!",
+            phone_number="+254700000000",
+            role="manager",
+        )
         other_login = self.client.post(
             LOGIN_URL,
-            {"email": "other@example.com", "password": "StrongPass123!"},
-            format="json",
-        )
-        self.client.credentials(
-            HTTP_AUTHORIZATION=f"Bearer {other_login.data['access']}"
-        )
-        cross_user = self.client.get(
-            reverse(
-                "api:accounts:address-detail",
-                args=[Address.objects.get().id],
-            )
-        )
-        self.assertEqual(cross_user.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_other_user_cannot_list_my_addresses(self):
-        """User B's address list never contains user A's addresses."""
-        self.client.post(ADDRESS_LIST_URL, self.address_payload, format="json")
-
-        other_login = self.client.post(
-            LOGIN_URL,
-            {"email": "other@example.com", "password": "StrongPass123!"},
+            {"email": "manager@example.com", "password": "StrongPass123!"},
             format="json",
         )
         self.client.credentials(
@@ -588,7 +437,41 @@ class AddressTests(APITestCase):
         )
         listing = self.client.get(ADDRESS_LIST_URL)
         self.assertEqual(listing.status_code, status.HTTP_200_OK)
-        self.assertEqual(listing.data["count"], 0)
+        self.assertEqual(listing.data["count"], 1)
+
+    def test_customer_role_cannot_access_directory(self):
+        """A customer token is rejected from the staff directory."""
+        User.objects.create_user(
+            email="buyer@example.com",
+            username="buyer",
+            password="StrongPass123!",
+            phone_number="+254700000001",
+            role="customer",
+        )
+        customer_login = self.client.post(
+            LOGIN_URL,
+            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {customer_login.data['access']}"
+        )
+        self.assertEqual(
+            self.client.get(ADDRESS_LIST_URL).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post(
+                ADDRESS_LIST_URL, self.address_payload, format="json"
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_missing_address_returns_404(self):
+        """A nonexistent directory id returns 404."""
+        missing_url = reverse("api:accounts:address-detail", args=[99999])
+        missing = self.client.get(missing_url)
+        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_list_supports_filter_search_and_default_pagination(self):
         """The address list filters, searches, and paginates by default."""
@@ -658,19 +541,20 @@ class AddressTests(APITestCase):
 
 
 class AddressDefaultTests(APITestCase):
-    """Exercises the single-default invariant for a user's addresses."""
+    """Exercises the single-default invariant for the shared directory."""
 
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(
-            email="buyer@example.com",
-            username="buyer",
+            email="staff@example.com",
+            username="staff",
             password="StrongPass123!",
             phone_number="+254712345678",
+            role="support",
         )
         login = self.client.post(
             LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            {"email": "staff@example.com", "password": "StrongPass123!"},
             format="json",
         )
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
@@ -921,74 +805,6 @@ class ChangePasswordTests(APITestCase):
             PASSWORD_CHANGE_URL,
             {"current_password": "StrongPass123!", "new_password": "NewPass123!"},
             format="json",
-        )
-
-        reused = self.client.post(REFRESH_URL, {"refresh": refresh}, format="json")
-        self.assertEqual(reused.status_code, status.HTTP_401_UNAUTHORIZED)
-
-
-class DeactivateAccountTests(APITestCase):
-    """Exercises the soft account-deactivation endpoint."""
-
-    def setUp(self):
-        cache.clear()
-        self.user = User.objects.create_user(
-            email="buyer@example.com",
-            username="buyer",
-            password="StrongPass123!",
-            phone_number="+254712345678",
-        )
-        login = self.client.post(
-            LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
-            format="json",
-        )
-        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
-
-    def test_deactivate_requires_authentication(self):
-        """An unauthenticated deactivate call is rejected."""
-        self.client.credentials()
-        response = self.client.post(
-            ACCOUNT_DEACTIVATE_URL, {"password": "StrongPass123!"}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
-    def test_deactivate_clears_is_active(self):
-        """A confirmed deactivation sets is_active False and blocks re-login."""
-        response = self.client.post(
-            ACCOUNT_DEACTIVATE_URL, {"password": "StrongPass123!"}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
-        self.user.refresh_from_db()
-        self.assertFalse(self.user.is_active)
-
-        login = self.client.post(
-            LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
-            format="json",
-        )
-        self.assertEqual(login.status_code, status.HTTP_401_UNAUTHORIZED)
-
-    def test_deactivate_rejects_wrong_password(self):
-        """A wrong password leaves the account fully active."""
-        response = self.client.post(
-            ACCOUNT_DEACTIVATE_URL, {"password": "WrongPass123!"}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.user.refresh_from_db()
-        self.assertTrue(self.user.is_active)
-
-    def test_deactivate_revokes_outstanding_refresh_tokens(self):
-        """Existing refresh tokens stop working after deactivation."""
-        login = self.client.post(
-            LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
-            format="json",
-        )
-        refresh = login.data["refresh"]
-
-        self.client.post(
-            ACCOUNT_DEACTIVATE_URL, {"password": "StrongPass123!"}, format="json"
         )
 
         reused = self.client.post(REFRESH_URL, {"refresh": refresh}, format="json")

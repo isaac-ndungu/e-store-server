@@ -1,15 +1,13 @@
 """API views for the accounts app.
 
-Implements registration, JWT login/refresh/logout, the ``/me/`` profile
-retrieve/update endpoint, password change and account deactivation, and
-per-user ``Address`` CRUD. Registration is deliberately public
-(``AllowAny``); everything else requires an authenticated user. Address
-retrieve/update/delete enforce ownership via ``get_object()`` and report a
-resource the caller does not own as ``404`` (never ``403``) so the id scheme
-does not reveal other users' records.
+Staff authentication (JWT login/refresh/logout, ``/me/`` profile, password
+change and reset) plus the shared staff ``Address`` directory. There is no
+public registration — accounts exist only for staff/admin access. Address
+list/detail views are staff-wide (manager/support): the directory holds
+repeat-delivery addresses reused across orders, so any staff member can read
+or edit any entry.
 """
 
-from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
@@ -24,41 +22,25 @@ from rest_framework_simplejwt.views import (
 )
 
 from apps.accounts.models import Address
-from apps.accounts.selectors import get_addresses_for_user
+from apps.accounts.permissions import IsManagerOrSupport
+from apps.accounts.selectors import list_addresses
 from apps.accounts.serializers import (
     AddressSerializer,
     ChangePasswordSerializer,
     ConfirmPasswordResetSerializer,
-    DeactivateAccountSerializer,
     LogoutSerializer,
-    RegisterSerializer,
     RequestPasswordResetSerializer,
     UserSerializer,
 )
 from apps.accounts.services import (
     change_password,
-    deactivate_account,
     reset_password,
     send_password_reset_email,
 )
 
 
-class RegisterView(generics.CreateAPIView):
-    """Create a new account from email, username, password, and phone number.
-
-    Public (``AllowAny``) by design — registration happens before any
-    authentication exists. Rate-limited with the dedicated ``auth_write`` scope
-    to blunt automated signup spam.
-    """
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "auth_write"
-    serializer_class = RegisterSerializer
-
-
 class LoginView(TokenObtainPairView):
-    """Issue a JWT access/refresh pair from email + password credentials.
+    """Issue a JWT access/refresh pair for a staff account.
 
     Public (``AllowAny``) by design — login precedes authentication.
     Rate-limited with the dedicated ``auth_login`` scope to blunt brute-force
@@ -263,36 +245,6 @@ class ChangePasswordView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class DeactivateAccountView(APIView):
-    """Soft-deactivate the authenticated caller's account.
-
-    Requires authentication and the account password as an explicit
-    confirmation. ``is_active`` is cleared so the account can no longer log in,
-    while all order history and related records are preserved. All outstanding
-    refresh tokens are revoked. Rate limited with the ``auth_write`` scope.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "auth_write"
-    serializer_class = DeactivateAccountSerializer
-
-    def post(self, request):
-        """Deactivate the account after confirming the password.
-
-        Args:
-            request: the POST request carrying the account ``password``.
-
-        Returns:
-            Response: ``204 No Content`` on success, or ``400`` if the password
-                is incorrect.
-        """
-        serializer = self.serializer_class(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        deactivate_account(request.user, serializer.validated_data["password"])
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
 class CurrentUserView(generics.RetrieveUpdateAPIView):
     """Return or update the authenticated caller's own profile.
 
@@ -325,16 +277,16 @@ class AddressPagination(PageNumberPagination):
 
 
 class AddressListCreateView(generics.ListCreateAPIView):
-    """List a user's addresses or add a new one to their account.
+    """List the shared directory or add a repeat-delivery address to it.
 
-    Requires authentication and is scoped to the caller's own addresses — a
-    user can never see another account's addresses here. The list is
-    paginated with a client-selectable bounded page size and supports exact
-    filtering on ``is_default`` and ``county``, free-text search across the
-    address contact/location fields, and ordering by the declared fields.
+    Staff-only (manager/support): the directory is reused across orders, so
+    any staff member reads every entry. The list is paginated with a
+    client-selectable bounded page size and supports exact filtering on
+    ``is_default`` and ``county``, free-text search across the contact/location
+    fields, and ordering by the declared fields.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsManagerOrSupport]
     serializer_class = AddressSerializer
     pagination_class = AddressPagination
     filterset_fields = ["is_default", "county"]
@@ -357,27 +309,20 @@ class AddressListCreateView(generics.ListCreateAPIView):
         return "auth_write"
 
     def get_queryset(self):
-        """Return only the authenticated caller's addresses."""
-        return get_addresses_for_user(self.request.user)
+        """Return the whole shared directory, newest first."""
+        return list_addresses()
 
     def perform_create(self, serializer):
-        """Attach the new address to the authenticated caller."""
-        serializer.save(user=self.request.user)
+        """Save the entry unlinked — directory rows belong to no account."""
+        serializer.save(user=None)
 
 
 class AddressRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
-    """Retrieve, update, or delete a single address owned by the caller.
+    """Retrieve, update, or delete a single directory entry (staff only)."""
 
-    Requires authentication. Ownership is enforced in ``get_object()`` so a
-    caller cannot reach another account's address via its primary key (IDOR).
-    Convention: an address the caller does not own — whether it belongs to
-    another account or does not exist at all — is reported as ``404 Not
-    Found``, never ``403 Forbidden``, so the id scheme does not leak which
-    ids other users' records use.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsManagerOrSupport]
     serializer_class = AddressSerializer
+    queryset = Address.objects.all()
 
     @property
     def throttle_scope(self):
@@ -385,17 +330,3 @@ class AddressRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
         if self.request and self.request.method == "GET":
             return "auth_read"
         return "auth_write"
-
-    def get_object(self):
-        """Return the address only if it belongs to the authenticated caller.
-
-        A missing address and another caller's address are treated the same
-        (``Http404``) so cross-user probing cannot tell them apart.
-
-        Returns:
-            Address: the requested address owned by ``request.user``.
-
-        Raises:
-            Http404: if no address with the URL pk exists for ``request.user``.
-        """
-        return get_object_or_404(Address, pk=self.kwargs["pk"], user=self.request.user)

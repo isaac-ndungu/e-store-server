@@ -1,7 +1,7 @@
 """Business logic for the accounts app.
 
-Views stay thin; user creation (with email normalization and password
-validation) lives here so every caller uses the same entry point.
+Views stay thin; email/phone normalization, password management, and token
+revocation live here so every caller uses the same entry point.
 """
 
 import re
@@ -130,37 +130,6 @@ def mask_email(value):
     if len(local) <= 2:
         return f"{'*' * len(local)}@{domain}"
     return f"{local[0]}{'*' * (len(local) - 2)}{local[-1]}@{domain}"
-
-
-def register_user(email, username, password, phone_number):
-    """Create and return a new user after validating the inputs.
-
-    Normalizes the email and phone number and runs Django's password validators
-    so a weak password is rejected rather than stored, and every write path
-    lands on the same normalized values. Does not create an ``Address`` or
-    ``LoyaltyAccount`` — those are handled elsewhere in the application.
-
-    Args:
-        email (str): login credential; normalized before storage.
-        username (str): display/handle, stored and checked as-is.
-        password (str): raw password to validate and hash.
-        phone_number (str): platform contact number, normalized before storage.
-
-    Returns:
-        User: the newly created user.
-
-    Raises:
-        ValidationError: if the password fails Django's password validators.
-    """
-    normalized_email = normalize_email(email)
-    normalized_phone = normalize_phone_number(phone_number)
-    validate_password(password)
-    return User.objects.create_user(
-        email=normalized_email,
-        username=username,
-        password=password,
-        phone_number=normalized_phone,
-    )
 
 
 def send_password_reset_email(email, request):
@@ -311,35 +280,5 @@ def change_password(user, current_password, new_password):
 
     user.set_password(new_password)
     user.save(update_fields=["password"])
-    revoke_all_refresh_tokens(user)
-    return user
-
-
-def deactivate_account(user, password):
-    """Soft-deactivate an account by clearing ``is_active``.
-
-    The account row (and all orders, addresses, and other history that
-    reference it) is preserved; only login is disabled. Confirms the supplied
-    ``password`` matches so an attacker who has stolen a session cannot
-    silently deactivate the victim's account. All outstanding refresh tokens
-    are revoked so existing sessions cannot refresh.
-
-    Args:
-        user (User): the account to deactivate.
-        password (str): the account password, must match to proceed.
-
-    Returns:
-        User: the deactivated user.
-
-    Raises:
-        serializers.ValidationError: if the password is incorrect.
-    """
-    from rest_framework import serializers
-
-    if not user.check_password(password):
-        raise serializers.ValidationError({"password": "Your password is incorrect."})
-
-    user.is_active = False
-    user.save(update_fields=["is_active"])
     revoke_all_refresh_tokens(user)
     return user
