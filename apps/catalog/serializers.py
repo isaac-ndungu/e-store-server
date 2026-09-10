@@ -469,6 +469,7 @@ class ProductVariantDetailSerializer(serializers.ModelSerializer):
             "package_dimensions",
             "pieces_per_unit",
             "stock_status_text",
+            "stock_status_override",
             "expected_restock_date",
             "is_active",
             "pricing_tiers",
@@ -498,6 +499,7 @@ class ProductVariantWriteSerializer(serializers.ModelSerializer):
             "package_dimensions",
             "pieces_per_unit",
             "stock_status_text",
+            "stock_status_override",
             "expected_restock_date",
             "is_active",
         ]

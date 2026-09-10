@@ -8,10 +8,12 @@ from apps.orders.views import (
     OrderStatusHistoryView,
     OrderStatusUpdateView,
     OrderVerifyOTPView,
+    StaffOrderIntakeView,
 )
 
 urlpatterns = [
     path("orders/", OrderListCreateView.as_view(), name="order-list"),
+    path("orders/intake/", StaffOrderIntakeView.as_view(), name="order-intake"),
     # The order reference is either an integer id (authenticated caller) or an
     # unguessable lookup token (guest caller); the views resolve either form.
     path("orders/<str:order_ref>/", OrderDetailView.as_view(), name="order-detail"),

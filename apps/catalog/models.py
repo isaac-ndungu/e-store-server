@@ -298,6 +298,19 @@ class ProductVariant(models.Model):
     package_dimensions = models.JSONField(default=dict, blank=True)
     pieces_per_unit = models.PositiveIntegerField(default=1)
     stock_status_text = models.CharField(max_length=100, blank=True)
+    STOCK_STATUS_OVERRIDE_CHOICES = (
+        ("", "Automatic (from inventory counts)"),
+        ("in_stock", "In Stock"),
+        ("low_stock", "Low Stock"),
+        ("out_of_stock", "Out of Stock"),
+    )
+    stock_status_override = models.CharField(
+        max_length=20,
+        choices=STOCK_STATUS_OVERRIDE_CHOICES,
+        default="",
+        blank=True,
+        help_text="Staff-set display override. Blank follows inventory counts.",
+    )
     expected_restock_date = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

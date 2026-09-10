@@ -32,10 +32,11 @@ class OrderAdmin(admin.ModelAdmin):
         "phone",
         "status",
         "payment_method",
+        "order_source",
         "grand_total",
         "placed_at",
     )
-    list_filter = ("status", "payment_method", "placed_at")
+    list_filter = ("status", "payment_method", "order_source", "placed_at")
     search_fields = ("id", "phone", "email")
     inlines = [OrderItemInline, OrderStatusHistoryInline]
     readonly_fields = ("placed_at", "updated_at")

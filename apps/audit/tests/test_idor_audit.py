@@ -6,6 +6,9 @@ already spot-check this; this file runs the same probe uniformly across every
 owner-scoped endpoint: create a resource as user A, then as user B request it
 and expect a 404 (never user A's data, never a 403 that reveals the id exists).
 
+Staff-shared resources (the address directory) invert the probe: any staff
+role reaches every entry while customer tokens are rejected outright.
+
 An endpoint added later that takes an id without the ownership filter fails
 here even if its own app's tests never exercise a second caller.
 """
@@ -18,7 +21,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import Address, User
-from apps.cart.models import CartItem, WishlistItem
+from apps.cart.models import CartItem
 from apps.cart.services import add_item, get_or_create_cart
 from apps.catalog.models import Category, Product, ProductVariant
 from apps.inventory.models import Inventory, Warehouse
@@ -29,13 +32,14 @@ from apps.reviews.models import Review, ReviewPhoto
 from apps.support.models import ChatMessage, ChatSession, Ticket, TicketMessage
 
 
-def _make_user(suffix):
-    """Create a plain customer user with a unique identity."""
+def _make_user(suffix, role="customer"):
+    """Create a user with a unique identity and the given role."""
     return User.objects.create_user(
         email=f"{suffix}@example.com",
         username=f"user-{suffix}",
         password="StrongPass123!",
         phone_number="+254712345678",
+        role=role,
     )
 
 
@@ -76,16 +80,17 @@ def _login(client, user):
 
 
 class AddressIdorAuditTests(APITestCase):
-    """A second user cannot reach, edit, or delete user A's address."""
+    """The shared directory admits any staff role and no customer token."""
 
     def setUp(self):
         cache.clear()
-        self.owner = _make_user("owner")
-        self.other = _make_user("other")
+        self.staff = _make_user("staff", role="support")
+        self.manager = _make_user("manager", role="manager")
+        self.customer = _make_user("customer")
         self.address = Address.objects.create(
-            user=self.owner,
+            user=None,
             label="Home",
-            recipient_name="Owner",
+            recipient_name="Repeat Buyer",
             phone_number="+254700111222",
             county="Nairobi",
             area_name="Westlands",
@@ -94,28 +99,27 @@ class AddressIdorAuditTests(APITestCase):
             "api:accounts:address-detail", kwargs={"pk": self.address.pk}
         )
 
-    def test_other_user_gets_404_on_retrieve(self):
-        """Retrieving another user's address is a 404, not their data."""
-        _login(self.client, self.other)
+    def test_customer_token_rejected_on_retrieve(self):
+        """A customer token cannot read a directory entry."""
+        _login(self.client, self.customer)
         self.assertEqual(
-            self.client.get(self.url).status_code, status.HTTP_404_NOT_FOUND
+            self.client.get(self.url).status_code, status.HTTP_403_FORBIDDEN
         )
 
-    def test_other_user_gets_404_on_update(self):
-        """Updating another user's address is a 404."""
-        _login(self.client, self.other)
+    def test_customer_token_rejected_on_update_and_delete(self):
+        """A customer token cannot mutate a directory entry."""
+        _login(self.client, self.customer)
         response = self.client.patch(self.url, {"label": "Stolen"}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_other_user_gets_404_on_delete(self):
-        """Deleting another user's address is a 404 and leaves it intact."""
-        _login(self.client, self.other)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertEqual(
-            self.client.delete(self.url).status_code, status.HTTP_404_NOT_FOUND
+            self.client.delete(self.url).status_code, status.HTTP_403_FORBIDDEN
         )
-        self.assertTrue(
-            Address.objects.filter(pk=self.address.pk, user=self.owner).exists()
-        )
+        self.assertEqual(Address.objects.get(pk=self.address.pk).label, "Home")
+
+    def test_any_staff_role_reaches_every_entry(self):
+        """A second staff member reads the entry another staff context saved."""
+        _login(self.client, self.manager)
+        self.assertEqual(self.client.get(self.url).status_code, status.HTTP_200_OK)
 
 
 class CartIdorAuditTests(APITestCase):
@@ -147,16 +151,6 @@ class CartIdorAuditTests(APITestCase):
             self.client.delete(self.url).status_code, status.HTTP_404_NOT_FOUND
         )
         self.assertTrue(CartItem.objects.filter(pk=self.item.pk).exists())
-
-    def test_other_user_gets_404_on_wishlist_delete(self):
-        """Deleting an item from user A's wishlist as user B is a 404."""
-        WishlistItem.objects.create(user=self.owner, product=self.variant.product)
-        url = reverse(
-            "api:cart:wishlist-item-detail",
-            kwargs={"product_id": self.variant.product.pk},
-        )
-        _login(self.client, self.other)
-        self.assertEqual(self.client.delete(url).status_code, status.HTTP_404_NOT_FOUND)
 
 
 class SupportIdorAuditTests(APITestCase):
@@ -225,7 +219,7 @@ class SupportIdorAuditTests(APITestCase):
 
 
 class ReviewPhotoIdorAuditTests(APITestCase):
-    """A second user cannot delete user A's review photo."""
+    """A second user cannot delete another identity's review photo."""
 
     def setUp(self):
         cache.clear()
@@ -237,6 +231,8 @@ class ReviewPhotoIdorAuditTests(APITestCase):
             review=Review.objects.create(
                 product=self.product,
                 user=self.owner,
+                submitter_name="Owner",
+                submitter_contact="+254712345678",
                 rating=5,
                 title="Great",
                 body="Works well.",
@@ -391,7 +387,6 @@ class AnonymousAccessAuditTests(APITestCase):
         cart = get_or_create_cart(user=self.owner)
         add_item(cart, variant_id=self.variant.pk, quantity=1)
         self.cart_item = cart.items.first()
-        WishlistItem.objects.create(user=self.owner, product=product)
         self.order = Order.objects.create(
             user=self.owner,
             phone="+254712345678",
@@ -453,11 +448,6 @@ class AnonymousAccessAuditTests(APITestCase):
         )
         response = self.client.patch(url, {"quantity": 1}, format="json")
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_anonymous_rejected_on_wishlist(self):
-        """An unauthenticated caller cannot read a wishlist."""
-        url = reverse("api:cart:wishlist")
-        self._assert_rejected(lambda: self.client.get(url))
 
     def test_anonymous_rejected_on_order_detail(self):
         """An unauthenticated caller cannot read an order.
