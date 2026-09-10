@@ -9,6 +9,7 @@ serializer before touching the database, rejects unknown parameters, and
 computes aggregates from the source tables via ``apps.analytics.selectors``.
 """
 
+from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -32,6 +33,7 @@ from apps.analytics.serializers import (
     AnalyticsQuerySerializer,
     ProductPerformanceQuerySerializer,
     SalesQuerySerializer,
+    SummarySerializer,
 )
 
 
@@ -90,6 +92,10 @@ class AnalyticsAPIView(APIView):
 class DashboardSummaryView(AnalyticsAPIView):
     """Return the full dashboard summary for the requested period."""
 
+    @extend_schema(
+        operation_id="analytics_dashboard_summary",
+        responses={200: SummarySerializer},
+    )
     def get(self, request):
         """Return the assembled summary.
 
@@ -108,6 +114,10 @@ class SalesReportView(AnalyticsAPIView):
 
     query_serializer_class = SalesQuerySerializer
 
+    @extend_schema(
+        operation_id="analytics_sales_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return sales aggregates and a bucketed trend.
 
@@ -133,6 +143,10 @@ class SalesReportView(AnalyticsAPIView):
 class StockReportView(AnalyticsAPIView):
     """Return the current stock-and-reservations snapshot."""
 
+    @extend_schema(
+        operation_id="analytics_stock_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the stock snapshot (a live snapshot, not period-bound).
 
@@ -150,6 +164,10 @@ class ProductPerformanceReportView(AnalyticsAPIView):
 
     query_serializer_class = ProductPerformanceQuerySerializer
 
+    @extend_schema(
+        operation_id="analytics_product_performance_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the top products by revenue.
 
@@ -175,6 +193,10 @@ class ProductPerformanceReportView(AnalyticsAPIView):
 class PromotionsReportView(AnalyticsAPIView):
     """Return promotion and coupon usage for the period."""
 
+    @extend_schema(
+        operation_id="analytics_promotions_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the promotions report.
 
@@ -191,6 +213,10 @@ class PromotionsReportView(AnalyticsAPIView):
 class ReturnsReportView(AnalyticsAPIView):
     """Return return-request figures for the period."""
 
+    @extend_schema(
+        operation_id="analytics_returns_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the returns report.
 
@@ -207,6 +233,10 @@ class ReturnsReportView(AnalyticsAPIView):
 class SupportReportView(AnalyticsAPIView):
     """Return support-ticket figures for the period."""
 
+    @extend_schema(
+        operation_id="analytics_support_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the support report.
 
@@ -223,6 +253,10 @@ class SupportReportView(AnalyticsAPIView):
 class ReviewsReportView(AnalyticsAPIView):
     """Return review and rating figures for the period."""
 
+    @extend_schema(
+        operation_id="analytics_reviews_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the reviews report.
 
@@ -239,6 +273,10 @@ class ReviewsReportView(AnalyticsAPIView):
 class TrafficReportView(AnalyticsAPIView):
     """Return storefront-traffic figures for the period."""
 
+    @extend_schema(
+        operation_id="analytics_traffic_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the traffic report.
 
@@ -255,6 +293,10 @@ class TrafficReportView(AnalyticsAPIView):
 class NotificationsReportView(AnalyticsAPIView):
     """Return notification-send figures for the period."""
 
+    @extend_schema(
+        operation_id="analytics_notifications_report",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the notifications report.
 

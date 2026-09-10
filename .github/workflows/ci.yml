@@ -21,6 +21,12 @@ jobs:
         run: pip install -r requirements.txt
       - name: Lint
         run: ruff check .
+      - name: Check formatting
+        run: |
+          black --check .
+          isort --check-only .
+      - name: Dependency vulnerability scan
+        run: pip-audit -r requirements.txt
       - name: Forbid plan/step/rule references in code
         run: |
           matches=$(grep -rInE '[Ss]tep[[:space:]]*[0-9]|[Pp]hase[[:space:]]*[0-9]|docs/plan[.]md|per the[ ]plan|AGENTS[.]md' . \
@@ -59,6 +65,7 @@ jobs:
       DB_PASSWORD: ecommerce
       DB_HOST: localhost
       DB_PORT: "5432"
+      TEST_USE_POSTGRES: "True"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -68,7 +75,13 @@ jobs:
         run: pip install -r requirements.txt
       - name: Django system check
         run: python manage.py check
+      - name: Django production-config check
+        run: python manage.py check --deploy
       - name: Run migrations check (no pending changes)
         run: python manage.py makemigrations --check --dry-run
+      - name: Verify migration applies from a fresh database
+        run: |
+          python manage.py migrate --run-syncdb
+          python manage.py makemigrations --check --dry-run
       - name: Run tests
         run: python manage.py test

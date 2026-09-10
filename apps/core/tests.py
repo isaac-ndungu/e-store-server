@@ -1,17 +1,26 @@
 """Tests for the core app.
 
 Covers the public site-config endpoints, the singleton invariant enforced by
-the model, the admin guards, and the shared ``public`` throttle scope.
+the model, the admin guards, the shared ``public`` throttle scope, and the
+load-test seed command's idempotent-insert / full-cleanup contracts.
 """
+
+from io import StringIO
 
 from django.contrib.admin.sites import AdminSite
 from django.core.cache import cache
+from django.core.management import call_command
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from apps.catalog.models import Product, ProductVariant
 from apps.core.admin import SiteConfigAdmin
 from apps.core.models import SiteConfig
+from apps.inventory.models import Inventory
+from apps.orders.models import Order, OrderItem
+from apps.payments.models import Payment
+from apps.social_proof.models import ProductViewEvent
 
 SITE_CONFIG_URL = reverse("api:core:site-config")
 LEGAL_URL = reverse("api:core:site-config-legal")
@@ -104,4 +113,91 @@ class SiteConfigSingletonTests(APITestCase):
         self.assertFalse(admin_instance.has_add_permission(request=None))
         self.assertFalse(
             admin_instance.has_delete_permission(request=None, obj=SiteConfig.load())
+        )
+
+
+class SeedLoadTestDataTests(APITestCase):
+    """Exercises the load-test seed command's insert and cleanup contracts."""
+
+    def _run(self, **kwargs):
+        """Run the seed command with the given options.
+
+        Args:
+            kwargs: options forwarded to the command.
+
+        Returns:
+            str: the command stdout.
+        """
+        out = StringIO()
+        call_command(
+            "seed_load_test_data",
+            stdout=out,
+            products=20,
+            orders=50,
+            users=10,
+            views=40,
+            **kwargs,
+        )
+        return out.getvalue()
+
+    def test_seed_populates_all_domains(self):
+        """Seeded rows appear in every domain the command claims to fill."""
+        self._run()
+        self.assertEqual(
+            Product.objects.filter(slug__startswith="loadtest-").count(), 20
+        )
+        self.assertEqual(
+            ProductVariant.objects.filter(sku__startswith="LT-").count(), 20
+        )
+        self.assertEqual(Order.objects.filter(phone__startswith="+25480").count(), 50)
+        self.assertEqual(
+            OrderItem.objects.filter(variant_sku__startswith="LT-").count() > 0,
+            True,
+        )
+        self.assertEqual(
+            Payment.objects.filter(transaction_id__startswith="LT-PAY-").count() > 0,
+            True,
+        )
+        self.assertEqual(
+            ProductViewEvent.objects.filter(session_key__startswith="lt-sess-").count(),
+            40,
+        )
+        self.assertEqual(
+            Inventory.objects.filter(
+                warehouse__name__startswith="LoadTest Hub"
+            ).count(),
+            40,
+        )
+
+    def test_re_run_replaces_not_duplicates(self):
+        """Running twice leaves exactly one full seed, not two."""
+        self._run()
+        self._run()
+        self.assertEqual(
+            Product.objects.filter(slug__startswith="loadtest-").count(), 20
+        )
+        self.assertEqual(Order.objects.filter(phone__startswith="+25480").count(), 50)
+        self.assertEqual(
+            ProductViewEvent.objects.filter(session_key__startswith="lt-sess-").count(),
+            40,
+        )
+
+    def test_wipe_only_removes_seeded_rows(self):
+        """``--wipe-only`` leaves the database clean of load-test markers."""
+        self._run()
+        self._run(wipe_only=True)
+        self.assertEqual(
+            Product.objects.filter(slug__startswith="loadtest-").count(), 0
+        )
+        self.assertEqual(
+            ProductVariant.objects.filter(sku__startswith="LT-").count(), 0
+        )
+        self.assertEqual(Order.objects.filter(phone__startswith="+25480").count(), 0)
+        self.assertEqual(OrderItem.objects.count(), 0)
+        self.assertEqual(
+            Payment.objects.filter(transaction_id__startswith="LT-PAY-").count(), 0
+        )
+        self.assertEqual(
+            ProductViewEvent.objects.filter(session_key__startswith="lt-sess-").count(),
+            0,
         )

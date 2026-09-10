@@ -5,11 +5,13 @@ import re
 from decouple import config
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.core.http import client_ip
 from apps.notifications.models import NotificationLog
 from apps.notifications.selectors import get_notification_logs
 from apps.notifications.serializers import (
@@ -34,21 +36,6 @@ _CALLBACK_TOKEN_PARAM = "token"
 _PHONE_RE = re.compile(r"(\+?[0-9][0-9\s\-]{7,})")
 
 
-def _client_ip(request):
-    """Return the client IP, honouring the configured proxy count.
-
-    Args:
-        request: the incoming HTTP request.
-
-    Returns:
-        str: the client IP address.
-    """
-    xff = request.META.get("HTTP_X_FORWARDED_FOR")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "")
-
-
 def _is_callback_ip_allowed(request):
     """Return whether the request's source IP is in the callback allowlist.
 
@@ -63,7 +50,7 @@ def _is_callback_ip_allowed(request):
     """
     if not _CALLBACK_IPS:
         return True
-    ip = _client_ip(request)
+    ip = client_ip(request)
     allowed = ip in _CALLBACK_IPS
     if not allowed:
         logger.warning("Delivery-report callback rejected from unauthorized IP %s", ip)
@@ -131,6 +118,11 @@ class SendTestSMSView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "notification_send"
 
+    @extend_schema(
+        operation_id="admin_test_sms_send",
+        request=SendTestSMSSerializer,
+        responses={201: NotificationLogSerializer},
+    )
     def post(self, request):
         """Send the test SMS and return the resulting audit log.
 
@@ -261,6 +253,11 @@ class DeliveryReportView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "notifications_callback"
 
+    @extend_schema(
+        operation_id="sms_delivery_report_callback",
+        request=dict,
+        responses={200: None},
+    )
     def post(self, request):
         """Process a delivery-report payload.
 

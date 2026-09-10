@@ -1,4 +1,5 @@
 import django.core.exceptions as django_exc
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -73,6 +74,10 @@ class BundlePriceView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="bundle_price",
+        responses={200: BundlePriceSerializer},
+    )
     def get(self, request, slug):
         """Return the computed price breakdown for the bundle.
 

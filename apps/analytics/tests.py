@@ -12,6 +12,8 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.core.cache import cache
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -685,3 +687,45 @@ class StockSnapshotTests(_AnalystClient):
         # w1 holds 4 available vs its threshold of 5, so it flags low stock;
         # w2's 3 available vs threshold 5 also flags. Both count.
         self.assertEqual(stock["low_stock"], 2)
+
+
+class QueryScaleTests(_AnalystClient):
+    """Aggregate reports must not add queries as their tables grow."""
+
+    def test_summary_query_count_is_constant_as_orders_grow(self):
+        """100x the orders changes no table's contribution to the summary."""
+        user = _make_user(email="scale@example.com", username="scale", role="customer")
+        self._create_orders(user, 5)
+
+        with CaptureQueriesContext(connection) as before:
+            self.client.get(reverse(SUMMARY_URL))
+
+        self._create_orders(user, 500)
+
+        with CaptureQueriesContext(connection) as after:
+            self.client.get(reverse(SUMMARY_URL))
+
+        self.assertEqual(len(before), len(after))
+
+    def _create_orders(self, user, count):
+        """Bulk-create completed orders for the given user.
+
+        Args:
+            user (User): the owner of every created order.
+            count (int): how many orders to create.
+        """
+        Order.objects.bulk_create(
+            [
+                Order(
+                    user=user,
+                    phone=f"+2547999{i % 1000000:06d}",
+                    status="delivered",
+                    subtotal=Decimal(f"1000.{i % 100:02d}"),
+                    shipping_total=Decimal("0.00"),
+                    tax_total=Decimal("160.00"),
+                    grand_total=Decimal(f"1160.{i % 100:02d}"),
+                )
+                for i in range(count)
+            ],
+            batch_size=500,
+        )

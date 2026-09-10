@@ -20,15 +20,17 @@ import hmac
 import logging
 
 from decouple import config
-from django.core.exceptions import PermissionDenied
-from django.http import JsonResponse
+from django.http import Http404, JsonResponse
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.core.http import client_ip
+from apps.payments.serializers import MpesaTransactionSerializer
 from apps.payments.services import handle_b2c_callback, handle_stk_callback
 
 logger = logging.getLogger(__name__)
@@ -67,24 +69,6 @@ def _callback_token_matches(request):
     return hmac.compare_digest(provided, _MPESA_CALLBACK_SECRET)
 
 
-def _client_ip(request):
-    """Return the client's IP address, respecting X-Forwarded-For.
-
-    In production behind a reverse proxy the real client IP is in
-    ``X-Forwarded-For``.  The first entry in the chain is the original client.
-
-    Args:
-        request: the incoming HTTP request.
-
-    Returns:
-        str: the client IP address.
-    """
-    xff = request.META.get("HTTP_X_FORWARDED_FOR")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "")
-
-
 def _is_callback_ip_allowed(request):
     """Return whether the request's source IP is in the Daraja callback allowlist.
 
@@ -100,7 +84,7 @@ def _is_callback_ip_allowed(request):
     """
     if not _MPESA_CALLBACK_IPS:
         return True
-    ip = _client_ip(request)
+    ip = client_ip(request)
     allowed = ip in _MPESA_CALLBACK_IPS
     if not allowed:
         logger.warning("M-Pesa callback rejected from unauthorized IP %s", ip)
@@ -129,6 +113,11 @@ class MpesaSTKCallbackView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "mpesa_callback"
 
+    @extend_schema(
+        operation_id="mpesa_stk_callback",
+        request=dict,
+        responses={200: dict},
+    )
     def post(self, request):
         """Process the STK Push callback.
 
@@ -153,7 +142,7 @@ class MpesaSTKCallbackView(APIView):
             )
 
         body = request.data
-        logger.info("STK callback received from IP %s", _client_ip(request))
+        logger.info("STK callback received from IP %s", client_ip(request))
 
         try:
             result = handle_stk_callback(body)
@@ -186,6 +175,11 @@ class MpesaB2CCallbackView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "mpesa_callback"
 
+    @extend_schema(
+        operation_id="mpesa_b2c_callback",
+        request=dict,
+        responses={200: dict},
+    )
     def post(self, request):
         """Process the B2C callback.
 
@@ -209,7 +203,7 @@ class MpesaB2CCallbackView(APIView):
             )
 
         body = request.data
-        logger.info("B2C callback received from IP %s", _client_ip(request))
+        logger.info("B2C callback received from IP %s", client_ip(request))
 
         try:
             result = handle_b2c_callback(body)
@@ -243,6 +237,10 @@ class MpesaTransactionStatusView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
+    @extend_schema(
+        operation_id="mpesa_transaction_status",
+        responses={200: MpesaTransactionSerializer},
+    )
     def get(self, request, transaction_id):
         """Return the M-Pesa transaction status.
 
@@ -251,8 +249,9 @@ class MpesaTransactionStatusView(APIView):
             transaction_id (int): the MpesaTransaction primary key.
 
         Returns:
-            Response: the transaction detail, ``403`` if the caller does not
-                own the order, or ``404`` if the transaction does not exist.
+            Response: the transaction detail, or ``404`` when the transaction
+                does not exist or belongs to another caller's order (so the id
+                scheme does not reveal which ids are in use).
         """
         from apps.payments.selectors import get_mpesa_transaction_for_user
 
@@ -260,9 +259,7 @@ class MpesaTransactionStatusView(APIView):
             request.user, transaction_id
         )
         if transaction_record is None:
-            raise PermissionDenied("Transaction not found or access denied.")
-
-        from apps.payments.serializers import MpesaTransactionSerializer
+            raise Http404(transaction_id)
 
         serializer = MpesaTransactionSerializer(transaction_record)
         return Response(serializer.data)

@@ -10,6 +10,7 @@ the view or the serializer.
 """
 
 from django.http import Http404
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -17,6 +18,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsManager
+from apps.content import cache as content_cache
 from apps.content.selectors import (
     get_banner_for_staff,
     get_page_for_staff,
@@ -112,6 +114,10 @@ class ContentPageStorefrontView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public_catalog"
 
+    @extend_schema(
+        operation_id="content_page_storefront",
+        responses={200: ContentPageStorefrontSerializer},
+    )
     def get(self, request, slug):
         """Return the published page's storefront shape.
 
@@ -122,9 +128,13 @@ class ContentPageStorefrontView(APIView):
         Returns:
             Response: the page content, or 404 when missing or unpublished.
         """
-        page = _page_or_404(slug)
-        serializer = ContentPageStorefrontSerializer(page)
-        return Response(serializer.data)
+        generation = content_cache.get_page_generation()
+        data = content_cache.get_cached_page(slug, generation)
+        if data is None:
+            page = _page_or_404(slug)
+            data = ContentPageStorefrontSerializer(page).data
+            content_cache.cache_page(slug, generation, data)
+        return Response(data)
 
 
 class BannerStorefrontView(APIView):
@@ -139,6 +149,10 @@ class BannerStorefrontView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public_catalog"
 
+    @extend_schema(
+        operation_id="banner_storefront_list",
+        responses={200: BannerStorefrontSerializer(many=True)},
+    )
     def get(self, request):
         """Return active banners matching the requested placement.
 
@@ -154,11 +168,15 @@ class BannerStorefrontView(APIView):
             raise serializers.ValidationError(
                 {"placement": "This query parameter is required."}
             )
-        banners = list_active_banners_for_placement(placement)
+        generation = content_cache.get_banner_generation()
+        rows = content_cache.get_cached_banner_rows(placement, generation)
+        if rows is None:
+            banners = list_active_banners_for_placement(placement)
+            rows = BannerStorefrontSerializer(banners, many=True).data
+            content_cache.cache_banner_rows(placement, generation, rows)
         paginator = PageNumberPagination()
-        page = paginator.paginate_queryset(banners, request)
-        serializer = BannerStorefrontSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        page = paginator.paginate_queryset(rows, request)
+        return paginator.get_paginated_response(page if page is not None else [])
 
 
 class ContentPageAdminListView(APIView):
@@ -168,6 +186,10 @@ class ContentPageAdminListView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_content_page_list",
+        responses={200: ContentPageAdminSerializer(many=True)},
+    )
     def get(self, request):
         """Return pages filtered by the optional ``published`` query flag.
 
@@ -192,6 +214,11 @@ class ContentPageAdminCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_content_page_create",
+        request=ContentPageCreateSerializer,
+        responses={201: ContentPageAdminSerializer},
+    )
     def post(self, request):
         """Create a new content page from the supplied payload.
 
@@ -224,6 +251,10 @@ class ContentPageAdminDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_content_page_detail",
+        responses={200: ContentPageAdminSerializer},
+    )
     def get(self, request, page_id):
         """Return the admin shape of the page.
 
@@ -246,6 +277,11 @@ class ContentPageAdminUpdateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_content_page_update",
+        request=ContentPageUpdateSerializer,
+        responses={200: ContentPageAdminSerializer},
+    )
     def patch(self, request, page_id):
         """Partially update the page with the supplied fields.
 
@@ -274,6 +310,10 @@ class ContentPageAdminDeleteView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_content_page_delete",
+        responses={204: None},
+    )
     def delete(self, request, page_id):
         """Delete the page.
 
@@ -296,6 +336,10 @@ class BannerAdminListView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_banner_list",
+        responses={200: BannerAdminSerializer(many=True)},
+    )
     def get(self, request):
         """Return banners filtered by optional ``active`` and ``placement`` flags.
 
@@ -321,6 +365,11 @@ class BannerAdminCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_banner_create",
+        request=BannerCreateSerializer,
+        responses={201: BannerAdminSerializer},
+    )
     def post(self, request):
         """Create a new banner from the supplied payload.
 
@@ -359,6 +408,10 @@ class BannerAdminDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_banner_detail",
+        responses={200: BannerAdminSerializer},
+    )
     def get(self, request, banner_id):
         """Return the admin shape of the banner.
 
@@ -381,6 +434,11 @@ class BannerAdminUpdateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_banner_update",
+        request=BannerUpdateSerializer,
+        responses={200: BannerAdminSerializer},
+    )
     def patch(self, request, banner_id):
         """Partially update the banner with the supplied fields.
 
@@ -409,6 +467,10 @@ class BannerAdminDeleteView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_banner_delete",
+        responses={204: None},
+    )
     def delete(self, request, banner_id):
         """Delete the banner.
 

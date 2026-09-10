@@ -18,6 +18,7 @@ because every call can append a durable event row.
 import re
 
 from django.conf import settings
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -114,7 +115,12 @@ class ProductViewRecordView(APIView):
     authentication_classes = []
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "social_proof_view"
+    schema = None
 
+    @extend_schema(
+        operation_id="product_view_record",
+        responses={201: LiveViewerCountSerializer},
+    )
     def post(self, request, slug=None):
         """Record the view and return the refreshed live-viewer count.
 
@@ -160,6 +166,10 @@ class ProductViewersView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="product_viewers",
+        responses={200: LiveViewerCountSerializer},
+    )
     def get(self, request, slug=None):
         """Return the live-viewer count.
 
@@ -195,6 +205,10 @@ class ViewerCountsBatchView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="product_viewers_batch",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return a slug-to-count mapping for the requested products.
 
@@ -228,6 +242,10 @@ class RecentSalesView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="recent_sales",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the recent-sales feed, newest first.
 

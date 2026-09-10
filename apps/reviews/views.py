@@ -25,6 +25,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.storage import default_storage
 from django.db import DatabaseError
 from django.http import Http404
+from drf_spectacular.utils import extend_schema
 from rest_framework import exceptions, permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -218,6 +219,10 @@ class ProductReviewsView(APIView):
         """
         return "review_write" if self.request.method == "POST" else "review_read"
 
+    @extend_schema(
+        operation_id="product_review_list",
+        responses={200: ReviewSerializer(many=True)},
+    )
     def get(self, request, slug):
         """Return the product's approved reviews, newest first.
 
@@ -235,6 +240,11 @@ class ProductReviewsView(APIView):
         serializer = ReviewSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        operation_id="product_review_create",
+        request=ReviewCreateSerializer,
+        responses={201: ReviewSerializer},
+    )
     def post(self, request, slug):
         """Create a review for the product as the authenticated caller.
 
@@ -282,6 +292,10 @@ class ProductQuestionsView(APIView):
         """
         return "review_write" if self.request.method == "POST" else "review_read"
 
+    @extend_schema(
+        operation_id="product_question_list",
+        responses={200: QuestionSerializer(many=True)},
+    )
     def get(self, request, slug):
         """Return the product's approved questions with answers, newest first.
 
@@ -299,6 +313,11 @@ class ProductQuestionsView(APIView):
         serializer = QuestionSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        operation_id="product_question_create",
+        request=QuestionCreateSerializer,
+        responses={201: QuestionSerializer},
+    )
     def post(self, request, slug):
         """Ask a question about the product as the authenticated caller.
 
@@ -341,6 +360,11 @@ class ReviewPhotoUploadView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "review_write"
 
+    @extend_schema(
+        operation_id="review_photo_upload",
+        request=None,
+        responses={201: ReviewPhotoSerializer},
+    )
     def post(self, request):
         """Accept a multipart image upload and return its processed output.
 
@@ -462,6 +486,10 @@ class ReviewPhotoDeleteView(APIView):
             raise Http404
         return photo
 
+    @extend_schema(
+        operation_id="review_photo_delete",
+        responses={204: None},
+    )
     def delete(self, request, photo_id):
         """Delete the caller's own unattached photo.
 
@@ -486,6 +514,10 @@ class ReviewModerationListView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_review_list",
+        responses={200: ReviewModerationSerializer(many=True)},
+    )
     def get(self, request):
         """Return reviews filtered by the optional ``approved`` query flag.
 
@@ -509,9 +541,15 @@ class ReviewApproveView(APIView):
     permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
+    schema = None
 
+    @extend_schema(
+        operation_id="admin_review_approve",
+        responses={200: ReviewModerationSerializer},
+    )
     def post(self, request, review_id):
         """Mark the review approved.
+
 
         Args:
             request: the POST request.
@@ -532,7 +570,12 @@ class ReviewRejectView(APIView):
     permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
+    schema = None
 
+    @extend_schema(
+        operation_id="admin_review_reject",
+        responses={200: ReviewModerationSerializer},
+    )
     def post(self, request, review_id):
         """Mark the review unapproved.
 
@@ -556,6 +599,10 @@ class QuestionModerationListView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_question_list",
+        responses={200: QuestionModerationSerializer(many=True)},
+    )
     def get(self, request):
         """Return questions filtered by the optional ``approved`` query flag.
 
@@ -580,6 +627,11 @@ class QuestionAnswerCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_question_answer_create",
+        request=AnswerCreateSerializer,
+        responses={201: QuestionModerationSerializer},
+    )
     def post(self, request, question_id):
         """Add a staff answer, approving the question in the process.
 
@@ -610,7 +662,12 @@ class QuestionApproveView(APIView):
     permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
+    schema = None
 
+    @extend_schema(
+        operation_id="admin_question_approve",
+        responses={200: QuestionModerationSerializer},
+    )
     def post(self, request, question_id):
         """Mark the question approved.
 
@@ -633,7 +690,12 @@ class QuestionRejectView(APIView):
     permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
+    schema = None
 
+    @extend_schema(
+        operation_id="admin_question_reject",
+        responses={200: QuestionModerationSerializer},
+    )
     def post(self, request, question_id):
         """Mark the question unapproved.
 

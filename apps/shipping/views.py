@@ -9,6 +9,7 @@ service or selector, return a response.
 from collections import namedtuple
 from decimal import Decimal
 
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
@@ -65,6 +66,11 @@ class ShippingQuoteView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="shipping_quote",
+        request=ShippingQuoteSerializer,
+        responses={200: dict},
+    )
     def post(self, request):
         """Return the shipping fee for the quoted lines.
 

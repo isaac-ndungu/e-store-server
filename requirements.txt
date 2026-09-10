@@ -1,6 +1,7 @@
 Django==6.1
 djangorestframework==3.18.0
-djangorestframework-simplejwt==5.5.0
+djangorestframework-simplejwt==5.5.1
+PyJWT==2.13.0
 django-filter==26.1
 python-decouple==3.8
 psycopg[binary]==3.3.4
@@ -13,8 +14,10 @@ sentry-sdk[django]==2.68.1
 whitenoise[brotli]==6.12.0
 Pillow==12.3.0
 africastalking==2.0.3
-bleach>=6.0
-drf-spectacular>=0.28.0
+bleach==6.4.0
+drf-spectacular==0.30.0
 ruff==0.16.5
 black==26.5.1
 isort==9.0.1
+pip-audit==2.10.1
+locust==2.46.5

@@ -303,6 +303,8 @@ class CurrentUserView(generics.RetrieveUpdateAPIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth_read"
     serializer_class = UserSerializer
 
     def get_object(self):
@@ -347,6 +349,13 @@ class AddressListCreateView(generics.ListCreateAPIView):
     ]
     ordering_fields = ["created_at", "county", "area_name", "label"]
 
+    @property
+    def throttle_scope(self):
+        """Rate writes with ``auth_write`` and reads with ``auth_read``."""
+        if self.request and self.request.method == "GET":
+            return "auth_read"
+        return "auth_write"
+
     def get_queryset(self):
         """Return only the authenticated caller's addresses."""
         return get_addresses_for_user(self.request.user)
@@ -369,6 +378,13 @@ class AddressRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
 
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = AddressSerializer
+
+    @property
+    def throttle_scope(self):
+        """Rate writes with ``auth_write`` and reads with ``auth_read``."""
+        if self.request and self.request.method == "GET":
+            return "auth_read"
+        return "auth_write"
 
     def get_object(self):
         """Return the address only if it belongs to the authenticated caller.

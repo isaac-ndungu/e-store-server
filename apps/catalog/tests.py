@@ -22,6 +22,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
+from apps.catalog import cache as catalog_cache
 from apps.catalog.models import (
     Brand,
     Category,
@@ -267,6 +268,79 @@ class CategoryBrowseTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         slugs = {c["slug"] for c in response.data}
         self.assertEqual(slugs, {"root-one", "root-two"})
+
+
+class CategoryCacheTests(APITestCase):
+    """Exercises the category cache and its invalidation on data changes."""
+
+    def setUp(self):
+        cache.clear()
+        self.category = _make_category(name="Refrigerators", slug="refrigerators")
+
+    def test_list_rows_cached_after_first_read(self):
+        """A list read populates the cache under the current generation."""
+        response = self.client.get(URLS["categories"])
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        generation = catalog_cache.get_category_generation()
+        self.assertEqual(
+            catalog_cache.get_cached_category_rows(generation), response.data
+        )
+
+    def test_category_rename_invalidates_list_cache(self):
+        """Editing a category is reflected on the storefront immediately."""
+        self.client.get(URLS["categories"])
+        self.category.name = "Fridges"
+        self.category.save(update_fields=["name"])
+        response = self.client.get(URLS["categories"])
+        self.assertEqual(response.data[0]["name"], "Fridges")
+
+    def test_category_delete_invalidates_list_cache(self):
+        """Deleting a category removes it from the storefront immediately."""
+        self.client.get(URLS["categories"])
+        self.category.delete()
+        response = self.client.get(URLS["categories"])
+        self.assertEqual(len(response.data), 0)
+
+    def test_category_inactivation_invalidates_list_cache(self):
+        """Deactivating a category hides it without a cache expiry wait."""
+        self.client.get(URLS["categories"])
+        self.category.is_active = False
+        self.category.save(update_fields=["is_active"])
+        response = self.client.get(URLS["categories"])
+        self.assertEqual(len(response.data), 0)
+
+    def test_product_count_invalidation_on_create(self):
+        """A new product is counted in the next list read."""
+        self.client.get(URLS["categories"])
+        _make_product(category=self.category, slug="cache-prod", sku="CACHE-1")
+        response = self.client.get(URLS["categories"])
+        self.assertEqual(response.data[0]["product_count"], 1)
+
+    def test_product_count_invalidation_on_delete(self):
+        """Removing a product restores the previous count."""
+        _make_product(category=self.category, slug="cache-prod", sku="CACHE-1")
+        self.client.get(URLS["categories"])
+        self.assertEqual(
+            self.client.get(URLS["categories"]).data[0]["product_count"], 1
+        )
+        Product.objects.get(slug="cache-prod").delete()
+        response = self.client.get(URLS["categories"])
+        self.assertEqual(response.data[0]["product_count"], 0)
+
+    def test_detail_cached_then_invalidated_on_edit(self):
+        """A category detail is cached and refreshed when the category changes."""
+        url = reverse("api:catalog:category-detail", args=[self.category.slug])
+        first = self.client.get(url)
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        generation = catalog_cache.get_category_generation()
+        self.assertEqual(
+            catalog_cache.get_cached_category_detail(self.category.slug, generation),
+            first.data,
+        )
+        self.category.name = "Fridges"
+        self.category.save(update_fields=["name"])
+        second = self.client.get(url)
+        self.assertEqual(second.data["name"], "Fridges")
 
 
 class BrandBrowseTests(APITestCase):

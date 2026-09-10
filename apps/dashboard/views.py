@@ -9,6 +9,7 @@ current-state widgets (COD, stock, collections, warehouse routing, alerts)
 accept no query parameters at all.
 """
 
+from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -90,6 +91,10 @@ class DashboardAPIView(APIView):
 class SalesDashboardView(DashboardAPIView):
     """Return the sales-overview widget for the period."""
 
+    @extend_schema(
+        operation_id="dashboard_sales",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the sales widget.
 
@@ -108,6 +113,10 @@ class CodOperationsDashboardView(DashboardAPIView):
 
     query_serializer_class = NoParamsSerializer
 
+    @extend_schema(
+        operation_id="dashboard_cod_operations",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the COD-operations widget.
 
@@ -126,6 +135,10 @@ class StockDashboardView(DashboardAPIView):
 
     query_serializer_class = NoParamsSerializer
 
+    @extend_schema(
+        operation_id="dashboard_stock",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the stock widget.
 
@@ -144,6 +157,10 @@ class ProductsDashboardView(DashboardAPIView):
 
     query_serializer_class = ProductsQuerySerializer
 
+    @extend_schema(
+        operation_id="dashboard_products",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the products widget.
 
@@ -169,6 +186,10 @@ class CollectionsDashboardView(DashboardAPIView):
 
     query_serializer_class = NoParamsSerializer
 
+    @extend_schema(
+        operation_id="dashboard_collections",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the collections widget.
 
@@ -185,6 +206,10 @@ class CollectionsDashboardView(DashboardAPIView):
 class BundlesDashboardView(DashboardAPIView):
     """Return the bundle-performance widget for the period."""
 
+    @extend_schema(
+        operation_id="dashboard_bundles",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the bundles widget.
 
@@ -201,6 +226,10 @@ class BundlesDashboardView(DashboardAPIView):
 class PromotionsDashboardView(DashboardAPIView):
     """Return the promotions widget for the period."""
 
+    @extend_schema(
+        operation_id="dashboard_promotions",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the promotions widget.
 
@@ -217,6 +246,10 @@ class PromotionsDashboardView(DashboardAPIView):
 class ReturnsDashboardView(DashboardAPIView):
     """Return the returns/RMA widget for the period."""
 
+    @extend_schema(
+        operation_id="dashboard_returns",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the returns widget.
 
@@ -235,6 +268,10 @@ class WarehouseRoutingDashboardView(DashboardAPIView):
 
     query_serializer_class = NoParamsSerializer
 
+    @extend_schema(
+        operation_id="dashboard_warehouse_routing",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the warehouse-routing widget.
 
@@ -251,6 +288,10 @@ class WarehouseRoutingDashboardView(DashboardAPIView):
 class SupportDashboardView(DashboardAPIView):
     """Return the support widget for the period."""
 
+    @extend_schema(
+        operation_id="dashboard_support",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the support widget.
 
@@ -269,6 +310,10 @@ class AlertsDashboardView(DashboardAPIView):
 
     query_serializer_class = NoParamsSerializer
 
+    @extend_schema(
+        operation_id="dashboard_alerts",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the current alert feed.
 

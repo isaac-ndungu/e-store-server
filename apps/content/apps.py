@@ -7,3 +7,7 @@ class ContentConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "apps.content"
     verbose_name = "Content"
+
+    def ready(self):
+        """Import signal handlers so cache invalidation is wired at startup."""
+        from apps.content import signals  # noqa: F401

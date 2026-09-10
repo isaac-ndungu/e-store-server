@@ -9,6 +9,7 @@ return a response. Stock-intake create endpoints enforce an
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import Http404
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema
 from rest_framework import filters, generics, permissions
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -68,6 +69,10 @@ class AvailabilityView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="variant_availability",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return availability for the requested variant, or 404.
 
@@ -121,6 +126,11 @@ class BulkAvailabilityView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="variant_availability_bulk",
+        request=BulkAvailabilitySerializer,
+        responses={200: dict},
+    )
     def post(self, request):
         """Return a map of variant id to availability.
 
@@ -434,7 +444,12 @@ class AdminReservationReleaseView(APIView):
     permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "inventory_write"
+    schema = None
 
+    @extend_schema(
+        operation_id="admin_reservation_release",
+        responses={200: StockReservationSerializer},
+    )
     def post(self, request, pk):
         """Release the reservation and return its updated state.
 

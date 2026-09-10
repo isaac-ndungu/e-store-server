@@ -11,12 +11,14 @@ tolerance (Meilisearch/Typesense) is planned for a later step.
 
 from django.db.models import Count, Prefetch
 from django.shortcuts import get_object_or_404
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.catalog import cache as catalog_cache
 from apps.catalog.models import (
     Brand,
     Category,
@@ -62,38 +64,53 @@ from apps.catalog.services import (
 # Public browse views
 
 
-class CategoryListView(generics.ListAPIView):
+class CategoryListView(APIView):
     """List active categories for public browsing.
 
     Returns a flat list of active categories with product counts. The list
-    is not paginated — category trees are bounded.
+    is not paginated — category trees are bounded. The serialized rows are
+    served from the category cache when current, avoiding the count query
+    on every storefront load.
     """
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public_catalog"
-    serializer_class = CategoryListSerializer
-    pagination_class = None
 
-    def get_queryset(self):
-        """Return active categories, filtered by parent if specified.
+    @extend_schema(
+        operation_id="category_list",
+        responses={200: CategoryListSerializer(many=True)},
+    )
+    def get(self, request):
+        """Return active categories, optionally filtered by parent.
+
+        Args:
+            request: the GET request with an optional ``parent`` query.
+
+        Returns:
+            Response: the serialized category rows.
 
         Raises:
-            ValidationError: if the ``parent`` param is not a valid id or
-                the ``null`` marker.
+            DRFValidationError: if the ``parent`` param is not a valid id
+                or the ``null`` marker.
         """
-        qs = get_active_categories()
-        parent = self.request.query_params.get("parent")
+        generation = catalog_cache.get_category_generation()
+        rows = catalog_cache.get_cached_category_rows(generation)
+        if rows is None:
+            rows = CategoryListSerializer(get_active_categories(), many=True).data
+            catalog_cache.cache_category_rows(generation, rows)
+
+        parent = request.query_params.get("parent")
         if parent is not None:
-            if parent == "" or parent == "null":
-                qs = qs.filter(parent__isnull=True)
+            if parent in ("", "null"):
+                rows = [row for row in rows if row["parent"] is None]
             else:
                 if not parent.isdigit():
                     raise DRFValidationError(
                         {"parent": "parent must be a category id or 'null'."}
                     )
-                qs = qs.filter(parent_id=parent)
-        return qs
+                rows = [row for row in rows if row["parent"] == int(parent)]
+        return Response(rows)
 
 
 class CategoryDetailView(generics.RetrieveAPIView):
@@ -105,24 +122,45 @@ class CategoryDetailView(generics.RetrieveAPIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public_catalog"
-    serializer_class = CategoryDetailSerializer
-    lookup_field = "slug"
 
-    def get_queryset(self):
-        """Return active categories with product counts, or 404."""
-        return (
-            Category.objects.filter(is_active=True)
-            .select_related("parent")
-            .annotate(product_count=Count("products"))
-            .prefetch_related(
-                Prefetch(
-                    "children",
-                    queryset=Category.objects.filter(is_active=True).annotate(
-                        product_count=Count("products")
-                    ),
-                )
+    @extend_schema(
+        operation_id="category_detail",
+        responses={200: CategoryDetailSerializer},
+    )
+    def get(self, request, slug):
+        """Return the active category with its children and product counts.
+
+        The serialized payload is served from the category cache when
+        current; a cold cache builds the annotated tree and repopulates it
+        under the current generation.
+
+        Args:
+            request: the GET request.
+            slug (str): the category slug.
+
+        Returns:
+            Response: the category detail, or 404 when missing or inactive.
+        """
+        generation = catalog_cache.get_category_generation()
+        data = catalog_cache.get_cached_category_detail(slug, generation)
+        if data is None:
+            category = get_object_or_404(
+                Category.objects.filter(is_active=True)
+                .select_related("parent")
+                .annotate(product_count=Count("products"))
+                .prefetch_related(
+                    Prefetch(
+                        "children",
+                        queryset=Category.objects.filter(is_active=True).annotate(
+                            product_count=Count("products")
+                        ),
+                    )
+                ),
+                slug=slug,
             )
-        )
+            data = CategoryDetailSerializer(category).data
+            catalog_cache.cache_category_detail(slug, generation, data)
+        return Response(data)
 
 
 class BrandListView(generics.ListAPIView):
@@ -233,6 +271,10 @@ class ProductPriceView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public_catalog"
 
+    @extend_schema(
+        operation_id="product_price",
+        responses={200: dict},
+    )
     def get(self, request, slug):
         """Return pricing data for all active variants of the product.
 
@@ -295,6 +337,7 @@ class AdminCategoryListCreateView(generics.ListCreateAPIView):
     """List all categories or create a new one (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     serializer_class = CategoryWriteSerializer
 
     def get_serializer_class(self):
@@ -314,6 +357,7 @@ class AdminCategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a category (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     serializer_class = CategoryWriteSerializer
     queryset = Category.objects.all()
 
@@ -326,6 +370,7 @@ class AdminBrandListCreateView(generics.ListCreateAPIView):
     """List all brands or create a new one (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -340,6 +385,7 @@ class AdminBrandDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a brand (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     serializer_class = BrandWriteSerializer
     queryset = Brand.objects.all()
 
@@ -348,6 +394,7 @@ class AdminProductListCreateView(generics.ListCreateAPIView):
     """List all products or create a new one (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -362,6 +409,7 @@ class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a product (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     serializer_class = ProductWriteSerializer
 
     def get_queryset(self):
@@ -375,6 +423,7 @@ class AdminProductVariantListCreateView(generics.ListCreateAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -401,6 +450,7 @@ class AdminProductVariantDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a variant (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     serializer_class = ProductVariantWriteSerializer
 
     def get_queryset(self):
@@ -417,6 +467,7 @@ class AdminProductImageListCreateView(generics.ListCreateAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -437,6 +488,7 @@ class AdminProductImageListCreateView(generics.ListCreateAPIView):
         serializer.save(product=product)
 
 
+@extend_schema(responses={204: None})
 class AdminProductImageDeleteView(generics.DestroyAPIView):
     """Delete an image by pk (admin only).
 
@@ -447,6 +499,7 @@ class AdminProductImageDeleteView(generics.DestroyAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     queryset = ProductImage.objects.all()
 
 
@@ -458,6 +511,7 @@ class AdminProductImageDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -476,6 +530,7 @@ class AdminPricingTierListCreateView(generics.ListCreateAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     serializer_class = PricingTierWriteSerializer
 
     def get_parent_product(self):
@@ -499,10 +554,12 @@ class AdminPricingTierListCreateView(generics.ListCreateAPIView):
         serializer.save()
 
 
+@extend_schema(responses={204: None})
 class AdminPricingTierDeleteView(generics.DestroyAPIView):
     """Delete a pricing tier (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     queryset = PricingTier.objects.all()
 
 
@@ -514,6 +571,7 @@ class AdminPricingTierDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -541,6 +599,7 @@ class AdminRelatedProductListCreateView(generics.ListCreateAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -574,6 +633,7 @@ class AdminRelatedProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -597,6 +657,7 @@ class AdminFacetDefinitionListCreateView(generics.ListCreateAPIView):
     """List all facet definitions or create a new one (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     serializer_class = FacetDefinitionSerializer
     queryset = FacetDefinition.objects.all().order_by("sort_order", "name")
 
@@ -605,5 +666,6 @@ class AdminFacetDefinitionDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a facet definition (admin only)."""
 
     permission_classes = [permissions.IsAdminUser]
+    throttle_scope = "admin"
     serializer_class = FacetDefinitionSerializer
     queryset = FacetDefinition.objects.all()

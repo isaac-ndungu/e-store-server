@@ -20,6 +20,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
+from apps.content import cache as content_cache
 from apps.content.models import Banner, ContentPage
 from apps.content.services import create_page
 
@@ -539,3 +540,78 @@ class ManagerAccessTests(APITestCase):
             else:
                 response = self.client.get(url)
             self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class StorefrontCacheTests(APITestCase):
+    """Exercises the storefront content cache and its invalidation."""
+
+    def setUp(self):
+        cache.clear()
+        self.banner_url = reverse("api:content:banner-storefront")
+        self.page_slug = "delivery-policy"
+        self.banner = Banner.objects.create(
+            placement="homepage_hero",
+            image="content/banners/one.jpg",
+            title="Original",
+            sort_order=0,
+        )
+
+    def test_banner_rows_are_cached_and_served(self):
+        """A warm placement cache is reused instead of recomputed."""
+        first = self.client.get(self.banner_url, {"placement": "homepage_hero"})
+        self.assertEqual(first.data["count"], 1)
+        cached = content_cache.get_cached_banner_rows(
+            "homepage_hero", content_cache.get_banner_generation()
+        )
+        self.assertEqual(cached, first.data["results"])
+
+    def test_banner_edit_invalidates_the_cache(self):
+        """Saving a banner refreshes what the storefront sees."""
+        self.client.get(self.banner_url, {"placement": "homepage_hero"})
+        self.banner.title = "Updated"
+        self.banner.save()
+        response = self.client.get(self.banner_url, {"placement": "homepage_hero"})
+        self.assertEqual(response.data["results"][0]["title"], "Updated")
+
+    def test_banner_delete_invalidates_the_cache(self):
+        """Deleting a banner removes it from the storefront immediately."""
+        self.client.get(self.banner_url, {"placement": "homepage_hero"})
+        self.banner.delete()
+        response = self.client.get(self.banner_url, {"placement": "homepage_hero"})
+        self.assertEqual(response.data["count"], 0)
+
+    def test_page_payload_is_cached_and_invalidated(self):
+        """A published page is cached, and edits are reflected immediately."""
+        page = ContentPage.objects.create(
+            title="Delivery Policy",
+            slug=self.page_slug,
+            body="<p>Original.</p>",
+            is_published=True,
+        )
+        url = reverse(
+            "api:content:content-page-storefront", kwargs={"slug": self.page_slug}
+        )
+        first = self.client.get(url)
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        self.assertEqual(first.data["body"], "<p>Original.</p>")
+
+        page.body = "<p>Edited.</p>"
+        page.save(update_fields=["body"])
+        second = self.client.get(url)
+        self.assertEqual(second.data["body"], "<p>Edited.</p>")
+
+    def test_page_publish_state_change_invalidates_the_cache(self):
+        """Unpublishing a page is visible to the storefront immediately."""
+        page = ContentPage.objects.create(
+            title="Delivery Policy",
+            slug=self.page_slug,
+            body="<p>Original.</p>",
+            is_published=True,
+        )
+        url = reverse(
+            "api:content:content-page-storefront", kwargs={"slug": self.page_slug}
+        )
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
+        page.is_published = False
+        page.save(update_fields=["is_published"])
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)

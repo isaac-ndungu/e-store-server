@@ -879,12 +879,12 @@ class WishlistApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
 
     def test_remove_nonexistent_from_wishlist(self):
-        """DELETE /wishlist/{product_id}/ for a product not in wishlist returns 400."""
+        """DELETE /wishlist/{product_id}/ for a product not in wishlist returns 404."""
         _login(self.client, email="buyer@example.com", password="StrongPass123!")
         response = self.client.delete(
             reverse("api:cart:wishlist-item-detail", args=[self._product.pk]),
         )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
 class GuestCartSessionIsolationTests(APITestCase):

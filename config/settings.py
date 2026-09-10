@@ -2,9 +2,12 @@
 
 Configuration is loaded from environment variables with a ``.env`` file via
 python-decouple (see ``.env.example``). ``DEBUG`` distinguishes development from
-production. Test mode is auto-detected from ``manage.py test`` and swaps in
-in-memory SQLite, a local-memory cache, and eager Celery so tests need no
-external services.
+production. Test mode is auto-detected from ``manage.py test`` and by default
+swaps in in-memory SQLite, a local-memory cache, and eager Celery so tests need
+no external services; setting ``TEST_USE_POSTGRES`` to a truthy value keeps the
+configured PostgreSQL database instead, which is required for the concurrency
+tests that exercise ``select_for_update`` row-locking behaviour. Error
+tracking initializes whenever ``SENTRY_DSN`` is configured.
 """
 
 import sys
@@ -65,12 +68,14 @@ LOCAL_APPS = [
     "apps.support",
     "apps.analytics",
     "apps.dashboard",
+    "apps.audit",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -113,7 +118,7 @@ DATABASES = {
         "PORT": config("DB_PORT", default=""),
     }
 }
-if TESTING:
+if TESTING and not config("TEST_USE_POSTGRES", default=False, cast=bool):
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
@@ -172,6 +177,7 @@ REST_FRAMEWORK = {
         "auth_login": "3/min",
         "auth_reauth": "10/min",
         "auth_write": "10/min",
+        "auth_read": "60/min",
         "notification_send": "5/min",
         "public_catalog": "100/min",
         "coupon_validate": "5/min",
@@ -339,7 +345,7 @@ STORAGES = {
         "BACKEND": "django.core.files.storage.FileSystemStorage",
     },
     "staticfiles": {
-        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
 
@@ -354,7 +360,27 @@ AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME", default="")
 AWS_S3_REGION_NAME = config("AWS_S3_REGION_NAME", default="")
 AWS_S3_ENDPOINT_URL = config("AWS_S3_ENDPOINT_URL", default="")
 
-if not DEBUG:
+# Error tracking is active only when a DSN is configured; it stays inert in
+# local development so a missing secret never crashes startup or floods the
+# local console. The sample rate is environment-tunable so staging can keep
+# full traces while production samples to control cost.
+SENTRY_DSN = config("SENTRY_DSN", default="")
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.django import DjangoIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        integrations=[
+            DjangoIntegration(),
+            CeleryIntegration(),
+        ],
+        environment="production" if not DEBUG else "development",
+        traces_sample_rate=config("SENTRY_TRACES_SAMPLE_RATE", default=1.0, cast=float),
+    )
+
+if not DEBUG and not TESTING:
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True

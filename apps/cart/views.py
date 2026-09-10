@@ -17,11 +17,14 @@ Permission model:
   their own cart, and wishlist mutations are scoped to the authenticated user.
 """
 
+from django.http import Http404
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.cart.models import CartItem, WishlistItem
 from apps.cart.selectors import get_cart_for_session, get_wishlist_for_user
 from apps.cart.serializers import (
     CartItemQuantitySerializer,
@@ -105,6 +108,10 @@ class CartView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="cart_retrieve",
+        responses={200: CartSummarySerializer},
+    )
     def get(self, request):
         """Return the active cart with priced line items and totals.
 
@@ -128,6 +135,10 @@ class CartView(APIView):
         )
         return Response(serializer.data)
 
+    @extend_schema(
+        operation_id="cart_clear",
+        responses={204: None},
+    )
     def delete(self, request):
         """Empty the cart by removing all items and clearing the coupon.
 
@@ -159,6 +170,11 @@ class CartItemsView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="cart_item_add",
+        request=CartItemWriteSerializer,
+        responses={201: dict},
+    )
     def post(self, request):
         """Add an item to the active cart.
 
@@ -194,6 +210,11 @@ class CartItemDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="cart_item_update",
+        request=CartItemQuantitySerializer,
+        responses={200: dict},
+    )
     def patch(self, request, item_id):
         """Update the quantity of a cart item.
 
@@ -204,8 +225,13 @@ class CartItemDetailView(APIView):
         Returns:
             Response: ``200 OK`` with the updated item id, or ``204`` if
                 the item was removed (quantity <= 0).
+
+        Raises:
+            Http404: if the item does not belong to the caller's cart.
         """
         cart = _resolve_cart(request)
+        if not CartItem.objects.filter(pk=item_id, cart=cart).exists():
+            raise Http404
         input_serializer = CartItemQuantitySerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         updated = _service_error_to_400(update_item_quantity)(
@@ -215,6 +241,10 @@ class CartItemDetailView(APIView):
             return Response(status=status.HTTP_204_NO_CONTENT)
         return Response({"item_id": updated.pk})
 
+    @extend_schema(
+        operation_id="cart_item_remove",
+        responses={204: None},
+    )
     def delete(self, request, item_id):
         """Remove a cart item.
 
@@ -224,8 +254,13 @@ class CartItemDetailView(APIView):
 
         Returns:
             Response: ``204 No Content`` on success.
+
+        Raises:
+            Http404: if the item does not belong to the caller's cart.
         """
         cart = _resolve_cart(request)
+        if not CartItem.objects.filter(pk=item_id, cart=cart).exists():
+            raise Http404
         _service_error_to_400(remove_item)(cart, item_id)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -237,6 +272,11 @@ class CartApplyCouponView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "coupon_validate"
 
+    @extend_schema(
+        operation_id="cart_coupon_apply",
+        request=CouponApplySerializer,
+        responses={200: CouponResultSerializer},
+    )
     def post(self, request):
         """Apply a coupon code to the active cart.
 
@@ -265,6 +305,10 @@ class CartRemoveCouponView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "coupon_validate"
 
+    @extend_schema(
+        operation_id="cart_coupon_remove",
+        responses={204: None},
+    )
     def delete(self, request):
         """Remove the coupon from the active cart.
 
@@ -292,6 +336,10 @@ class WishlistView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="wishlist_list",
+        responses=WishlistItemSerializer(many=True),
+    )
     def get(self, request):
         """Return the authenticated user's wishlist.
 
@@ -305,6 +353,11 @@ class WishlistView(APIView):
         serializer = WishlistItemSerializer(items, many=True)
         return Response(serializer.data)
 
+    @extend_schema(
+        operation_id="wishlist_add",
+        request=WishlistAddSerializer,
+        responses=WishlistItemSerializer,
+    )
     def post(self, request):
         """Add a product to the authenticated user's wishlist.
 
@@ -334,6 +387,11 @@ class WishlistItemDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
 
+    @extend_schema(
+        operation_id="wishlist_remove",
+        parameters=[],
+        responses={204: None},
+    )
     def delete(self, request, product_id):
         """Remove a product from the authenticated user's wishlist.
 
@@ -343,6 +401,13 @@ class WishlistItemDetailView(APIView):
 
         Returns:
             Response: ``204 No Content`` on success.
+
+        Raises:
+            Http404: if the product is not on the caller's wishlist.
         """
+        if not WishlistItem.objects.filter(
+            user=request.user, product_id=product_id
+        ).exists():
+            raise Http404
         _service_error_to_400(remove_from_wishlist)(request.user, product_id)
         return Response(status=status.HTTP_204_NO_CONTENT)

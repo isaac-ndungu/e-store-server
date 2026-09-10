@@ -17,7 +17,10 @@ written directly in a view. Ownership/IDOR is enforced through a shared
 resolver that returns 404 (not 403) for a missing or another user's order.
 """
 
+import uuid
+
 from django.http import Http404
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -126,12 +129,17 @@ def _resolve_order(request, order_ref):
     if request.user.is_authenticated:
         try:
             order_id = int(order_ref)
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             order = None
         else:
             order = get_order_for_user(request.user, order_id)
     else:
-        order = get_order_by_token(order_ref)
+        try:
+            uuid.UUID(order_ref)
+        except (AttributeError, TypeError, ValueError):
+            order = None
+        else:
+            order = get_order_by_token(order_ref)
     if order is None:
         raise Http404
     return order
@@ -173,6 +181,10 @@ class OrderListCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_write"
 
+    @extend_schema(
+        operation_id="order_list",
+        responses={200: dict},
+    )
     def get(self, request):
         """Return the authenticated caller's paginated orders.
 
@@ -188,6 +200,11 @@ class OrderListCreateView(APIView):
         payload = _paginated_orders(request, orders)
         return Response(payload)
 
+    @extend_schema(
+        operation_id="order_create",
+        request=OrderCreateSerializer,
+        responses={201: OrderDetailSerializer},
+    )
     def post(self, request):
         """Place an order from the caller's cart with idempotency protection.
 
@@ -343,6 +360,10 @@ class OrderDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
+    @extend_schema(
+        operation_id="order_detail",
+        responses={200: OrderDetailSerializer},
+    )
     def get(self, request, order_ref):
         """Retrieve the owned order with full detail.
 
@@ -358,6 +379,10 @@ class OrderDetailView(APIView):
         serializer = OrderDetailSerializer(order)
         return Response(serializer.data)
 
+    @extend_schema(
+        operation_id="order_cancel",
+        responses={200: OrderDetailSerializer},
+    )
     def delete(self, request, order_ref):
         """Cancel a pending order, releasing held stock.
 
@@ -393,6 +418,11 @@ class OrderCancelView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_write"
 
+    @extend_schema(
+        operation_id="order_cancel_subresource",
+        request=CancelOrderSerializer,
+        responses={200: OrderDetailSerializer},
+    )
     def post(self, request, order_ref):
         """Cancel the caller's pending order.
 
@@ -455,6 +485,11 @@ class OrderStatusUpdateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_write"
 
+    @extend_schema(
+        operation_id="order_status_update",
+        request=OrderStatusUpdateSerializer,
+        responses={200: OrderDetailSerializer},
+    )
     def post(self, request, order_id):
         """Transition an order to the requested status.
 
@@ -492,6 +527,11 @@ class OrderVerifyOTPView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_verify"
 
+    @extend_schema(
+        operation_id="order_otp_verify",
+        request=OTPVerifySerializer,
+        responses={200: OrderDetailSerializer},
+    )
     def post(self, request, order_ref):
         """Verify the order's OTP and confirm the order on success.
 
@@ -521,7 +561,12 @@ class OrderResendOTPView(APIView):
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_otp_resend"
+    schema = None
 
+    @extend_schema(
+        operation_id="order_otp_resend",
+        responses={200: OrderVerificationSerializer},
+    )
     def post(self, request, order_ref):
         """Re-send and reset the OTP for a COD order.
 
@@ -548,6 +593,10 @@ class OrderStatusHistoryView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
+    @extend_schema(
+        operation_id="order_status_history",
+        responses={200: OrderStatusHistorySerializer(many=True)},
+    )
     def get(self, request, order_ref):
         """Return the order's status history.
 

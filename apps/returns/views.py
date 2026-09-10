@@ -16,6 +16,7 @@ money field directly.
 """
 
 from django.http import Http404
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -25,6 +26,7 @@ from rest_framework.views import APIView
 from apps.accounts.permissions import IsManagerOrSupport
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.orders.selectors import get_order_for_staff
+from apps.orders.serializers import OrderDetailSerializer
 from apps.orders.views import _resolve_order
 from apps.payments.daraja import DarajaError
 from apps.returns.selectors import (
@@ -78,6 +80,10 @@ class OrderReturnRequestListCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_write"
 
+    @extend_schema(
+        operation_id="order_return_request_list",
+        responses={200: ReturnRequestListSerializer(many=True)},
+    )
     def get(self, request, order_ref, *_args, **_kwargs):
         """Return the order's return requests, newest first.
 
@@ -96,6 +102,11 @@ class OrderReturnRequestListCreateView(APIView):
         serializer = ReturnRequestListSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        operation_id="order_return_request_create",
+        request=ReturnRequestCreateSerializer,
+        responses={201: ReturnRequestCustomerDetailSerializer},
+    )
     def post(self, request, order_ref, *_args, **_kwargs):
         """Open a return request against the caller's delivered order.
 
@@ -132,6 +143,10 @@ class OrderReturnRequestDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
+    @extend_schema(
+        operation_id="order_return_request_detail",
+        responses={200: ReturnRequestCustomerDetailSerializer},
+    )
     def get(self, request, order_ref, return_request_id):
         """Return the matching return request with full detail.
 
@@ -163,6 +178,10 @@ class ReturnRequestStaffListView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_return_request_list",
+        responses={200: ReturnRequestListSerializer(many=True)},
+    )
     def get(self, request):
         """Return all return requests, paginated newest-first.
 
@@ -185,6 +204,10 @@ class ReturnRequestStaffDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_return_request_detail",
+        responses={200: ReturnRequestDetailSerializer},
+    )
     def get(self, request, return_request_id):
         """Return the matching return request with full detail.
 
@@ -210,6 +233,11 @@ class ReturnApproveView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_return_approve",
+        request=ReturnApproveSerializer,
+        responses={200: ReturnRequestDetailSerializer},
+    )
     def post(self, request, return_request_id):
         """Approve the request.
 
@@ -244,6 +272,11 @@ class ReturnRejectView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_return_reject",
+        request=ReturnRejectSerializer,
+        responses={200: ReturnRequestDetailSerializer},
+    )
     def post(self, request, return_request_id):
         """Reject the request.
 
@@ -279,6 +312,11 @@ class ReturnCloseView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_return_close",
+        request=ReturnRejectSerializer,
+        responses={200: ReturnRequestDetailSerializer},
+    )
     def post(self, request, return_request_id):
         """Close the request.
 
@@ -309,7 +347,12 @@ class ReturnReceiveItemView(APIView):
     permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
+    schema = None
 
+    @extend_schema(
+        operation_id="admin_return_receive_item",
+        responses={200: ReturnRequestDetailSerializer},
+    )
     def post(self, request, return_request_id):
         """Receive the returned goods and restock the line.
 
@@ -342,7 +385,12 @@ class ReturnRefundView(APIView):
     permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
+    schema = None
 
+    @extend_schema(
+        operation_id="admin_return_refund",
+        responses={200: ReturnRequestDetailSerializer},
+    )
     def post(self, request, return_request_id):
         """Refund the return request.
 
@@ -411,6 +459,11 @@ class OrderPreShipmentCancelView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="admin_order_pre_shipment_cancel",
+        request=PreShipmentCancelSerializer,
+        responses={200: OrderDetailSerializer},
+    )
     def post(self, request, order_id):
         """Cancel the order pre-shipment.
 
@@ -431,7 +484,6 @@ class OrderPreShipmentCancelView(APIView):
             require_idempotency_key,
             store_result,
         )
-        from apps.orders.serializers import OrderDetailSerializer
 
         key = require_idempotency_key(request)
         user_pk = request.user.pk

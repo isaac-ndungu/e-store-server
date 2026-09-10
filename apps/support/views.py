@@ -20,6 +20,7 @@ and attachments are validated by content and size here before storage.
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import FileResponse, Http404
+from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
@@ -152,6 +153,10 @@ class TicketListCreateView(APIView):
         """
         return "support_write" if self.request.method == "POST" else "support_read"
 
+    @extend_schema(
+        operation_id="tickets_list",
+        responses=CustomerTicketListSerializer(many=True),
+    )
     def get(self, request):
         """Return the authenticated caller's tickets, newest first.
 
@@ -167,6 +172,11 @@ class TicketListCreateView(APIView):
         serializer = CustomerTicketListSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        operation_id="tickets_create",
+        request=TicketCreateSerializer,
+        responses=CustomerTicketDetailSerializer,
+    )
     def post(self, request):
         """Open a ticket as the authenticated caller.
 
@@ -250,6 +260,10 @@ class TicketDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "support_read"
 
+    @extend_schema(
+        operation_id="ticket_detail",
+        responses=CustomerTicketDetailSerializer,
+    )
     def get(self, request, ticket_id):
         """Return the caller's ticket detail.
 
@@ -277,6 +291,11 @@ class TicketMessageCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "support_write"
 
+    @extend_schema(
+        operation_id="ticket_message_create",
+        request=TicketMessageCreateSerializer,
+        responses=CustomerTicketMessageSerializer,
+    )
     def post(self, request, ticket_id):
         """Post a customer message on the caller's ticket.
 
@@ -323,6 +342,10 @@ class TicketAttachmentDownloadView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "support_read"
 
+    @extend_schema(
+        operation_id="ticket_attachment_download",
+        responses={200: bytes, 404: None},
+    )
     def get(self, request, message_id):
         """Return the attachment file for an authorised caller.
 
@@ -357,6 +380,10 @@ class StaffTicketListView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_tickets_list",
+        responses=StaffTicketListSerializer(many=True),
+    )
     def get(self, request):
         """Return tickets filtered by optional status/category/assignee.
 
@@ -406,6 +433,10 @@ class StaffTicketDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_ticket_detail",
+        responses=StaffTicketDetailSerializer,
+    )
     def get(self, request, ticket_id):
         """Return the ticket detail for the support console.
 
@@ -428,6 +459,11 @@ class StaffTicketReplyView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_ticket_reply",
+        request=TicketMessageCreateSerializer,
+        responses=StaffTicketMessageSerializer,
+    )
     def post(self, request, ticket_id):
         """Reply to the ticket as staff, marking it awaiting the customer.
 
@@ -461,6 +497,11 @@ class StaffTicketAssignView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_ticket_assign",
+        request=TicketAssignSerializer,
+        responses=StaffTicketDetailSerializer,
+    )
     def post(self, request, ticket_id):
         """Assign the ticket to the named agent.
 
@@ -488,6 +529,11 @@ class StaffTicketStatusView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_ticket_status",
+        request=TicketStatusSerializer,
+        responses=StaffTicketDetailSerializer,
+    )
     def post(self, request, ticket_id):
         """Move the ticket to the requested status.
 
@@ -518,6 +564,11 @@ class ChatSessionCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "support_write"
 
+    @extend_schema(
+        operation_id="chat_session_create",
+        request=None,
+        responses=ChatSessionSerializer,
+    )
     def post(self, request):
         """Start a chat session owned by the caller.
 
@@ -575,6 +626,10 @@ class ChatSessionDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "support_read"
 
+    @extend_schema(
+        operation_id="chat_session_detail",
+        responses=ChatSessionSerializer,
+    )
     def get(self, request, session_id):
         """Return the caller's chat session detail.
 
@@ -597,6 +652,11 @@ class ChatMessageCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "support_write"
 
+    @extend_schema(
+        operation_id="chat_message_create",
+        request=ChatMessageCreateSerializer,
+        responses=ChatMessageSerializer,
+    )
     def post(self, request, session_id):
         """Append a customer message to the caller's session.
 
@@ -656,6 +716,11 @@ class ChatSessionEndView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "support_write"
 
+    @extend_schema(
+        operation_id="chat_session_end",
+        request=None,
+        responses=ChatSessionSerializer,
+    )
     def post(self, request, session_id):
         """Mark the caller's session ended.
 
@@ -680,6 +745,10 @@ class StaffChatSessionListView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_chat_sessions_list",
+        responses=StaffChatSessionListSerializer(many=True),
+    )
     def get(self, request):
         """Return chat sessions filtered by the optional ``active`` flag.
 
@@ -722,6 +791,10 @@ class StaffChatSessionDetailView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_chat_session_detail",
+        responses=ChatSessionSerializer,
+    )
     def get(self, request, session_id):
         """Return the chat session detail for the support console.
 
@@ -744,6 +817,11 @@ class StaffChatMessageCreateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_chat_message_create",
+        request=ChatMessageCreateSerializer,
+        responses=ChatMessageSerializer,
+    )
     def post(self, request, session_id):
         """Append an agent message to the session.
 
@@ -774,6 +852,11 @@ class StaffChatAssignView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
+    @extend_schema(
+        operation_id="staff_chat_assign",
+        request=ChatAssignSerializer,
+        responses=StaffChatSessionListSerializer,
+    )
     def post(self, request, session_id):
         """Assign the session to the named agent.
 

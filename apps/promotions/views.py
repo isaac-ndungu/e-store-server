@@ -1,3 +1,4 @@
+from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -32,6 +33,10 @@ class VariantEffectivePriceView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public_catalog"
 
+    @extend_schema(
+        operation_id="variant_effective_price",
+        responses={200: EffectivePriceResultSerializer},
+    )
     def get(self, request, variant_pk):
         """Return the effective price breakdown for a variant.
 
@@ -64,6 +69,11 @@ class CouponValidateView(APIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "coupon_validate"
 
+    @extend_schema(
+        operation_id="coupon_validate",
+        request=CouponValidationSerializer,
+        responses={200: CouponValidationResultSerializer},
+    )
     def post(self, request):
         """Validate the submitted coupon code.
 
