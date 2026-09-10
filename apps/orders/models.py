@@ -49,6 +49,11 @@ class Order(models.Model):
         ("card", "Card / Online Payment"),
         ("invoice", "Invoice / Net Terms (B2B)"),
     )
+    ORDER_SOURCE_CHOICES = (
+        ("whatsapp", "WhatsApp"),
+        ("email", "Email"),
+        ("admin_manual", "Staff-Entered"),
+    )
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -64,6 +69,17 @@ class Order(models.Model):
     payment_method = models.CharField(
         max_length=10, choices=PAYMENT_METHOD_CHOICES, default="mpesa"
     )
+    order_source = models.CharField(
+        max_length=20, choices=ORDER_SOURCE_CHOICES, default="whatsapp"
+    )
+    staff_created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="orders_created",
+    )
+    payment_reference = models.CharField(max_length=100, blank=True)
     currency = models.CharField(max_length=3, default="KES")
     subtotal = models.DecimalField(max_digits=12, decimal_places=2)
     shipping_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -110,6 +126,7 @@ class Order(models.Model):
             models.Index(
                 fields=["payment_method", "status"], name="order_pmt_status_idx"
             ),
+            models.Index(fields=["order_source"], name="order_source_idx"),
         ]
         constraints = [
             CheckConstraint(

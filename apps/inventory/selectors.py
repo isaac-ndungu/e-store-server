@@ -58,12 +58,29 @@ def get_variant_availability(variant):
         }
         for row in rows
     ]
+    override = getattr(variant, "stock_status_override", "") or ""
+    total_available = sum(row["available"] for row in per_warehouse)
+    if override == "out_of_stock":
+        display_available = 0
+        display_low = False
+    elif override == "low_stock":
+        display_available = total_available
+        display_low = True
+    elif override == "in_stock":
+        display_available = total_available
+        display_low = False
+    else:
+        display_available = total_available
+        display_low = any(row["is_low_stock"] for row in per_warehouse)
     return {
         "variant": {"id": variant.pk, "sku": variant.sku},
         "total_quantity": sum(row["quantity"] for row in per_warehouse),
         "total_reserved": sum(row["reserved"] for row in per_warehouse),
         "total_available": sum(row["available"] for row in per_warehouse),
         "is_low_stock": any(row["is_low_stock"] for row in per_warehouse),
+        "display_available": display_available,
+        "display_is_low_stock": display_low,
+        "stock_status_override": override,
         "per_warehouse": per_warehouse,
     }
 

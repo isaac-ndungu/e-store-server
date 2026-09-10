@@ -37,6 +37,35 @@ class OrderCreateSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
+class StaffOrderIntakeItemSerializer(serializers.Serializer):
+    """One staff-entered intake line."""
+
+    variant_id = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(min_value=1, max_value=999)
+
+
+class StaffOrderIntakeSerializer(serializers.Serializer):
+    """Input for the staff order-intake endpoint.
+
+    Prices are never accepted here — every line is repriced server-side from
+    the current catalogue/promotion state. ``inquiry_id`` optionally links the
+    created order back to the originating hand-off capture.
+    """
+
+    phone = serializers.CharField(max_length=15)
+    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    notes = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+    order_source = serializers.ChoiceField(choices=Order.ORDER_SOURCE_CHOICES)
+    payment_method = serializers.ChoiceField(choices=Order.PAYMENT_METHOD_CHOICES)
+    payment_reference = serializers.CharField(
+        max_length=100, required=False, allow_blank=True, default=""
+    )
+    delivery_zone_id = serializers.IntegerField(required=False, allow_null=True)
+    shipping_address_id = serializers.IntegerField(required=False, allow_null=True)
+    inquiry_id = serializers.IntegerField(required=False, allow_null=True)
+    items = StaffOrderIntakeItemSerializer(many=True, min_length=1, max_length=100)
+
+
 class OrderItemSerializer(serializers.ModelSerializer):
     """Read-only detail for one order line."""
 
@@ -107,6 +136,8 @@ class OrderListSerializer(serializers.ModelSerializer):
             "id",
             "status",
             "payment_method",
+            "order_source",
+            "payment_reference",
             "subtotal",
             "shipping_total",
             "tax_total",
@@ -143,6 +174,9 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "lookup_token",
             "status",
             "payment_method",
+            "order_source",
+            "staff_created_by",
+            "payment_reference",
             "currency",
             "subtotal",
             "shipping_total",

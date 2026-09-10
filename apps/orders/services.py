@@ -834,3 +834,294 @@ def requires_otp_for_payment(order):
     from apps.orders.payments import requires_otp_for_payment_method
 
     return requires_otp_for_payment_method(order.payment_method)
+
+
+def create_staff_order(
+    *,
+    staff_user,
+    phone,
+    lines,
+    order_source="whatsapp",
+    payment_method="cod",
+    payment_reference="",
+    email="",
+    notes="",
+    delivery_zone_id=None,
+    shipping_address_id=None,
+    inquiry_id=None,
+):
+    """Create a confirmed order from a staff-assisted sale.
+
+    Used after a WhatsApp/email conversation concludes: staff enter what the
+    customer agreed to, and the order is created already ``confirmed`` — there
+    is no pending-payment window because payment was arranged with the human
+    in the loop. Every price is recomputed server-side from the current
+    catalogue/promotion state; client figures are never charged.
+
+    Stock is decremented directly inside the order transaction (no
+    reservation rows): each line locks its ``Inventory`` row with
+    ``select_for_update``, checks available stock, and deducts. Serialized
+    lines mark their units ``sold`` in the same transaction so counts and
+    unit states move together.
+
+    Args:
+        staff_user (User): the staff member creating the order.
+        phone (str): the customer contact phone.
+        lines (list): ``[{"variant_id": int, "quantity": int}]`` staff-entered
+            lines. At least one is required.
+        order_source (str): ``whatsapp``, ``email``, or ``admin_manual``.
+        payment_method (str): must be enabled in site settings.
+        payment_reference (str): staff-entered receipt/bank reference.
+        email (str): optional customer email.
+        notes (str): optional order memo.
+        delivery_zone_id (int | None): delivery zone for shipping/warehouse
+            routing.
+        shipping_address_id (int | None): stored address id, if reused.
+        inquiry_id (int | None): originating inquiry to mark converted.
+
+    Returns:
+        Order: the created confirmed order.
+
+    Raises:
+        ValidationError: on bad input, disabled payment method, unknown or
+            inactive variant, manual out-of-stock override, or insufficient
+            stock.
+    """
+    from collections import namedtuple
+
+    from apps.catalog.models import ProductVariant
+    from apps.promotions.services import get_effective_price
+
+    if order_source not in dict(Order.ORDER_SOURCE_CHOICES):
+        raise ValidationError(f"Unknown order source '{order_source}'.")
+    _validate_payment_method(payment_method)
+    phone = _normalize_phone(phone)
+    notes = _sanitize_plain(notes)
+    payment_reference = (payment_reference or "").strip()[:100]
+    email = (email or "").strip()
+
+    if not lines:
+        raise ValidationError("At least one order line is required.")
+    cleaned = []
+    for entry in lines:
+        try:
+            variant_id = int(entry.get("variant_id"))
+            quantity = int(entry.get("quantity"))
+        except AttributeError, TypeError, ValueError:
+            raise ValidationError("Each line needs a variant_id and quantity.")
+        if quantity < 1 or quantity > 999:
+            raise ValidationError("Line quantity must be between 1 and 999.")
+        cleaned.append({"variant_id": variant_id, "quantity": quantity})
+
+    variants = {
+        variant.pk: variant
+        for variant in ProductVariant.objects.select_related("product").filter(
+            pk__in=[entry["variant_id"] for entry in cleaned],
+            is_active=True,
+            product__is_active=True,
+        )
+    }
+    priced = []
+    for entry in cleaned:
+        variant = variants.get(entry["variant_id"])
+        if variant is None:
+            raise ValidationError(f"Variant {entry['variant_id']} is not available.")
+        if getattr(variant, "stock_status_override", "") == "out_of_stock":
+            raise ValidationError(f"Variant {variant.sku} is marked out of stock.")
+        effective = get_effective_price(variant)
+        unit_price = _money(effective["price"]).quantize(_PENNY, rounding=ROUND_HALF_UP)
+        quantity = entry["quantity"]
+        total_price = (unit_price * quantity).quantize(_PENNY, rounding=ROUND_HALF_UP)
+        tax_rate = _component_tax_rate(variant)
+        tax = (total_price * tax_rate / Decimal("100")).quantize(
+            _PENNY, rounding=ROUND_HALF_UP
+        )
+        priced.append(
+            {
+                "variant": variant,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "total_price": total_price,
+                "tax_rate": tax_rate,
+                "tax": tax,
+            }
+        )
+
+    delivery_zone = None
+    shipping_total = Decimal("0.00")
+    shipping_tax_rate = Decimal("0.00")
+    shipping_tax_amount = Decimal("0.00")
+    if delivery_zone_id is not None:
+        from apps.shipping.models import DeliveryZone
+
+        delivery_zone = DeliveryZone.objects.filter(pk=delivery_zone_id).first()
+        if delivery_zone is None or not delivery_zone.is_active:
+            raise ValidationError("Invalid delivery zone.")
+        QuoteLine = namedtuple("QuoteLine", ["variant", "quantity"])
+        quote_lines = [QuoteLine(line["variant"], line["quantity"]) for line in priced]
+        shipping_total = Decimal(
+            calculate_shipping_fee(delivery_zone, quote_lines)
+        ).quantize(_PENNY, rounding=ROUND_HALF_UP)
+        if SiteConfig.load().settings.get("shipping_is_vatable", True):
+            shipping_tax_rate = _money(SiteConfig.load().standard_vat_rate)
+            shipping_tax_amount = (
+                shipping_total * shipping_tax_rate / Decimal("100")
+            ).quantize(_PENNY, rounding=ROUND_HALF_UP)
+
+    subtotal = sum((line["total_price"] for line in priced), Decimal("0.00"))
+    tax_total = sum((line["tax"] for line in priced), Decimal("0.00"))
+    grand_total = (
+        subtotal + shipping_total + shipping_tax_amount + tax_total
+    ).quantize(_PENNY, rounding=ROUND_HALF_UP)
+
+    shipping_address = None
+    if shipping_address_id is not None:
+        from apps.accounts.models import Address
+
+        shipping_address = Address.objects.filter(pk=shipping_address_id).first()
+        if shipping_address is None:
+            raise ValidationError("Invalid shipping address.")
+
+    with transaction.atomic():
+        order = Order.objects.create(
+            user=None,
+            phone=phone,
+            email=email,
+            notes=notes,
+            status="confirmed",
+            payment_method=payment_method,
+            order_source=order_source,
+            staff_created_by=staff_user,
+            payment_reference=payment_reference,
+            currency="KES",
+            subtotal=subtotal,
+            shipping_total=shipping_total,
+            shipping_tax_rate=_money(shipping_tax_rate),
+            shipping_tax_amount=shipping_tax_amount,
+            tax_total=tax_total,
+            discount_total=Decimal("0.00"),
+            grand_total=grand_total,
+            shipping_address=shipping_address,
+            delivery_zone=delivery_zone,
+        )
+        OrderStatusHistory.objects.create(
+            order=order,
+            from_status="",
+            to_status="confirmed",
+            changed_by=staff_user,
+            note="Created through staff intake.",
+        )
+        for line in priced:
+            warehouse = _select_warehouse_for_line(
+                line["variant"], delivery_zone, line["quantity"]
+            )
+            if warehouse is None and delivery_zone is None:
+                warehouse = _fallback_warehouse(line["variant"], line["quantity"])
+            order_item = OrderItem.objects.create(
+                order=order,
+                product=line["variant"].product,
+                variant_sku=line["variant"].sku,
+                product_name=line["variant"].product.name,
+                variant_attributes=line["variant"].attributes,
+                unit_price=line["unit_price"],
+                quantity=line["quantity"],
+                total_price=line["total_price"],
+                applied_discount=Decimal("0.00"),
+                tax_rate=line["tax_rate"],
+                tax=line["tax"],
+                fulfillment_warehouse=warehouse,
+            )
+            _decrement_stock_direct(
+                line["variant"], warehouse, line["quantity"], order_item
+            )
+        if inquiry_id is not None:
+            from apps.inquiries.models import Inquiry
+
+            inquiry = Inquiry.objects.filter(pk=inquiry_id).first()
+            if inquiry is None:
+                raise ValidationError("Invalid inquiry.")
+            inquiry.converted_order = order
+            inquiry.status = "converted"
+            inquiry.save(update_fields=["converted_order", "status", "updated_at"])
+
+    from apps.orders.signals import order_confirmed
+
+    order_confirmed.send(sender=order)
+    return order
+
+
+def _fallback_warehouse(variant, quantity):
+    """Return the best-stocked active warehouse when no zone is given.
+
+    Args:
+        variant (ProductVariant): the variant to fulfil.
+        quantity (int): units needed.
+
+    Returns:
+        Warehouse | None: the warehouse with the most available units
+            covering the line, or None when none can.
+    """
+    from django.db.models import F
+
+    from apps.inventory.models import Inventory
+
+    row = (
+        Inventory.objects.filter(variant=variant, warehouse__is_active=True)
+        .annotate(available_units=F("quantity") - F("reserved"))
+        .filter(available_units__gte=quantity)
+        .order_by("-available_units", "warehouse_id")
+        .select_related("warehouse")
+        .first()
+    )
+    return row.warehouse if row is not None else None
+
+
+def _decrement_stock_direct(variant, warehouse, quantity, order_item):
+    """Deduct stock for a staff-created line without a reservation row.
+
+    Locks the ``Inventory`` row, requires enough available units
+    (``quantity - reserved`` so active self-checkout holds are respected),
+    and deducts. Serialized lines also flip their oldest in-stock units to
+    ``sold`` in the same transaction so counts and unit states move together.
+
+    Args:
+        variant (ProductVariant): the sold variant.
+        warehouse (Warehouse | None): the fulfillment warehouse.
+        quantity (int): units sold.
+        order_item (OrderItem): the line the units belong to.
+
+    Raises:
+        ValidationError: if no warehouse was resolved or stock is short.
+    """
+    from django.db.models import F
+
+    from apps.inventory.models import Inventory, SerialUnit
+
+    if warehouse is None:
+        raise ValidationError(f"No fulfillment warehouse resolved for {variant.sku}.")
+    try:
+        inventory = Inventory.objects.select_for_update().get(
+            variant=variant, warehouse=warehouse
+        )
+    except Inventory.DoesNotExist:
+        raise ValidationError(f"Variant {variant.sku} is not stocked here.")
+    if (inventory.quantity - inventory.reserved) < quantity:
+        raise ValidationError(f"Insufficient stock for {variant.sku}.")
+    if variant.product.tracks_serial_numbers:
+        units = list(
+            SerialUnit.objects.select_for_update()
+            .filter(
+                variant=variant,
+                warehouse=warehouse,
+                status="in_stock",
+            )
+            .order_by("received_at", "pk")[:quantity]
+        )
+        if len(units) < quantity:
+            raise ValidationError(f"Insufficient tracked units for {variant.sku}.")
+        SerialUnit.objects.filter(pk__in=[unit.pk for unit in units]).update(
+            status="sold",
+            reservation=None,
+            order_item=order_item,
+        )
+    Inventory.objects.filter(pk=inventory.pk).update(quantity=F("quantity") - quantity)

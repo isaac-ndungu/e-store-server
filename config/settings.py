@@ -69,6 +69,7 @@ LOCAL_APPS = [
     "apps.analytics",
     "apps.dashboard",
     "apps.audit",
+    "apps.inquiries",
 ]
 
 INSTALLED_APPS = DJANGO_CORE_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -198,6 +199,9 @@ REST_FRAMEWORK = {
         "support_write": "20/min",
         "analytics_read": "60/min",
         "dashboard_read": "60/min",
+        "inquiry_write": "20/min",
+        "inquiry_read": "60/min",
+        "order_intake": "30/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
@@ -231,7 +235,7 @@ SPECTACULAR_SETTINGS = {
         },
         {"name": "bundles", "description": "Product bundles"},
         {"name": "promotions", "description": "Discounts and coupons"},
-        {"name": "cart", "description": "Shopping cart and wishlist"},
+        {"name": "cart", "description": "Shopping cart"},
         {"name": "orders", "description": "Order placement, status, and verification"},
         {"name": "payments", "description": "M-Pesa payments and transactions"},
         {
@@ -261,6 +265,14 @@ SPECTACULAR_SETTINGS = {
         {
             "name": "dashboard",
             "description": "Staff-only dashboard widgets and live alerts",
+        },
+        {
+            "name": "inquiries",
+            "description": "Anonymous WhatsApp/email hand-off capture and staff follow-up",
+        },
+        {
+            "name": "order_intake",
+            "description": "Staff-only order creation from assisted sales",
         },
     ],
 }
@@ -337,7 +349,10 @@ EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
 EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="no-reply@estore.local")
+FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
 RESET_LINK_BASE = config("RESET_LINK_BASE", default="http://localhost:3000/reset/")
+WHATSAPP_BUSINESS_NUMBER = config("WHATSAPP_BUSINESS_NUMBER", default="")
+ORDER_INTAKE_EMAIL = config("ORDER_INTAKE_EMAIL", default="")
 
 
 STORAGES = {
@@ -353,6 +368,8 @@ STORAGES = {
 CDN_DOMAIN = config("CDN_DOMAIN", default="")
 
 CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default=[], cast=Csv())
+CORS_ALLOW_CREDENTIALS = config("CORS_ALLOW_CREDENTIALS", default=False, cast=bool)
+CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default=[], cast=Csv())
 
 AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="")
 AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="")

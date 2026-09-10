@@ -73,8 +73,8 @@ class ProductAdmin(admin.ModelAdmin):
 class ProductVariantAdmin(admin.ModelAdmin):
     """Admin page for product variants."""
 
-    list_display = ("sku", "product", "price", "is_active")
-    list_filter = ("is_active",)
+    list_display = ("sku", "product", "price", "stock_status_override", "is_active")
+    list_filter = ("is_active", "stock_status_override")
     search_fields = ("sku", "product__name")
 
 

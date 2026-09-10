@@ -27,8 +27,6 @@ def default_site_settings():
         "enable_bundles": True,
         "enable_loyalty": True,
         "enable_social_proof": True,
-        "enable_b2b_quotes": True,
-        "enable_wishlist": True,
         "enable_reviews": True,
         "payment_methods": ["mpesa", "cod", "card", "invoice"],
         "default_payment_method": "mpesa",
@@ -39,6 +37,9 @@ def default_site_settings():
         "loyalty_points_per_kes_redeemed": 10,
         "volumetric_weight_divisor": 5000,
         "shipping_is_vatable": True,
+        "whatsapp_number": "",
+        "order_intake_email": "",
+        "inquiry_retention_days": 180,
     }
 
 
@@ -60,6 +61,15 @@ class SiteConfig(models.Model):
     settings = models.JSONField(default=default_site_settings)
     contact_email = models.EmailField(blank=True)
     support_phone = models.CharField(max_length=20, blank=True)
+    whatsapp_number = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="Business WhatsApp number in international format, e.g. 254712345678.",
+    )
+    order_intake_email = models.EmailField(
+        blank=True,
+        help_text="Mailbox that receives customer order emails.",
+    )
     social_links = models.JSONField(default=dict, blank=True)
     kra_pin = models.CharField(max_length=20, blank=True)
     business_registration_number = models.CharField(max_length=50, blank=True)

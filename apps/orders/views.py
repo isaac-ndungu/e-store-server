@@ -45,11 +45,13 @@ from apps.orders.serializers import (
     OrderStatusUpdateSerializer,
     OrderVerificationSerializer,
     OTPVerifySerializer,
+    StaffOrderIntakeSerializer,
 )
 from apps.orders.services import (
     apply_staff_status,
     cancel_pending_order,
     create_order_from_cart,
+    create_staff_order,
     requires_otp_for_payment,
     resend_order_otp,
     verify_order_otp,
@@ -129,14 +131,14 @@ def _resolve_order(request, order_ref):
     if request.user.is_authenticated:
         try:
             order_id = int(order_ref)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             order = None
         else:
             order = get_order_for_user(request.user, order_id)
     else:
         try:
             uuid.UUID(order_ref)
-        except (AttributeError, TypeError, ValueError):
+        except AttributeError, TypeError, ValueError:
             order = None
         else:
             order = get_order_by_token(order_ref)
@@ -611,3 +613,77 @@ class OrderStatusHistoryView(APIView):
         order = _resolve_order(request, order_ref)
         serializer = OrderStatusHistorySerializer(order.status_history, many=True)
         return Response(serializer.data)
+
+
+class StaffOrderIntakeView(APIView):
+    """Create a confirmed order from a staff-assisted sale (staff only).
+
+    Staff enter what the customer agreed over WhatsApp/email; the order is
+    created already ``confirmed`` with stock deducted directly. Requires an
+    ``Idempotency-Key`` header so a retried submit cannot create two orders.
+    """
+
+    permission_classes = [IsManagerOrSupport]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "order_intake"
+
+    @extend_schema(
+        operation_id="order_staff_intake",
+        request=StaffOrderIntakeSerializer,
+        responses={201: OrderDetailSerializer},
+        tags=["order_intake"],
+    )
+    def post(self, request):
+        """Create the confirmed order.
+
+        Args:
+            request: the POST request carrying contact, source, payment, and
+                staff-entered lines.
+
+        Returns:
+            Response: ``201 Created`` with the order detail, ``400`` for
+                validation/stock errors, or ``409`` when the same
+                idempotency key is already being processed.
+        """
+        from apps.core.idempotency import (
+            acquire_processing_lock,
+            read_cached_result,
+            release_processing_lock,
+            require_idempotency_key,
+            store_result,
+        )
+
+        key = require_idempotency_key(request)
+        scope = f"u{request.user.pk}"
+        cached = read_cached_result(scope, key)
+        if cached is not None:
+            return Response(cached["data"], status=cached["status"])
+        if not acquire_processing_lock(scope, key):
+            return Response(
+                {
+                    "detail": "A request with this Idempotency-Key is already in progress."
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            input_serializer = StaffOrderIntakeSerializer(data=request.data)
+            input_serializer.is_valid(raise_exception=True)
+            data = input_serializer.validated_data
+            order = _service_error_to_400(create_staff_order)(
+                staff_user=request.user,
+                phone=data["phone"],
+                lines=data["items"],
+                order_source=data["order_source"],
+                payment_method=data["payment_method"],
+                payment_reference=data.get("payment_reference", ""),
+                email=data.get("email", ""),
+                notes=data.get("notes", ""),
+                delivery_zone_id=data.get("delivery_zone_id"),
+                shipping_address_id=data.get("shipping_address_id"),
+                inquiry_id=data.get("inquiry_id"),
+            )
+            response_data = OrderDetailSerializer(order).data
+            store_result(scope, key, status.HTTP_201_CREATED, response_data)
+            return Response(response_data, status=status.HTTP_201_CREATED)
+        finally:
+            release_processing_lock(scope, key)
