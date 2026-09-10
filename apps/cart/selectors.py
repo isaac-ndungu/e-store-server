@@ -4,7 +4,7 @@ Selectors encapsulate query construction so views and serializers never
 build raw querysets directly.  They are pure reads with no side effects.
 """
 
-from apps.cart.models import Cart, CartItem, WishlistItem
+from apps.cart.models import Cart, CartItem
 
 
 def get_cart_for_user(user):
@@ -49,20 +49,4 @@ def get_cart_items(cart):
             "bundle",
         )
         .order_by("pk")
-    )
-
-
-def get_wishlist_for_user(user):
-    """Return the user's wishlist items with products pre-fetched.
-
-    Args:
-        user (User): the authenticated user.
-
-    Returns:
-        QuerySet: wishlist items ordered by recency.
-    """
-    return (
-        WishlistItem.objects.filter(user=user)
-        .select_related("product")
-        .order_by("-added_at")
     )

@@ -10,9 +10,6 @@ reference (enforced by a ``CHECK`` constraint), a quantity, and the
 server-computed unit price snapshot.  The price is always recomputed from the
 promotions service at read time — the stored snapshot is for order-history
 reconstruction when the item becomes an ``OrderItem``, not for charging.
-
-``WishlistItem`` is a per-user list of products they are interested in,
-independent of the cart.
 """
 
 from django.conf import settings
@@ -134,34 +131,3 @@ class CartItem(models.Model):
             else f"bundle={self.bundle_id}"
         )
         return f"CartItem({target}, qty={self.quantity})"
-
-
-class WishlistItem(models.Model):
-    """A product a user has added to their wishlist.
-
-    ``user`` is required — the wishlist is always tied to an account.  The
-    ``unique_together`` constraint prevents duplicate entries.
-    """
-
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        related_name="wishlist_items",
-        on_delete=models.CASCADE,
-    )
-    product = models.ForeignKey(
-        "catalog.Product",
-        on_delete=models.CASCADE,
-        related_name="wishlist_items",
-    )
-    added_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-added_at"]
-        unique_together = ("user", "product")
-        indexes = [
-            models.Index(fields=["user"], name="wish_user_idx"),
-        ]
-
-    def __str__(self):
-        """Return a compact label identifying the wishlist entry."""
-        return f"Wishlist(user={self.user_id}, product={self.product_id})"

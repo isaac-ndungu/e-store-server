@@ -6,8 +6,6 @@ from apps.cart.views import (
     CartItemsView,
     CartRemoveCouponView,
     CartView,
-    WishlistItemDetailView,
-    WishlistView,
 )
 
 urlpatterns = [
@@ -22,12 +20,5 @@ urlpatterns = [
     path("cart/apply-coupon/", CartApplyCouponView.as_view(), name="cart-apply-coupon"),
     path(
         "cart/remove-coupon/", CartRemoveCouponView.as_view(), name="cart-remove-coupon"
-    ),
-    # Wishlist
-    path("wishlist/", WishlistView.as_view(), name="wishlist"),
-    path(
-        "wishlist/<int:product_id>/",
-        WishlistItemDetailView.as_view(),
-        name="wishlist-item-detail",
     ),
 ]

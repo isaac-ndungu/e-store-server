@@ -8,8 +8,6 @@ trust a client-supplied price, total, or discount amount.
 
 from rest_framework import serializers
 
-from apps.cart.models import WishlistItem
-
 
 class CartItemWriteSerializer(serializers.Serializer):
     """Input serializer for adding/updating a cart item.
@@ -109,27 +107,3 @@ class CartSummarySerializer(serializers.Serializer):
     total = serializers.CharField()
     created_at = serializers.DateTimeField()
     updated_at = serializers.DateTimeField()
-
-
-class WishlistItemSerializer(serializers.ModelSerializer):
-    """Read serializer for wishlist entries."""
-
-    product_name = serializers.CharField(source="product.name", read_only=True)
-    product_slug = serializers.CharField(source="product.slug", read_only=True)
-
-    class Meta:
-        model = WishlistItem
-        fields = [
-            "id",
-            "product",
-            "product_name",
-            "product_slug",
-            "added_at",
-        ]
-        read_only_fields = ["id", "added_at"]
-
-
-class WishlistAddSerializer(serializers.Serializer):
-    """Input serializer for adding a product to the wishlist."""
-
-    product_id = serializers.IntegerField()

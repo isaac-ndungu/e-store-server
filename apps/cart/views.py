@@ -11,10 +11,8 @@ Permission model:
   (``request.session.session_key``) carried in the ``HttpOnly`` session
   cookie — never by a client-invented header value, which would be weak and
   forgeable.  A caller can only ever address their own cart.
-- ``WishlistView`` and ``WishlistItemDetailView`` require authentication —
-  the wishlist is tied to an account.
 - Ownership is enforced at the service/view layer: a caller can only address
-  their own cart, and wishlist mutations are scoped to the authenticated user.
+  their own cart.
 """
 
 from django.http import Http404
@@ -24,25 +22,21 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.cart.models import CartItem, WishlistItem
-from apps.cart.selectors import get_cart_for_session, get_wishlist_for_user
+from apps.cart.models import CartItem
+from apps.cart.selectors import get_cart_for_session
 from apps.cart.serializers import (
     CartItemQuantitySerializer,
     CartItemWriteSerializer,
     CartSummarySerializer,
     CouponApplySerializer,
     CouponResultSerializer,
-    WishlistAddSerializer,
-    WishlistItemSerializer,
 )
 from apps.cart.services import (
     add_item,
-    add_to_wishlist,
     apply_coupon,
     compute_cart_totals,
     get_or_create_cart,
     remove_coupon,
-    remove_from_wishlist,
     remove_item,
     update_item_quantity,
 )
@@ -320,94 +314,4 @@ class CartRemoveCouponView(APIView):
         """
         cart = _resolve_cart(request)
         remove_coupon(cart)
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-# Wishlist endpoints
-
-
-class WishlistView(APIView):
-    """List wishlist items or add a new one.
-
-    Requires authentication — the wishlist is tied to an account.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public"
-
-    @extend_schema(
-        operation_id="wishlist_list",
-        responses=WishlistItemSerializer(many=True),
-    )
-    def get(self, request):
-        """Return the authenticated user's wishlist.
-
-        Args:
-            request: the GET request.
-
-        Returns:
-            Response: the wishlist items with product details.
-        """
-        items = get_wishlist_for_user(request.user)
-        serializer = WishlistItemSerializer(items, many=True)
-        return Response(serializer.data)
-
-    @extend_schema(
-        operation_id="wishlist_add",
-        request=WishlistAddSerializer,
-        responses=WishlistItemSerializer,
-    )
-    def post(self, request):
-        """Add a product to the authenticated user's wishlist.
-
-        Args:
-            request: the POST request carrying ``product_id``.
-
-        Returns:
-            Response: ``201 Created`` with the wishlist item, or ``400``
-                if the product does not exist.
-        """
-        input_serializer = WishlistAddSerializer(data=request.data)
-        input_serializer.is_valid(raise_exception=True)
-        item = _service_error_to_400(add_to_wishlist)(
-            request.user, input_serializer.validated_data["product_id"]
-        )
-        output_serializer = WishlistItemSerializer(item)
-        return Response(output_serializer.data, status=status.HTTP_201_CREATED)
-
-
-class WishlistItemDetailView(APIView):
-    """Remove a product from the wishlist.
-
-    Requires authentication.
-    """
-
-    permission_classes = [permissions.IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public"
-
-    @extend_schema(
-        operation_id="wishlist_remove",
-        parameters=[],
-        responses={204: None},
-    )
-    def delete(self, request, product_id):
-        """Remove a product from the authenticated user's wishlist.
-
-        Args:
-            request: the DELETE request.
-            product_id (int): the product id to remove.
-
-        Returns:
-            Response: ``204 No Content`` on success.
-
-        Raises:
-            Http404: if the product is not on the caller's wishlist.
-        """
-        if not WishlistItem.objects.filter(
-            user=request.user, product_id=product_id
-        ).exists():
-            raise Http404
-        _service_error_to_400(remove_from_wishlist)(request.user, product_id)
         return Response(status=status.HTTP_204_NO_CONTENT)

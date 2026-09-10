@@ -16,7 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from django.core.exceptions import ValidationError
 from django.db.models import Sum
 
-from apps.cart.models import Cart, CartItem, WishlistItem
+from apps.cart.models import Cart, CartItem
 from apps.cart.selectors import get_cart_items
 
 logger = logging.getLogger(__name__)
@@ -707,60 +707,3 @@ def _get_owned_item(cart, item_id):
     if item is None:
         raise ValidationError("Cart item not found.")
     return item
-
-
-# Wishlist services
-
-
-def add_to_wishlist(user, product_id):
-    """Add a product to the user's wishlist.
-
-    If the product is already in the wishlist the operation is a no-op and
-    the existing item is returned.
-
-    Args:
-        user (User): the authenticated user.
-        product_id (int): the product id.
-
-    Returns:
-        WishlistItem: the wishlist item.
-
-    Raises:
-        ValidationError: if the product does not exist.
-    """
-    from apps.catalog.models import Product
-
-    product = Product.objects.filter(pk=product_id).first()
-    if product is None:
-        raise ValidationError("No such product.")
-    item, _created = WishlistItem.objects.get_or_create(user=user, product=product)
-    return item
-
-
-def remove_from_wishlist(user, product_id):
-    """Remove a product from the user's wishlist.
-
-    Args:
-        user (User): the authenticated user.
-        product_id (int): the product id.
-
-    Raises:
-        ValidationError: if the wishlist item does not exist.
-    """
-    deleted, _count = WishlistItem.objects.filter(
-        user=user, product_id=product_id
-    ).delete()
-    if deleted == 0:
-        raise ValidationError("Product is not in your wishlist.")
-
-
-def list_wishlist(user):
-    """Return all products in the user's wishlist.
-
-    Args:
-        user (User): the authenticated user.
-
-    Returns:
-        QuerySet: wishlist items with products pre-fetched.
-    """
-    return WishlistItem.objects.filter(user=user).select_related("product")

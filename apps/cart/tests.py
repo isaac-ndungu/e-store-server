@@ -1,8 +1,8 @@
 """Tests for the cart app.
 
 Covers service-layer logic (cart CRUD, item management, coupon handling,
-pricing computation, wishlist) and the full API surface including
-permissions, stock checks, and error handling.
+pricing computation) and the full API surface including permissions, stock
+checks, and error handling.
 """
 
 from datetime import timedelta
@@ -17,17 +17,14 @@ from rest_framework.test import APIClient, APITestCase
 
 from apps.accounts.models import User
 from apps.bundles.models import Bundle, BundleItem
-from apps.cart.models import CartItem, WishlistItem
+from apps.cart.models import CartItem
 from apps.cart.services import (
     add_item,
-    add_to_wishlist,
     apply_coupon,
     compute_cart_totals,
     get_or_create_cart,
-    list_wishlist,
     merge_guest_cart,
     remove_coupon,
-    remove_from_wishlist,
     remove_item,
     update_item_quantity,
 )
@@ -596,52 +593,6 @@ class CartTotalsTests(APITestCase):
         self.assertNotEqual(totals["subtotal"], "0.00")
 
 
-class WishlistServiceTests(APITestCase):
-    """Exercises wishlist add, remove, and list operations."""
-
-    def setUp(self):
-        cache.clear()
-        self.user = _make_user()
-
-    def test_add_to_wishlist(self):
-        """Adding a product creates a wishlist item."""
-        product, _ = _make_product()
-        item = add_to_wishlist(self.user, product.pk)
-        self.assertEqual(item.user_id, self.user.pk)
-        self.assertEqual(item.product_id, product.pk)
-
-    def test_add_duplicate_is_noop(self):
-        """Adding the same product twice returns the existing item."""
-        product, _ = _make_product()
-        item1 = add_to_wishlist(self.user, product.pk)
-        item2 = add_to_wishlist(self.user, product.pk)
-        self.assertEqual(item1.pk, item2.pk)
-
-    def test_remove_from_wishlist(self):
-        """Removing a product deletes the wishlist item."""
-        product, _ = _make_product()
-        add_to_wishlist(self.user, product.pk)
-        remove_from_wishlist(self.user, product.pk)
-        self.assertFalse(
-            WishlistItem.objects.filter(user=self.user, product=product).exists()
-        )
-
-    def test_remove_nonexistent_raises(self):
-        """Removing a product not in the wishlist raises ValidationError."""
-        product, _ = _make_product()
-        with self.assertRaises(ValidationError):
-            remove_from_wishlist(self.user, product.pk)
-
-    def test_list_wishlist(self):
-        """list_wishlist returns the user's items with products pre-fetched."""
-        p1, _ = _make_product(name="A", slug="wl-a", sku="WL-A")
-        p2, _ = _make_product(name="B", slug="wl-b", sku="WL-B")
-        add_to_wishlist(self.user, p1.pk)
-        add_to_wishlist(self.user, p2.pk)
-        items = list(list_wishlist(self.user))
-        self.assertEqual(len(items), 2)
-
-
 # ---------------------------------------------------------------------------
 # API tests
 # ---------------------------------------------------------------------------
@@ -823,68 +774,6 @@ class CartApiTests(APITestCase):
         self.assertEqual(response.data["item_count"], 2)
         self.assertIn("vat_breakdown", response.data)
         self.assertIn("total", response.data)
-
-
-class WishlistApiTests(APITestCase):
-    """Exercises the wishlist API surface."""
-
-    def setUp(self):
-        cache.clear()
-        self.user = _make_user()
-        self._product, _ = _make_product(name="Wish", slug="wish", sku="WISH-1")
-
-    def test_get_wishlist_authenticated(self):
-        """An authenticated user can retrieve their wishlist."""
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
-        response = self.client.get(reverse("api:cart:wishlist"))
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIsInstance(response.data, list)
-
-    def test_get_wishlist_anonymous_rejected(self):
-        """An anonymous user is rejected from the wishlist."""
-        response = self.client.get(reverse("api:cart:wishlist"))
-        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-
-    def test_add_to_wishlist(self):
-        """POST /wishlist/ adds a product."""
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
-        response = self.client.post(
-            reverse("api:cart:wishlist"),
-            {"product_id": self._product.pk},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-
-    def test_add_nonexistent_product(self):
-        """POST /wishlist/ with an unknown product returns 400."""
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
-        response = self.client.post(
-            reverse("api:cart:wishlist"),
-            {"product_id": 999999},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_remove_from_wishlist(self):
-        """DELETE /wishlist/{product_id}/ removes the product."""
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
-        self.client.post(
-            reverse("api:cart:wishlist"),
-            {"product_id": self._product.pk},
-            format="json",
-        )
-        response = self.client.delete(
-            reverse("api:cart:wishlist-item-detail", args=[self._product.pk]),
-        )
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
-
-    def test_remove_nonexistent_from_wishlist(self):
-        """DELETE /wishlist/{product_id}/ for a product not in wishlist returns 404."""
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
-        response = self.client.delete(
-            reverse("api:cart:wishlist-item-detail", args=[self._product.pk]),
-        )
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
 class GuestCartSessionIsolationTests(APITestCase):

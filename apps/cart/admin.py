@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from apps.cart.models import Cart, CartItem, WishlistItem
+from apps.cart.models import Cart, CartItem
 
 
 class CartItemInline(admin.TabularInline):
@@ -28,13 +28,4 @@ class CartItemAdmin(admin.ModelAdmin):
 
     list_display = ("id", "cart", "variant", "bundle", "quantity", "added_at")
     list_filter = ("cart",)
-    readonly_fields = ("added_at",)
-
-
-@admin.register(WishlistItem)
-class WishlistItemAdmin(admin.ModelAdmin):
-    """Admin configuration for WishlistItem."""
-
-    list_display = ("id", "user", "product", "added_at")
-    search_fields = ("user__email", "product__name")
     readonly_fields = ("added_at",)
