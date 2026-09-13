@@ -1,0 +1,59 @@
+# Render blueprint for the Django API. PostgreSQL comes from Neon (external
+# DATABASE_URL); Redis comes from Render Key Value. The frontend points at the
+# web service URL (https://<name>.onrender.com).
+services:
+  - type: web
+    name: e-store-api
+    runtime: python
+    plan: free
+    buildCommand: "./scripts/render-build.sh"
+    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 3"
+    healthCheckPath: /health/
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.4
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false # paste the Neon pooled connection string in the dashboard
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: e-store-redis
+          property: connectionString
+      - key: ALLOWED_HOSTS
+        value: ".onrender.com"
+      - key: FRONTEND_URL
+        sync: false # e.g. https://shop.example.com (set once the storefront URL is known)
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # e.g. https://shop.example.com (must include the storefront origin)
+
+  - type: worker
+    name: e-store-worker
+    runtime: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "celery -A config worker --loglevel=info"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.4
+      - key: DEBUG
+        value: "False"
+      - key: SECRET_KEY
+        sync: false # copy the same value as the web service (shared signing key)
+      - key: DATABASE_URL
+        sync: false # same Neon pooled connection string as the web service
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: e-store-redis
+          property: connectionString
+
+databases: []
+
+keyvalues:
+  - name: e-store-redis
+    plan: free
+    maxmemoryPolicy: noeviction

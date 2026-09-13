@@ -16,11 +16,14 @@ appliance business.
 ```bash
 python -m venv env
 source env/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
 python manage.py migrate
 python manage.py runserver
 ```
+
+`requirements.txt` is the production set (what Docker and Render install);
+`requirements-dev.txt` adds lint/format/audit/load-test tooling on top.
 
 ## Quick start (Docker, full stack)
 
@@ -51,16 +54,34 @@ need no external services.
 |------------------|------------------------------------------------|
 | `DEBUG`          | `True` (dev, default) / `False` (production)   |
 | `SECRET_KEY`     | Required when `DEBUG=False`                    |
-| `DB_ENGINE` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT` | PostgreSQL connection |
-| `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Celery broker/backend (Redis) |
-| `REDIS_URL` / `CACHE_REDIS_URL` | Redis client + Django cache   |
+| `DB_ENGINE` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` / `DB_HOST` / `DB_PORT` | PostgreSQL connection (local dev / Compose) |
+| `DATABASE_URL` | Single-URL Postgres connection (Neon pooled string); takes precedence over `DB_*` when set |
+| `RENDER_EXTERNAL_HOSTNAME` | Auto-set by Render; trusted for hosts/CSRF without listing it in `ALLOWED_HOSTS` |
+| `REDIS_URL` | General-purpose Redis handle; `CACHE_REDIS_URL` / `CELERY_*` fall back to it when unset |
+| `CACHE_REDIS_URL` / `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Django cache + Celery broker/backend (unset = use `REDIS_URL`) |
 | `FRONTEND_URL` / `RESET_LINK_BASE` | Storefront URL + password-reset link target |
+| `WHATSAPP_BUSINESS_NUMBER` / `ORDER_INTAKE_EMAIL` | Assisted-sales hand-off contact points |
 | `CORS_ALLOWED_ORIGINS` / `CORS_ALLOW_CREDENTIALS` / `CSRF_TRUSTED_ORIGINS` | Browser origins allowed to call the API |
 | `EMAIL_HOST` / `EMAIL_PORT` / `EMAIL_USE_TLS` / `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `EMAIL_BACKEND` / `DEFAULT_FROM_EMAIL` | SMTP delivery + from-address |
 | `SMS_PROVIDER` / `AT_USERNAME` / `AT_API_KEY` / `SMS_SENDER_ID` | Africa's Talking SMS sending |
 | `NOTIFICATIONS_CALLBACK_IPS` / `NOTIFICATIONS_CALLBACK_SECRET` | SMS delivery-report callback trust |
 | `SENTRY_DSN` / `SENTRY_TRACES_SAMPLE_RATE` | Error tracking (empty = disabled) |
 | `CDN_DOMAIN`, `AWS_*` | CDN/object-storage placeholders (later)     |
+
+## Deploying (Render + Neon)
+
+1. Create a Neon project and copy the **pooled** connection string
+   (`postgresql://...?sslmode=require`).
+2. Push this repo to GitHub and create a new **Blueprint** on Render pointing
+   at `render.yaml` (or create the services manually).
+3. In the Render dashboard, set `DATABASE_URL` (Neon string) on both services,
+   plus `FRONTEND_URL` / `CORS_ALLOWED_ORIGINS` pointing at the storefront.
+   `SECRET_KEY` is generated; copy the same value to the worker service.
+4. Deploy. The build runs migrations and collects static files; health is
+   checked at `/health/`. API docs live at `/api/swagger/`.
+
+The frontend only needs the web service URL as its API base URL
+(e.g. `https://e-store-api.onrender.com`).
 
 ## API collection (Postman)
 

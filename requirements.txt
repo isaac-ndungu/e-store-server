@@ -16,8 +16,3 @@ Pillow==12.3.0
 africastalking==2.0.3
 bleach==6.4.0
 drf-spectacular==0.30.0
-ruff==0.16.5
-black==26.5.1
-isort==9.0.1
-pip-audit==2.10.1
-locust==2.46.5

@@ -13,6 +13,7 @@ tracking initializes whenever ``SENTRY_DSN`` is configured.
 import sys
 from datetime import timedelta
 from pathlib import Path
+from urllib.parse import parse_qsl, urlparse
 
 from decouple import Csv, config
 from django.core.exceptions import ImproperlyConfigured
@@ -21,6 +22,38 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 TESTING = "test" in sys.argv
 
+
+def _database_from_url(url):
+    """Convert a ``DATABASE_URL`` into a Django ``DATABASES`` entry.
+
+    Handles the ``postgres://`` / ``postgresql://`` URLs issued by managed
+    providers (e.g. Neon). Query-string options such as ``sslmode`` are passed
+    through as connection ``OPTIONS`` so ``?sslmode=require`` keeps working.
+
+    Args:
+        url: database URL string.
+
+    Returns:
+        dict: database configuration suitable for ``DATABASES["default"]``.
+    """
+    parsed = urlparse(url)
+    options = dict(parse_qsl(parsed.query))
+    settings_dict = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": parsed.path.lstrip("/"),
+        "USER": parsed.username or "",
+        "PASSWORD": parsed.password or "",
+        "HOST": parsed.hostname or "",
+        "PORT": str(parsed.port) if parsed.port else "",
+    }
+    sslmode = options.pop("sslmode", "")
+    if sslmode:
+        settings_dict.setdefault("OPTIONS", {})["sslmode"] = sslmode
+    if options:
+        settings_dict.setdefault("OPTIONS", {}).update(options)
+    return settings_dict
+
+
 SECRET_KEY = config("SECRET_KEY", default="")
 DEBUG = config("DEBUG", default=True, cast=bool)
 
@@ -28,6 +61,13 @@ if not DEBUG and not SECRET_KEY:
     raise ImproperlyConfigured("SECRET_KEY must be set when DEBUG is False")
 
 ALLOWED_HOSTS = ["*"] if DEBUG else config("ALLOWED_HOSTS", default=[], cast=Csv())
+
+# Managed hosts (e.g. Render) expose the public hostname in a dedicated env
+# var. Trust it alongside ALLOWED_HOSTS so the app serves traffic without a
+# settings change on every redeploy.
+RENDER_EXTERNAL_HOSTNAME = config("RENDER_EXTERNAL_HOSTNAME", default="")
+if RENDER_EXTERNAL_HOSTNAME and RENDER_EXTERNAL_HOSTNAME not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS = [*ALLOWED_HOSTS, RENDER_EXTERNAL_HOSTNAME]
 
 DJANGO_CORE_APPS = [
     "django.contrib.admin",
@@ -106,17 +146,24 @@ TEMPLATES = [
 WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
-# PostgreSQL is the sole database for dev/prod. Tests run in-memory SQLite for speed and
-DATABASES = {
-    "default": {
-        "ENGINE": config("DB_ENGINE", default="django.db.backends.postgresql"),
-        "NAME": config("DB_NAME"),
-        "USER": config("DB_USER"),
-        "PASSWORD": config("DB_PASSWORD", default=""),
-        "HOST": config("DB_HOST", default=""),
-        "PORT": config("DB_PORT", default=""),
+# PostgreSQL is the sole database for dev/prod. A single DATABASE_URL (as
+# issued by managed providers such as Neon) takes precedence when set; the
+# discrete DB_* variables remain for local dev and Compose. Tests run
+# in-memory SQLite for speed and
+DATABASE_URL = config("DATABASE_URL", default="")
+if DATABASE_URL:
+    DATABASES = {"default": _database_from_url(DATABASE_URL)}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": config("DB_ENGINE", default="django.db.backends.postgresql"),
+            "NAME": config("DB_NAME", default=""),
+            "USER": config("DB_USER", default=""),
+            "PASSWORD": config("DB_PASSWORD", default=""),
+            "HOST": config("DB_HOST", default=""),
+            "PORT": config("DB_PORT", default=""),
+        }
     }
-}
 if TESTING and not config("TEST_USE_POSTGRES", default=False, cast=bool):
     DATABASES = {
         "default": {
@@ -278,6 +325,14 @@ SIMPLE_JWT = {
 }
 
 
+REDIS_URL = config("REDIS_URL", default="redis://localhost:6379/0")
+# An explicitly empty CACHE_/CELERY_ value means "fall back to REDIS_URL" so a
+# deployment only needs to set one variable (and empty dashboard fields do not
+# produce a broken empty connection string).
+CACHE_REDIS_URL = config("CACHE_REDIS_URL", default="") or REDIS_URL
+CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="") or REDIS_URL
+CELERY_RESULT_BACKEND = config("CELERY_RESULT_BACKEND", default="") or REDIS_URL
+
 CACHES = {
     "default": {
         "BACKEND": (
@@ -285,18 +340,10 @@ CACHES = {
             if not TESTING
             else "django.core.cache.backends.locmem.LocMemCache"
         ),
-        "LOCATION": (
-            config("CACHE_REDIS_URL", default="redis://localhost:6379/0")
-            if not TESTING
-            else ""
-        ),
+        "LOCATION": (CACHE_REDIS_URL if not TESTING else ""),
     }
 }
 
-CELERY_BROKER_URL = config("CELERY_BROKER_URL", default="redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = config(
-    "CELERY_RESULT_BACKEND", default="redis://localhost:6379/0"
-)
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
@@ -385,6 +432,9 @@ if SENTRY_DSN:
     )
 
 if not DEBUG and not TESTING:
+    # Behind Render (or any TLS-terminating proxy) Django only sees plain HTTP,
+    # so trust the forwarded proto header to avoid redirect loops.
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
@@ -394,6 +444,10 @@ if not DEBUG and not TESTING:
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_REFERRER_POLICY = "same-origin"
     X_FRAME_OPTIONS = "DENY"
+    if RENDER_EXTERNAL_HOSTNAME:
+        render_origin = f"https://{RENDER_EXTERNAL_HOSTNAME}"
+        if render_origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS = [*CSRF_TRUSTED_ORIGINS, render_origin]
     STATIC_URL = f"{CDN_DOMAIN}/static/"
     MEDIA_URL = f"{CDN_DOMAIN}/media/"
 
