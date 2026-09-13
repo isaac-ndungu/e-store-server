@@ -2,8 +2,8 @@
 
 A dynamic ``Bundle`` groups several catalogue products (or specific variants)
 that a shopper can buy together, priced as a set. Buying a bundle decomposes
-into real per-component order lines at checkout with correct inventory and
-tax treatment per component — never a single opaque line for the whole bundle
+into real per-component order lines at checkout with correct per-component
+tax treatment — never a single opaque line for the whole bundle
 — which is why each ``BundleItem`` points at a specific component.
 
 """

@@ -515,7 +515,7 @@ class BundleAdminTests(APITestCase):
     def test_customer_cannot_manage_bundles(self):
         """A plain customer token is rejected from bundle creation."""
         _make_user()
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
             URLS["admin_bundles"],
             {"name": "B", "discount_type": "fixed", "discount_value": "10.00"},
