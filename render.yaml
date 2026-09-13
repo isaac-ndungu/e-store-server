@@ -55,4 +55,9 @@ services:
     name: e-store-redis
     plan: free
     maxmemoryPolicy: noeviction
-    ipAllowList: []
+    # Render rejects an empty list here, so allow only loopback (unroutable over
+    # the public internet). The API and worker reach Redis over the private
+    # network, which this list does not restrict.
+    ipAllowList:
+      - source: 127.0.0.1/32
+        description: no public access
