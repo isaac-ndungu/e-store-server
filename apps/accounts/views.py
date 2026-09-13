@@ -44,11 +44,9 @@ class LoginView(TokenObtainPairView):
 
     Public (``AllowAny``) by design — login precedes authentication.
     Rate-limited with the dedicated ``auth_login`` scope to blunt brute-force
-    guessing of passwords.
-
-    On a successful login any guest cart carried by the ``X-Session-Key``
-    header is merged into the user's cart, so items added before
-    authentication are not lost.
+    guessing of passwords. Only staff-role accounts are served here: with no
+    customer storefront login, a customer-role credential has no reachable
+    endpoint and is rejected outright.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -56,18 +54,14 @@ class LoginView(TokenObtainPairView):
     throttle_scope = "auth_login"
 
     def post(self, request, *args, **kwargs):
-        """Authenticate the user and adopt any preceding guest cart.
-
-        The authenticated ``user`` is read from the login serializer (the
-        JWT backend stores it there, not on ``request.user``), then the guest
-        cart keyed by this request's Django session (the same browser that
-        browsed as a guest) is merged into the user's cart.
+        """Authenticate a staff account and return the token pair.
 
         Args:
             request: the POST request with credentials.
 
         Returns:
-            Response: the token pair plus the user payload.
+            Response: the token pair, ``403`` for a valid customer-role
+                credential, or ``401`` for bad credentials.
         """
         serializer = self.get_serializer(data=request.data)
         try:
@@ -76,11 +70,14 @@ class LoginView(TokenObtainPairView):
             raise InvalidToken(exc.args[0]) from exc
 
         user = serializer.user
-        if user is not None and request.session.session_key:
-            from apps.cart.services import merge_guest_cart
-
-            merge_guest_cart(user, request.session.session_key)
-
+        if user is not None and not (
+            user.is_superuser
+            or user.has_role("manager", "support", "analyst", "courier")
+        ):
+            return Response(
+                {"detail": "This login is for staff accounts only."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         return Response(serializer.validated_data, status=status.HTTP_200_OK)
 
 

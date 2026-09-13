@@ -55,27 +55,45 @@ class RegistrationRemovedTests(APITestCase):
 
 
 class LoginTests(APITestCase):
-    """Exercises JWT login, refresh, and the me endpoint."""
+    """Exercises staff-only JWT login, refresh, and the me endpoint."""
 
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(
-            email="buyer@example.com",
-            username="buyer",
+            email="staff@example.com",
+            username="staff",
             password="StrongPass123!",
-            phone_number="+254712345678",
+            phone_number="+254700000001",
+            role="support",
         )
         self.login_payload = {
-            "email": "buyer@example.com",
+            "email": "staff@example.com",
             "password": "StrongPass123!",
         }
 
     def test_login_returns_token_pair(self):
-        """A valid email + password yields access and refresh tokens."""
+        """A valid staff email + password yields access and refresh tokens."""
         response = self.client.post(LOGIN_URL, self.login_payload, format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("access", response.data)
         self.assertIn("refresh", response.data)
+
+    def test_login_rejects_customer_role(self):
+        """A valid customer credential is refused without a token."""
+        User.objects.create_user(
+            email="buyer@example.com",
+            username="buyer",
+            password="StrongPass123!",
+            phone_number="+254712345678",
+            role="customer",
+        )
+        response = self.client.post(
+            LOGIN_URL,
+            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertNotIn("access", response.data)
 
     def test_login_rejects_wrong_password(self):
         """An incorrect password yields 401, not a token pair."""
@@ -124,9 +142,9 @@ class LoginTests(APITestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
         response = self.client.get(ME_URL)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["email"], "buyer@example.com")
-        self.assertEqual(response.data["username"], "buyer")
-        self.assertEqual(response.data["phone_number"], "+254712345678")
+        self.assertEqual(response.data["email"], "staff@example.com")
+        self.assertEqual(response.data["username"], "staff")
+        self.assertEqual(response.data["phone_number"], "+254700000001")
 
 
 class MeUpdateTests(APITestCase):
@@ -135,14 +153,15 @@ class MeUpdateTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(
-            email="buyer@example.com",
-            username="buyer",
+            email="staff@example.com",
+            username="staff",
             password="StrongPass123!",
-            phone_number="+254712345678",
+            phone_number="+254700000001",
+            role="support",
         )
         login = self.client.post(
             LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            {"email": "staff@example.com", "password": "StrongPass123!"},
             format="json",
         )
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
@@ -187,7 +206,7 @@ class MeUpdateTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.user.refresh_from_db()
-        self.assertEqual(self.user.phone_number, "+254712345678")
+        self.assertEqual(self.user.phone_number, "+254700000001")
 
     def test_patch_rejects_username_taken_by_another_user(self):
         """Setting a username another account already uses yields a 400."""
@@ -200,7 +219,7 @@ class MeUpdateTests(APITestCase):
         response = self.client.patch(ME_URL, {"username": "other_user"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.user.refresh_from_db()
-        self.assertEqual(self.user.username, "buyer")
+        self.assertEqual(self.user.username, "staff")
 
     def test_patch_cannot_change_email(self):
         """The login email is read-only and cannot be altered via /me/."""
@@ -208,9 +227,9 @@ class MeUpdateTests(APITestCase):
             ME_URL, {"email": "hacked@example.com"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["email"], "buyer@example.com")
+        self.assertEqual(response.data["email"], "staff@example.com")
         self.user.refresh_from_db()
-        self.assertEqual(self.user.email, "buyer@example.com")
+        self.assertEqual(self.user.email, "staff@example.com")
 
     def test_patch_cannot_set_privileged_fields(self):
         """Fields like is_staff are ignored because they are not writable."""
@@ -229,13 +248,14 @@ class RefreshRotationAndLogoutTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(
-            email="buyer@example.com",
-            username="buyer",
+            email="staff@example.com",
+            username="staff",
             password="StrongPass123!",
-            phone_number="+254712345678",
+            phone_number="+254700000001",
+            role="support",
         )
         self.login_payload = {
-            "email": "buyer@example.com",
+            "email": "staff@example.com",
             "password": "StrongPass123!",
         }
 
@@ -440,8 +460,8 @@ class AddressTests(APITestCase):
         self.assertEqual(listing.data["count"], 1)
 
     def test_customer_role_cannot_access_directory(self):
-        """A customer token is rejected from the staff directory."""
-        User.objects.create_user(
+        """A customer credential gets no token, and its token would be refused."""
+        customer = User.objects.create_user(
             email="buyer@example.com",
             username="buyer",
             password="StrongPass123!",
@@ -453,9 +473,8 @@ class AddressTests(APITestCase):
             {"email": "buyer@example.com", "password": "StrongPass123!"},
             format="json",
         )
-        self.client.credentials(
-            HTTP_AUTHORIZATION=f"Bearer {customer_login.data['access']}"
-        )
+        self.assertEqual(customer_login.status_code, status.HTTP_403_FORBIDDEN)
+        self.client.force_authenticate(user=customer)
         self.assertEqual(
             self.client.get(ADDRESS_LIST_URL).status_code,
             status.HTTP_403_FORBIDDEN,
@@ -636,10 +655,11 @@ class PasswordResetTests(APITestCase):
         cache.clear()
         mail.outbox = []
         self.user = User.objects.create_user(
-            email="buyer@example.com",
-            username="buyer",
+            email="staff@example.com",
+            username="staff",
             password="OldPass123!",
-            phone_number="+254712345678",
+            phone_number="+254700000001",
+            role="support",
         )
 
     def _uid_token(self):
@@ -651,7 +671,7 @@ class PasswordResetTests(APITestCase):
     def test_request_sends_reset_email(self):
         """A known email receives reset instructions with a valid link."""
         response = self.client.post(
-            PASSWORD_RESET_URL, {"email": "buyer@example.com"}, format="json"
+            PASSWORD_RESET_URL, {"email": "staff@example.com"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(len(mail.outbox), 1)
@@ -680,7 +700,7 @@ class PasswordResetTests(APITestCase):
 
         login = self.client.post(
             LOGIN_URL,
-            {"email": "buyer@example.com", "password": "NewPass123!"},
+            {"email": "staff@example.com", "password": "NewPass123!"},
             format="json",
         )
         self.assertEqual(login.status_code, status.HTTP_200_OK)
@@ -695,7 +715,7 @@ class PasswordResetTests(APITestCase):
         )
         login = self.client.post(
             LOGIN_URL,
-            {"email": "buyer@example.com", "password": "OldPass123!"},
+            {"email": "staff@example.com", "password": "OldPass123!"},
             format="json",
         )
         self.assertEqual(login.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -730,14 +750,15 @@ class ChangePasswordTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.user = User.objects.create_user(
-            email="buyer@example.com",
-            username="buyer",
+            email="staff@example.com",
+            username="staff",
             password="StrongPass123!",
-            phone_number="+254712345678",
+            phone_number="+254700000001",
+            role="support",
         )
         login = self.client.post(
             LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            {"email": "staff@example.com", "password": "StrongPass123!"},
             format="json",
         )
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
@@ -765,7 +786,7 @@ class ChangePasswordTests(APITestCase):
 
         old_login = self.client.post(
             LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            {"email": "staff@example.com", "password": "StrongPass123!"},
             format="json",
         )
         self.assertEqual(old_login.status_code, status.HTTP_401_UNAUTHORIZED)
@@ -796,7 +817,7 @@ class ChangePasswordTests(APITestCase):
         """Other refresh tokens stop working after a password change."""
         login = self.client.post(
             LOGIN_URL,
-            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            {"email": "staff@example.com", "password": "StrongPass123!"},
             format="json",
         )
         refresh = login.data["refresh"]
