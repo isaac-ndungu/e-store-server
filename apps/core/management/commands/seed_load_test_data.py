@@ -1,7 +1,7 @@
 """Demo/load-test seed data for the storefront and analytics reports.
 
 Seeds a catalog (categories, brands, products, variants, warehouse stock,
-collections) plus a realistic volume of orders, line items, payments, and
+collections) plus a realistic volume of orders, line items, and
 product view events so the public storefront endpoints and the manager-only
 analytics reports run against data shaped like production. Every seeded row
 carries a ``loadtest-``/``LT-`` prefix marker so a re-run cleans up only its
@@ -24,9 +24,7 @@ from django.utils import timezone
 from apps.accounts.models import User
 from apps.catalog.models import Brand, Category, Product, ProductVariant
 from apps.collections.models import Collection, CollectionMembership
-from apps.inventory.models import Inventory, Warehouse
 from apps.orders.models import Order, OrderItem, OrderStatusHistory
-from apps.payments.models import Payment
 from apps.social_proof.models import ProductViewEvent
 
 _SEED_CATEGORIES = [
@@ -41,8 +39,6 @@ _SEED_BRANDS = [
     ("loadtest-sony", "LoadTest Sony"),
     ("loadtest-soundbar", "LoadTest Soundwave"),
 ]
-_WAREHOUSE_NAME = "LoadTest Hub"
-
 _USER_EMAIL_SUFFIX = "@customer.loadtest.example"
 _USER_PHONE_PREFIX = "+25470"
 _ORDER_PHONE_PREFIX = "+25480"
@@ -59,7 +55,6 @@ _STATUS_WEIGHTS = [
     ("delivery_failed", 3),
     ("returned", 3),
 ]
-_UNPAID_STATUSES = {"pending", "cancelled", "refunded"}
 _KES_TAX = Decimal("0.16")
 
 
@@ -100,17 +95,14 @@ def _cleanup():
     ProductViewEvent.objects.filter(
         session_key__startswith=_VIEW_SESSION_PREFIX
     ).delete()
-    Payment.objects.filter(transaction_id__startswith="LT-PAY-").delete()
     OrderItem.objects.filter(variant_sku__startswith="LT-").delete()
     Order.objects.filter(phone__startswith=_ORDER_PHONE_PREFIX).delete()
-    Inventory.objects.filter(warehouse__name__exact=_WAREHOUSE_NAME).delete()
     ProductVariant.objects.filter(sku__startswith="LT-").delete()
     Product.objects.filter(slug__startswith="loadtest-").delete()
     CollectionMembership.objects.filter(
         collection__slug__startswith="loadtest-col-"
     ).delete()
     Collection.objects.filter(slug__startswith="loadtest-col-").delete()
-    Warehouse.objects.filter(name__exact=_WAREHOUSE_NAME).delete()
     Brand.objects.filter(slug__startswith="loadtest-").delete()
     Category.objects.filter(slug__startswith="loadtest-").delete()
     User.objects.filter(email__endswith=_USER_EMAIL_SUFFIX).delete()
@@ -120,7 +112,7 @@ class Command(BaseCommand):
     """Populate the database with realistic load-testing data."""
 
     help = (
-        "Seed load-test catalog, order, payment, and traffic data. "
+        "Seed load-test catalog, order, and traffic data. "
         "Re-running cleans and rebuilds only load-test-marked rows."
     )
 
@@ -152,13 +144,11 @@ class Command(BaseCommand):
         user_count = options["users"]
         view_count = options["views"]
 
-        warehouses = self._seed_warehouses()
         categories, brands = self._seed_catalogue_shape()
         products = self._seed_products(categories, brands, product_count)
-        self._seed_stock(products, warehouses)
         self._seed_collections(products)
         users = self._seed_users(user_count)
-        self._seed_orders(users, products, warehouses, order_count)
+        self._seed_orders(users, products, order_count)
         self._seed_view_events(products, view_count)
 
         self.stdout.write(
@@ -168,23 +158,6 @@ class Command(BaseCommand):
                 f"{user_count} users, {view_count} view events."
             )
         )
-
-    def _seed_warehouses(self):
-        """Create the two load-test warehouses.
-
-        Returns:
-            list: the created ``Warehouse`` instances.
-        """
-        return [
-            Warehouse.objects.create(
-                name=_WAREHOUSE_NAME,
-                address="LoadTest Industrial Area, Nairobi",
-            ),
-            Warehouse.objects.create(
-                name=f"{_WAREHOUSE_NAME} Depot",
-                address="LoadTest Depot, Mombasa Road",
-            ),
-        ]
 
     def _seed_catalogue_shape(self):
         """Create the load-test categories and brands.
@@ -250,27 +223,6 @@ class Command(BaseCommand):
         ProductVariant.objects.bulk_create(variants, batch_size=500)
         return products
 
-    def _seed_stock(self, products, warehouses):
-        """Create per-warehouse stock rows for every seeded variant.
-
-        Args:
-            products (list): seeded products whose variants get stock.
-            warehouses (list): the warehouses to stock.
-        """
-        variants = list(ProductVariant.objects.filter(sku__startswith="LT-").only("pk"))
-        inventory = []
-        for variant in variants:
-            for warehouse in warehouses:
-                inventory.append(
-                    Inventory(
-                        variant=variant,
-                        warehouse=warehouse,
-                        quantity=random.randint(20, 120),
-                        low_stock_threshold=5,
-                    )
-                )
-        Inventory.objects.bulk_create(inventory, batch_size=500)
-
     def _seed_collections(self, products):
         """Create manual collections with a handful of memberships.
 
@@ -325,13 +277,12 @@ class Command(BaseCommand):
             User.objects.filter(email__endswith=_USER_EMAIL_SUFFIX).order_by("pk")
         )
 
-    def _seed_orders(self, users, products, warehouses, order_count):
-        """Bulk-create orders, line items, payments, and status history.
+    def _seed_orders(self, users, products, order_count):
+        """Bulk-create orders, line items, and status history.
 
         Args:
             users (list): seeded customers to attach orders to.
             products (list): seeded products to draw line items from.
-            warehouses (list): warehouses fulfilment is assigned to.
             order_count (int): how many orders to create.
         """
         now = timezone.now()
@@ -342,7 +293,6 @@ class Command(BaseCommand):
         orders = []
         item_plans = []
         order_history = []
-        payments = []
 
         for i in range(order_count):
             status = _weighted_status()
@@ -368,7 +318,6 @@ class Command(BaseCommand):
                             total_price=line_total,
                             tax_rate=Decimal("16.00"),
                             tax=(line_total * _KES_TAX).quantize(Decimal("0.01")),
-                            fulfillment_warehouse=random.choice(warehouses),
                         ),
                     )
                 )
@@ -382,7 +331,7 @@ class Command(BaseCommand):
                     status=status,
                     payment_method="cod" if i % 4 == 0 else "mpesa",
                     subtotal=subtotal,
-                    shipping_total=shipping,
+                    delivery_fee=shipping,
                     tax_total=tax_total,
                     discount_total=Decimal("0.00"),
                     grand_total=(subtotal + shipping + tax_total).quantize(
@@ -419,19 +368,8 @@ class Command(BaseCommand):
                     note="load-test seed",
                 )
             )
-            if order.status not in _UNPAID_STATUSES:
-                payments.append(
-                    Payment(
-                        order=order,
-                        provider="mpesa",
-                        transaction_id=f"LT-PAY-{order.pk:08d}",
-                        amount=order.grand_total,
-                        status="completed",
-                    )
-                )
         Order.objects.bulk_update(created_orders, ["placed_at"], batch_size=500)
         OrderStatusHistory.objects.bulk_create(order_history, batch_size=500)
-        Payment.objects.bulk_create(payments, batch_size=500)
 
     def _seed_view_events(self, products, view_count):
         """Create product view events in bulk.

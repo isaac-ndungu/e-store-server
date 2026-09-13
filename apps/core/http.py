@@ -1,7 +1,7 @@
 """Shared HTTP helpers for request-time trust decisions.
 
-The callback endpoints (Daraja, SMS delivery reports) derive the caller's
-source IP to check it against a provider allowlist. That derivation must agree
+The SMS delivery-report callback derives the caller's source IP to check it
+against a provider allowlist. That derivation must agree
 with the identity the throttles use, or an attacker could rotate fake
 ``X-Forwarded-For`` values past the rate limiter while the IP check trusts a
 different value. The single implementation below mirrors DRF's ``get_ident``

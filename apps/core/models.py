@@ -12,8 +12,8 @@ from django.db import models
 def default_site_settings():
     """Return the recommended default ``settings`` JSON for a fresh install.
 
-    Seeds every feature toggle and business constant downstream (OTP expiry,
-    stock-reservation grace, loyalty rates, shipping VAT) with a sensible
+    Seeds every feature toggle and business constant downstream (loyalty
+    rates, shipping VAT) with a sensible
     starting value out of the box. Because staff can edit ``settings`` at
     runtime, readers must still use ``.get(key, default)`` rather than direct
     indexing.
@@ -28,14 +28,11 @@ def default_site_settings():
         "enable_loyalty": True,
         "enable_social_proof": True,
         "enable_reviews": True,
-        "payment_methods": ["mpesa", "cod", "card", "invoice"],
+        "payment_methods": ["mpesa", "cod", "bank_transfer"],
         "default_payment_method": "mpesa",
         "smart_collection_refresh_minutes": 15,
-        "otp_expiry_minutes": 10,
-        "stock_reservation_grace_minutes": 15,
         "loyalty_points_earned_per_kes_spent": 1,
         "loyalty_points_per_kes_redeemed": 10,
-        "volumetric_weight_divisor": 5000,
         "shipping_is_vatable": True,
         "whatsapp_number": "",
         "order_intake_email": "",

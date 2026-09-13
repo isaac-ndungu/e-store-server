@@ -17,9 +17,7 @@ from rest_framework.test import APITestCase
 from apps.catalog.models import Product, ProductVariant
 from apps.core.admin import SiteConfigAdmin
 from apps.core.models import SiteConfig
-from apps.inventory.models import Inventory
 from apps.orders.models import Order, OrderItem
-from apps.payments.models import Payment
 from apps.social_proof.models import ProductViewEvent
 
 SITE_CONFIG_URL = reverse("api:core:site-config")
@@ -94,9 +92,7 @@ class SiteConfigSingletonTests(APITestCase):
         settings = config.settings
         self.assertEqual(settings["currency"], "KES")
         self.assertEqual(settings["default_payment_method"], "mpesa")
-        self.assertEqual(settings["otp_expiry_minutes"], 10)
-        self.assertEqual(settings["stock_reservation_grace_minutes"], 15)
-        self.assertEqual(settings["volumetric_weight_divisor"], 5000)
+        self.assertEqual(settings["payment_methods"], ["mpesa", "cod", "bank_transfer"])
         self.assertIs(settings["shipping_is_vatable"], True)
 
     def test_save_forces_pk_one(self):
@@ -155,17 +151,7 @@ class SeedLoadTestDataTests(APITestCase):
             True,
         )
         self.assertEqual(
-            Payment.objects.filter(transaction_id__startswith="LT-PAY-").count() > 0,
-            True,
-        )
-        self.assertEqual(
             ProductViewEvent.objects.filter(session_key__startswith="lt-sess-").count(),
-            40,
-        )
-        self.assertEqual(
-            Inventory.objects.filter(
-                warehouse__name__startswith="LoadTest Hub"
-            ).count(),
             40,
         )
 
@@ -194,9 +180,6 @@ class SeedLoadTestDataTests(APITestCase):
         )
         self.assertEqual(Order.objects.filter(phone__startswith="+25480").count(), 0)
         self.assertEqual(OrderItem.objects.count(), 0)
-        self.assertEqual(
-            Payment.objects.filter(transaction_id__startswith="LT-PAY-").count(), 0
-        )
         self.assertEqual(
             ProductViewEvent.objects.filter(session_key__startswith="lt-sess-").count(),
             0,
