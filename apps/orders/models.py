@@ -22,14 +22,18 @@ from django.db.models.constraints import CheckConstraint
 class Order(models.Model):
     """A purchase with its shipping, payment, and fulfilment details.
 
-    ``phone`` is the order-level contact number — always present for a guest
-    or a registered account — and is the number used for COD OTP verification
-    and M-Pesa STK Push. ``user`` is nullable because legacy and guest orders
-    have no account; ``phone`` (not ``user``) is the stable identity used for
-    order contact, verification, and refunds.
-
+    ``phone`` is the order-level contact number — the number staff confirm
+    payment and delivery against. ``user`` is null for assisted sales (there
+    are no customer accounts); ``staff_created_by`` records which staff
+    member created the order.
     ``status`` tracks the order through the fulfilment pipeline; the service
     layer records every change in ``OrderStatusHistory`` alongside it.
+    ``delivery_fee`` is the amount staff quoted the customer for delivery in
+    the sales conversation, typed in at intake — no fee table stands behind
+    it. ``delivery_area`` records where the order is going. ``refund_note``
+    and ``refund_amount`` record money returned to the customer when an order
+    is cancelled or returned; refunds are arranged manually by staff, so
+    these fields are the record rather than a payout reference.
     """
 
     STATUS_CHOICES = (
@@ -44,10 +48,9 @@ class Order(models.Model):
         ("returned", "Returned"),
     )
     PAYMENT_METHOD_CHOICES = (
-        ("mpesa", "M-Pesa"),
-        ("cod", "Cash/Card on Delivery"),
-        ("card", "Card / Online Payment"),
-        ("invoice", "Invoice / Net Terms (B2B)"),
+        ("mpesa", "M-Pesa (confirmed manually by staff)"),
+        ("cod", "Cash on Delivery"),
+        ("bank_transfer", "Bank Transfer"),
     )
     ORDER_SOURCE_CHOICES = (
         ("whatsapp", "WhatsApp"),
@@ -67,7 +70,7 @@ class Order(models.Model):
     email = models.EmailField(blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     payment_method = models.CharField(
-        max_length=10, choices=PAYMENT_METHOD_CHOICES, default="mpesa"
+        max_length=20, choices=PAYMENT_METHOD_CHOICES, default="mpesa"
     )
     order_source = models.CharField(
         max_length=20, choices=ORDER_SOURCE_CHOICES, default="whatsapp"
@@ -82,7 +85,7 @@ class Order(models.Model):
     payment_reference = models.CharField(max_length=100, blank=True)
     currency = models.CharField(max_length=3, default="KES")
     subtotal = models.DecimalField(max_digits=12, decimal_places=2)
-    shipping_total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    delivery_fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     shipping_tax_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0)
     shipping_tax_amount = models.DecimalField(
         max_digits=12, decimal_places=2, default=0
@@ -104,13 +107,15 @@ class Order(models.Model):
         null=True,
         on_delete=models.SET_NULL,
     )
-    delivery_zone = models.ForeignKey(
-        "shipping.DeliveryZone",
+    delivery_area = models.ForeignKey(
+        "shipping.DeliveryArea",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="orders",
     )
+    refund_note = models.TextField(blank=True)
+    refund_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     notes = models.TextField(blank=True)
     placed_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -131,9 +136,10 @@ class Order(models.Model):
         constraints = [
             CheckConstraint(
                 condition=Q(subtotal__gte=0)
-                & Q(shipping_total__gte=0)
+                & Q(delivery_fee__gte=0)
                 & Q(tax_total__gte=0)
-                & Q(grand_total__gte=0),
+                & Q(grand_total__gte=0)
+                & Q(refund_amount__gte=0),
                 name="order_money_fields_nonnegative",
             ),
         ]
@@ -200,13 +206,6 @@ class OrderItem(models.Model):
     applied_discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     tax_rate = models.DecimalField(max_digits=5, decimal_places=2)
     tax = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    fulfillment_warehouse = models.ForeignKey(
-        "inventory.Warehouse",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="fulfilled_items",
-    )
 
     class Meta:
         ordering = ["pk"]
@@ -216,7 +215,6 @@ class OrderItem(models.Model):
                 fields=["order", "bundle_group_id"], name="order_item_bundle_idx"
             ),
             models.Index(fields=["variant_sku"], name="order_item_sku_idx"),
-            models.Index(fields=["fulfillment_warehouse"], name="order_item_fwh_idx"),
         ]
         constraints = [
             CheckConstraint(
@@ -264,53 +262,6 @@ class OrderStatusHistory(models.Model):
     def __str__(self):
         """Return a compact label with the transition."""
         return f"{self.from_status or '(created)'} -> {self.to_status}"
-
-
-class OrderVerification(models.Model):
-    """SMS OTP verification for a COD order.
-
-    ``otp_code`` is a short-lived, single-use six-digit code sent to
-    ``phone_number`` (the order's contact number) to verify that the person
-    confirmed the COD order. ``attempts`` bounds brute-forcing; after the
-    configured maximum the record moves to ``failed`` and the code can no
-    longer verify. An order has at most one verification record.
-
-    ``skip_reason`` records why verification was not required (e.g. an
-    M-Pesa order where the STK Push already proves the number, or a
-    staff/admin override).
-    """
-
-    STATUS_CHOICES = (
-        ("pending", "Pending"),
-        ("verified", "Verified"),
-        ("expired", "Expired"),
-        ("failed", "Too many attempts"),
-    )
-
-    MAX_ATTEMPTS = 5
-    MAX_RESENDS = 5
-    RESEND_COOLDOWN_SECONDS = 60
-
-    order = models.OneToOneField(
-        Order, related_name="verification", on_delete=models.CASCADE
-    )
-    otp_code = models.CharField(max_length=6)
-    phone_number = models.CharField(max_length=15)
-    sent_at = models.DateTimeField(auto_now_add=True)
-    verified_at = models.DateTimeField(null=True, blank=True)
-    attempts = models.PositiveSmallIntegerField(default=0)
-    resend_count = models.PositiveSmallIntegerField(default=0)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    skip_reason = models.CharField(max_length=50, blank=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["status", "sent_at"], name="ov_status_sent_idx"),
-        ]
-
-    def __str__(self):
-        """Return a compact label with the verification status."""
-        return f"Verification for order {self.order_id} ({self.status})"
 
 
 def new_bundle_group_id():

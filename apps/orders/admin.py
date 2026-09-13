@@ -4,7 +4,6 @@ from apps.orders.models import (
     Order,
     OrderItem,
     OrderStatusHistory,
-    OrderVerification,
 )
 
 
@@ -63,11 +62,3 @@ class OrderStatusHistoryAdmin(admin.ModelAdmin):
 
     list_display = ("order", "from_status", "to_status", "changed_by", "changed_at")
     readonly_fields = ("order", "from_status", "to_status", "changed_by", "changed_at")
-
-
-@admin.register(OrderVerification)
-class OrderVerificationAdmin(admin.ModelAdmin):
-    """Admin for COD order verification records."""
-
-    list_display = ("order", "phone_number", "status", "attempts", "verified_at")
-    readonly_fields = ("otp_code",)

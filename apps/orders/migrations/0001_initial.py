@@ -13,7 +13,6 @@ class Migration(migrations.Migration):
         ("accounts", "0002_address_addr_user_default_idx_and_more"),
         ("bundles", "0001_initial"),
         ("catalog", "0004_productimage_image_sources_alter_brand_logo_and_more"),
-        ("inventory", "0002_stockmovementlog_serialunit_reservation_and_more"),
         ("promotions", "0002_alter_coupon_value_alter_discount_value"),
         ("shipping", "0003_alter_deliveryzone_unique_together_and_more"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
@@ -171,16 +170,6 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
-                    "fulfillment_warehouse",
-                    models.ForeignKey(
-                        blank=True,
-                        null=True,
-                        on_delete=django.db.models.deletion.SET_NULL,
-                        related_name="fulfilled_items",
-                        to="inventory.warehouse",
-                    ),
-                ),
-                (
                     "order",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
@@ -329,12 +318,6 @@ class Migration(migrations.Migration):
         migrations.AddIndex(
             model_name="orderitem",
             index=models.Index(fields=["variant_sku"], name="order_item_sku_idx"),
-        ),
-        migrations.AddIndex(
-            model_name="orderitem",
-            index=models.Index(
-                fields=["fulfillment_warehouse"], name="order_item_fwh_idx"
-            ),
         ),
         migrations.AddConstraint(
             model_name="orderitem",

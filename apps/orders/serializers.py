@@ -1,14 +1,17 @@
 """API serializers for the orders app.
 
-Writable serializers whitelist exactly the client-supplied fields accepted
-when creating an order. Read serializers shape the detailed order response for
-the storefront: server-computed money as decimal strings, per-line item detail,
-the status audit trail, and (for COD orders) the caller's verification state.
+Writable serializers whitelist exactly the staff-supplied fields accepted by
+the order-intake endpoint. Read serializers shape the order response:
+server-computed money as decimal strings, per-line item detail, and the
+status audit trail.
 
 No client-supplied price, total, or discount amount is ever read — the order
-money fields are computed by the service layer from live catalogue prices and
-the order snapshot.
+money fields are computed by the service layer from live catalogue prices.
+The one exception is ``delivery_fee``: no system source exists for it, so
+staff type in the quoted amount and it is validated non-negative here.
 """
+
+from decimal import Decimal
 
 from rest_framework import serializers
 
@@ -16,25 +19,7 @@ from apps.orders.models import (
     Order,
     OrderItem,
     OrderStatusHistory,
-    OrderVerification,
 )
-
-
-class OrderCreateSerializer(serializers.Serializer):
-    """Input accepted when placing an order.
-
-    ``phone`` is the order-level contact number (may differ from the account's
-    own). ``delivery_zone_id`` selects the zone that prices shipping and
-    routes warehouse selection. ``shipping_address_id`` optionally references
-    a stored address; the address is validated for ownership at the view layer.
-    """
-
-    phone = serializers.CharField(max_length=15)
-    shipping_address_id = serializers.IntegerField(required=False, allow_null=True)
-    delivery_zone_id = serializers.IntegerField(required=False, allow_null=True)
-    payment_method = serializers.ChoiceField(choices=Order.PAYMENT_METHOD_CHOICES)
-    email = serializers.EmailField(required=False, allow_blank=True, allow_null=True)
-    notes = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 class StaffOrderIntakeItemSerializer(serializers.Serializer):
@@ -48,8 +33,10 @@ class StaffOrderIntakeSerializer(serializers.Serializer):
     """Input for the staff order-intake endpoint.
 
     Prices are never accepted here — every line is repriced server-side from
-    the current catalogue/promotion state. ``inquiry_id`` optionally links the
-    created order back to the originating hand-off capture.
+    the current catalogue/promotion state. The exception is ``delivery_fee``:
+    no system source exists for it, so staff type in the amount they quoted
+    the customer. ``inquiry_id`` optionally links the created order back to
+    the originating hand-off capture.
     """
 
     phone = serializers.CharField(max_length=15)
@@ -60,10 +47,29 @@ class StaffOrderIntakeSerializer(serializers.Serializer):
     payment_reference = serializers.CharField(
         max_length=100, required=False, allow_blank=True, default=""
     )
-    delivery_zone_id = serializers.IntegerField(required=False, allow_null=True)
+    delivery_area_id = serializers.IntegerField(required=False, allow_null=True)
+    delivery_fee = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, default=Decimal("0.00")
+    )
     shipping_address_id = serializers.IntegerField(required=False, allow_null=True)
     inquiry_id = serializers.IntegerField(required=False, allow_null=True)
     items = StaffOrderIntakeItemSerializer(many=True, min_length=1, max_length=100)
+
+    def validate_delivery_fee(self, value):
+        """Reject a negative staff-quoted delivery fee.
+
+        Args:
+            value (Decimal): the quoted fee.
+
+        Returns:
+            Decimal: the fee unchanged.
+
+        Raises:
+            serializers.ValidationError: if the fee is negative.
+        """
+        if value < 0:
+            raise serializers.ValidationError("delivery_fee must not be negative.")
+        return value
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -85,7 +91,6 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "applied_discount",
             "tax_rate",
             "tax",
-            "fulfillment_warehouse",
         ]
         read_only_fields = fields
 
@@ -105,26 +110,6 @@ class OrderStatusHistorySerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class OrderVerificationSerializer(serializers.ModelSerializer):
-    """Read-only detail of a COD order's verification state.
-
-    The OTP code itself is never exposed over the API — only status, attempt
-    count, and timestamps. Callers see only whether verification is pending,
-    verified, expired, or failed.
-    """
-
-    class Meta:
-        model = OrderVerification
-        fields = [
-            "phone_number",
-            "status",
-            "attempts",
-            "sent_at",
-            "verified_at",
-        ]
-        read_only_fields = fields
-
-
 class OrderListSerializer(serializers.ModelSerializer):
     """List-view shape exposing a compact order summary."""
 
@@ -139,7 +124,7 @@ class OrderListSerializer(serializers.ModelSerializer):
             "order_source",
             "payment_reference",
             "subtotal",
-            "shipping_total",
+            "delivery_fee",
             "tax_total",
             "discount_total",
             "grand_total",
@@ -161,11 +146,10 @@ class OrderListSerializer(serializers.ModelSerializer):
 
 
 class OrderDetailSerializer(serializers.ModelSerializer):
-    """Detail-view shape with items, status trail, and verification."""
+    """Detail-view shape with items and the status trail."""
 
     items = OrderItemSerializer(many=True, read_only=True)
     status_history = OrderStatusHistorySerializer(many=True, read_only=True)
-    verification = OrderVerificationSerializer(read_only=True)
 
     class Meta:
         model = Order
@@ -179,7 +163,7 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "payment_reference",
             "currency",
             "subtotal",
-            "shipping_total",
+            "delivery_fee",
             "shipping_tax_rate",
             "shipping_tax_amount",
             "tax_total",
@@ -188,29 +172,15 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "phone",
             "email",
             "shipping_address",
-            "delivery_zone",
+            "delivery_area",
+            "refund_note",
+            "refund_amount",
             "placed_at",
             "updated_at",
             "items",
             "status_history",
-            "verification",
         ]
         read_only_fields = fields
-
-
-class OTPVerifySerializer(serializers.Serializer):
-    """Input for verifying a COD order code."""
-
-    otp_code = serializers.CharField(max_length=6, min_length=6)
-
-
-class CancelOrderSerializer(serializers.Serializer):
-    """Input for cancelling an order.
-
-    ``note`` is optional and is recorded in the status-history audit trail.
-    """
-
-    note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 class OrderStatusUpdateSerializer(serializers.Serializer):

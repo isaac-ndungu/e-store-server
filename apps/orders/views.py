@@ -1,251 +1,85 @@
 """API views for the orders app.
 
-Order endpoints split by caller type:
+Two staff-only endpoints (manager/support):
 
-- ``OrderListCreateView`` — authenticated users list their own orders and
-  place new ones from their cart. A guest (no auth) can place an order too;
-  order creation is authenticated-or-guest and the returned order id lets the
-  caller poll status and verify a COD code.
-- ``OrderDetailView`` — an authenticated user retrieves/cancels one of their
-  own orders; a guest does so only when the id matches the contact phone
-  carried in the request (normalized E.164).
-- The OTP endpoints verify or re-send a COD code using the same ownership
-  resolution.
+- ``StaffOrderIntakeView`` — create a confirmed order from an assisted
+  WhatsApp/email sale, with idempotency protection.
+- ``OrderStatusUpdateView`` — advance an order's fulfilment status.
 
 All order mutations go through the order service; the status field is never
-written directly in a view. Ownership/IDOR is enforced through a shared
-resolver that returns 404 (not 403) for a missing or another user's order.
+written directly in a view.
 """
 
-import uuid
-
-from django.http import Http404
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions, status
-from rest_framework.pagination import PageNumberPagination
+from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsManagerOrSupport
-from apps.cart.services import get_or_create_cart
 from apps.core.api import service_error_to_400 as _service_error_to_400
-from apps.orders.selectors import (
-    get_order_by_token,
-    get_order_for_staff,
-    get_order_for_user,
-    list_orders_for_user,
-)
+from apps.orders.selectors import find_orders_by_payment_reference, get_order_for_staff
 from apps.orders.serializers import (
-    CancelOrderSerializer,
-    OrderCreateSerializer,
     OrderDetailSerializer,
-    OrderListSerializer,
-    OrderStatusHistorySerializer,
     OrderStatusUpdateSerializer,
-    OrderVerificationSerializer,
-    OTPVerifySerializer,
     StaffOrderIntakeSerializer,
 )
-from apps.orders.services import (
-    apply_staff_status,
-    cancel_pending_order,
-    create_order_from_cart,
-    create_staff_order,
-    requires_otp_for_payment,
-    resend_order_otp,
-    verify_order_otp,
-)
+from apps.orders.services import apply_staff_status, create_staff_order
 
 
-def _ensure_guest_session(request):
-    """Return the request's Django session key, creating a session if needed.
+class StaffOrderIntakeView(APIView):
+    """Create a confirmed order from a staff-assisted sale (staff only).
 
-    Args:
-        request: the incoming HTTP request.
-
-    Returns:
-        str: the session key.
-    """
-    if request.session.session_key is None:
-        request.session.create()
-    return request.session.session_key
-
-
-def _resolve_cart(request):
-    """Return the caller's active cart, creating one if needed.
-
-    Args:
-        request: the incoming HTTP request.
-
-    Returns:
-        Cart: the caller's cart.
-    """
-    if request.user.is_authenticated:
-        return get_or_create_cart(user=request.user)
-    session_key = _ensure_guest_session(request)
-    return get_or_create_cart(session_key=session_key)
-
-
-def _idempotency_scope(request):
-    """Return the caller's idempotency storage scope.
-
-    Two different anonymous callers must never share an idempotency
-    namespace, or one guest's cached response — including the order detail
-    with its ``lookup_token`` — could be replayed to a different session
-    reusing the same key. The scope is the authenticated user's id, or the
-    server-issued guest session key, so a stored response is only ever
-    replayable to the caller who created it.
-
-    Args:
-        request: the incoming HTTP request.
-
-    Returns:
-        str: the caller scope (``u<id>`` for a user, ``s<session>`` for a
-            guest).
-    """
-    if request.user.is_authenticated:
-        return f"u{request.user.pk}"
-    return f"s{_ensure_guest_session(request)}"
-
-
-def _resolve_order(request, order_ref):
-    """Return the caller's order or raise HTTP 404.
-
-    An authenticated caller addresses their own order by id. A guest addresses
-    an order by its unguessable ``lookup_token`` (returned at creation) — no
-    id guessing and no phone number in the request. Both a missing reference
-    and another caller's reference raise 404, so nothing reveals whether an
-    order exists.
-
-    Args:
-        request: the incoming HTTP request.
-        order_ref (str): an order id (authenticated) or lookup token (guest).
-
-    Returns:
-        Order: the resolved order.
-
-    Raises:
-        HTTPError: ``404`` when the order is absent or not the caller's.
-    """
-    if request.user.is_authenticated:
-        try:
-            order_id = int(order_ref)
-        except TypeError, ValueError:
-            order = None
-        else:
-            order = get_order_for_user(request.user, order_id)
-    else:
-        try:
-            uuid.UUID(order_ref)
-        except AttributeError, TypeError, ValueError:
-            order = None
-        else:
-            order = get_order_by_token(order_ref)
-    if order is None:
-        raise Http404
-    return order
-
-
-def _paginated_orders(request, orders):
-    """Return a paginated orders response payload.
-
-    Args:
-        request: the incoming GET request.
-        orders (QuerySet): the orders queryset.
-
-    Returns:
-        dict: the paginated response body.
-    """
-    paginator = PageNumberPagination()
-    paginator.page_size = 20
-    page = paginator.paginate_queryset(orders, request)
-    serializer = OrderListSerializer(page, many=True)
-    return {
-        "count": paginator.page.paginator.count,
-        "next": paginator.get_next_link(),
-        "previous": paginator.get_previous_link(),
-        "results": serializer.data,
-    }
-
-
-class OrderListCreateView(APIView):
-    """List the caller's orders or place a new order from their cart.
-
-    GET returns the authenticated user's own orders, paginated. Anonymous
-    callers get an empty list — guests have no user row to list orders by.
-    POST places an order from the caller's cart (authenticated or guest) and
-    requires an ``Idempotency-Key`` header so a repeated tap cannot create
-    two orders.
+    Staff enter what the customer agreed over WhatsApp/email, including the
+    quoted delivery fee; the order is created already ``confirmed`` with no
+    stock movement. Requires an ``Idempotency-Key`` header so a retried
+    submit cannot create two orders. The key is bound to the request body:
+    reusing it with a different payload is answered with 409 instead of
+    replaying the first order.
     """
 
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_write"
+    throttle_scope = "order_intake"
 
     @extend_schema(
-        operation_id="order_list",
-        responses={200: dict},
-    )
-    def get(self, request):
-        """Return the authenticated caller's paginated orders.
-
-        Args:
-            request: the GET request.
-
-        Returns:
-            Response: the caller's orders, paginated.
-        """
-        if not request.user.is_authenticated:
-            return Response({"count": 0, "next": None, "previous": None, "results": []})
-        orders = list_orders_for_user(request.user)
-        payload = _paginated_orders(request, orders)
-        return Response(payload)
-
-    @extend_schema(
-        operation_id="order_create",
-        request=OrderCreateSerializer,
+        operation_id="order_staff_intake",
+        request=StaffOrderIntakeSerializer,
         responses={201: OrderDetailSerializer},
+        tags=["order_intake"],
     )
     def post(self, request):
-        """Place an order from the caller's cart with idempotency protection.
-
-        Requires the ``Idempotency-Key`` header. The order is created in
-        ``pending`` status with stock reserved; for COD orders an SMS OTP is
-        sent to ``order.phone`` to verify the number before confirmation. The
-        response includes a ``requires_otp`` flag so the storefront knows
-        whether to prompt for a code.
+        """Create the confirmed order.
 
         Args:
-            request: the POST request carrying the order payload.
+            request: the POST request carrying contact, source, payment, and
+                staff-entered lines.
 
         Returns:
-            Response: ``201 Created`` with the created order detail, ``400``
-                for validation/stock errors, or ``409`` when the same
-                idempotency key is already being processed.
+            Response: ``201 Created`` with the order detail (plus a
+                ``warnings`` list when the payment reference already appears
+                on another order), ``400`` for validation errors,
+                ``409`` when the key is already being processed or was used
+                with a different payload.
         """
-        from django.core.cache import cache
-
         from apps.core.idempotency import (
-            IDEMPOTENCY_TTL_SECONDS,
             acquire_processing_lock,
+            conflicting_key_response,
+            payload_conflict,
             read_cached_result,
             release_processing_lock,
+            request_fingerprint,
             require_idempotency_key,
             store_result,
         )
-        from apps.orders.models import Order
-        from apps.orders.payments import (
-            PaymentUnavailable,
-            initiate_payment,
-            is_payment_method_available,
-        )
-        from apps.payments.services import StkPushRateLimited
 
         key = require_idempotency_key(request)
-        scope = _idempotency_scope(request)
+        scope = f"u{request.user.pk}"
+        fingerprint = request_fingerprint(request)
         cached = read_cached_result(scope, key)
         if cached is not None:
+            if payload_conflict(cached, fingerprint):
+                return conflicting_key_response()
             return Response(cached["data"], status=cached["status"])
         if not acquire_processing_lock(scope, key):
             return Response(
@@ -255,221 +89,44 @@ class OrderListCreateView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
         try:
-            order_marker_key = f"orders:ref:{scope}:{key}"
-            order_ref = cache.get(order_marker_key)
-            order = None
-            if order_ref is not None:
-                order = Order.objects.filter(pk=order_ref).first()
-                if order is not None and (
-                    request.user.is_authenticated and order.user_id != request.user.pk
-                ):
-                    order = None
-
-            if order is None:
-                cart = _resolve_cart(request)
-                input_serializer = OrderCreateSerializer(data=request.data)
-                input_serializer.is_valid(raise_exception=True)
-                data = input_serializer.validated_data
-
-                order = _service_error_to_400(create_order_from_cart)(
-                    cart=cart,
-                    user=request.user if request.user.is_authenticated else None,
-                    phone=data["phone"],
-                    shipping_address=(
-                        _load_owned_address(request, data["shipping_address_id"])
-                        if data.get("shipping_address_id")
-                        else None
-                    ),
-                    delivery_zone_id=data.get("delivery_zone_id"),
-                    payment_method=data["payment_method"],
-                    email=data.get("email", ""),
-                    notes=data.get("notes", ""),
-                )
-                cache.set(order_marker_key, order.pk, IDEMPOTENCY_TTL_SECONDS)
-            elif order.status != "pending":
-                cache.delete(order_marker_key)
-                return Response(
-                    {
-                        "detail": (
-                            "The order from a previous attempt is no longer "
-                            "active; please place a new order."
-                        )
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            otp_required = requires_otp_for_payment(order)
-            if otp_required:
-                resend_order_otp(order)
-            elif is_payment_method_available(order.payment_method):
-                try:
-                    initiate_payment(order)
-                except StkPushRateLimited as exc:
-                    return Response(
-                        {"detail": str(exc)},
-                        status=status.HTTP_429_TOO_MANY_REQUESTS,
-                        headers={"Retry-After": str(exc.retry_after)},
-                    )
-                except PaymentUnavailable:
-                    return Response(
-                        {
-                            "detail": (
-                                "The payment provider is temporarily unavailable; "
-                                "your order is kept and you can retry shortly."
-                            )
-                        },
-                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    )
-
-            serializer = OrderDetailSerializer(order)
-            response_data = {
-                **serializer.data,
-                "requires_otp": otp_required,
-            }
-            store_result(scope, key, status.HTTP_201_CREATED, response_data)
-            return Response(response_data, status=status.HTTP_201_CREATED)
-        finally:
-            release_processing_lock(scope, key)
-
-
-def _load_owned_address(request, address_id):
-    """Return a stored address that belongs to the caller.
-
-    An authenticated caller's address must be their own; an address id the
-    caller does not own raises a 404 (indistinguishable from a missing
-    address). Guests have no stored addresses and return None.
-
-    Args:
-        request: the incoming HTTP request.
-        address_id (int): the address id.
-
-    Returns:
-        Address | None: the owned address, or None for a guest.
-    """
-    if not request.user.is_authenticated:
-        return None
-    from django.shortcuts import get_object_or_404
-
-    from apps.accounts.models import Address
-
-    return get_object_or_404(Address, pk=address_id, user=request.user)
-
-
-class OrderDetailView(APIView):
-    """Retrieve or cancel a single order owned by the caller."""
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_read"
-
-    @extend_schema(
-        operation_id="order_detail",
-        responses={200: OrderDetailSerializer},
-    )
-    def get(self, request, order_ref):
-        """Retrieve the owned order with full detail.
-
-        Args:
-            request: the GET request.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
-
-        Returns:
-            Response: the full order detail.
-        """
-        order = _resolve_order(request, order_ref)
-        serializer = OrderDetailSerializer(order)
-        return Response(serializer.data)
-
-    @extend_schema(
-        operation_id="order_cancel",
-        responses={200: OrderDetailSerializer},
-    )
-    def delete(self, request, order_ref):
-        """Cancel a pending order, releasing held stock.
-
-        Args:
-            request: the DELETE request.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
-
-        Returns:
-            Response: ``200 OK`` with the cancelled order, or ``400`` if the
-                order is not pending.
-        """
-        order = _resolve_order(request, order_ref)
-        cancelled = _service_error_to_400(cancel_pending_order)(
-            order,
-            user=request.user if request.user.is_authenticated else None,
-        )
-        serializer = OrderDetailSerializer(cancelled)
-        return Response(serializer.data)
-
-
-class OrderCancelView(APIView):
-    """Cancel a pending order via an explicit cancel sub-resource.
-
-    Mirrors the DELETE on the detail view but as a POST under ``/cancel/``,
-    protected by an ``Idempotency-Key`` so a retried tap cannot re-process a
-    cancellation. Cancellation is naturally idempotent (only active
-    reservations are released and a non-pending order is rejected), but
-    requiring the key keeps client retry semantics predictable.
-    """
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_write"
-
-    @extend_schema(
-        operation_id="order_cancel_subresource",
-        request=CancelOrderSerializer,
-        responses={200: OrderDetailSerializer},
-    )
-    def post(self, request, order_ref):
-        """Cancel the caller's pending order.
-
-        Args:
-            request: the POST request carrying an ``Idempotency-Key``.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
-
-        Returns:
-            Response: ``200 OK`` with the cancelled order, or ``400`` for a
-                non-pending order or an invalid idempotency key, or ``404``
-                when the order is not owned by the caller.
-        """
-        from apps.core.idempotency import (
-            acquire_processing_lock,
-            read_cached_result,
-            release_processing_lock,
-            require_idempotency_key,
-            store_result,
-        )
-
-        key = require_idempotency_key(request)
-        scope = _idempotency_scope(request)
-        cached = read_cached_result(scope, key)
-        if cached is not None:
-            return Response(cached["data"], status=cached["status"])
-        if not acquire_processing_lock(scope, key):
-            return Response(
-                {
-                    "detail": "A request with this Idempotency-Key is already in progress."
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-        try:
-            order = _resolve_order(request, order_ref)
-            input_serializer = CancelOrderSerializer(data=request.data)
+            input_serializer = StaffOrderIntakeSerializer(data=request.data)
             input_serializer.is_valid(raise_exception=True)
-            cancelled = _service_error_to_400(cancel_pending_order)(
-                order,
-                user=request.user if request.user.is_authenticated else None,
-                note=input_serializer.validated_data.get("note", ""),
+            data = input_serializer.validated_data
+            order = _service_error_to_400(create_staff_order)(
+                staff_user=request.user,
+                phone=data["phone"],
+                lines=data["items"],
+                order_source=data["order_source"],
+                payment_method=data["payment_method"],
+                payment_reference=data.get("payment_reference", ""),
+                email=data.get("email", ""),
+                notes=data.get("notes", ""),
+                delivery_area_id=data.get("delivery_area_id"),
+                delivery_fee=data.get("delivery_fee"),
+                shipping_address_id=data.get("shipping_address_id"),
+                inquiry_id=data.get("inquiry_id"),
             )
-            serializer = OrderDetailSerializer(cancelled)
-            store_result(scope, key, status.HTTP_200_OK, serializer.data)
-            return Response(serializer.data)
+            response_data = OrderDetailSerializer(order).data
+            duplicates = find_orders_by_payment_reference(
+                order.payment_reference, exclude_pk=order.pk
+            )
+            if duplicates:
+                response_data["warnings"] = [
+                    {
+                        "code": "duplicate_payment_reference",
+                        "detail": (
+                            "This payment reference is already used on "
+                            f"order {dup['id']} — confirm it is not a "
+                            "data-entry mistake."
+                        ),
+                        "order_id": dup["id"],
+                    }
+                    for dup in duplicates
+                ]
+            store_result(
+                scope, key, status.HTTP_201_CREATED, response_data, fingerprint
+            )
+            return Response(response_data, status=status.HTTP_201_CREATED)
         finally:
             release_processing_lock(scope, key)
 
@@ -520,170 +177,3 @@ class OrderStatusUpdateView(APIView):
         )
         serializer = OrderDetailSerializer(updated)
         return Response(serializer.data)
-
-
-class OrderVerifyOTPView(APIView):
-    """Verify a COD order with a submitted one-time password."""
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_verify"
-
-    @extend_schema(
-        operation_id="order_otp_verify",
-        request=OTPVerifySerializer,
-        responses={200: OrderDetailSerializer},
-    )
-    def post(self, request, order_ref):
-        """Verify the order's OTP and confirm the order on success.
-
-        Args:
-            request: the POST request carrying ``otp_code``.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
-
-        Returns:
-            Response: ``200 OK`` with the confirmed order on success, ``400``
-                for an invalid/expired/maxed-out code, or ``404`` when the
-                order is not owned by the caller.
-        """
-        order = _resolve_order(request, order_ref)
-        input_serializer = OTPVerifySerializer(data=request.data)
-        input_serializer.is_valid(raise_exception=True)
-        order, _verified = _service_error_to_400(verify_order_otp)(
-            order, input_serializer.validated_data["otp_code"]
-        )
-        serializer = OrderDetailSerializer(order)
-        return Response(serializer.data)
-
-
-class OrderResendOTPView(APIView):
-    """Re-send the COD verification code."""
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_otp_resend"
-    schema = None
-
-    @extend_schema(
-        operation_id="order_otp_resend",
-        responses={200: OrderVerificationSerializer},
-    )
-    def post(self, request, order_ref):
-        """Re-send and reset the OTP for a COD order.
-
-        Args:
-            request: the POST request.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
-
-        Returns:
-            Response: ``200 OK`` with the updated verification state, ``400``
-                for a non-COD or non-pending order, or ``404`` when the order
-                is not owned by the caller.
-        """
-        order = _resolve_order(request, order_ref)
-        verification = _service_error_to_400(resend_order_otp)(order)
-        serializer = OrderVerificationSerializer(verification)
-        return Response(serializer.data)
-
-
-class OrderStatusHistoryView(APIView):
-    """Return the status audit trail for a caller's order."""
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_read"
-
-    @extend_schema(
-        operation_id="order_status_history",
-        responses={200: OrderStatusHistorySerializer(many=True)},
-    )
-    def get(self, request, order_ref):
-        """Return the order's status history.
-
-        Args:
-            request: the GET request.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
-
-        Returns:
-            Response: the list of status transitions.
-        """
-        order = _resolve_order(request, order_ref)
-        serializer = OrderStatusHistorySerializer(order.status_history, many=True)
-        return Response(serializer.data)
-
-
-class StaffOrderIntakeView(APIView):
-    """Create a confirmed order from a staff-assisted sale (staff only).
-
-    Staff enter what the customer agreed over WhatsApp/email; the order is
-    created already ``confirmed`` with stock deducted directly. Requires an
-    ``Idempotency-Key`` header so a retried submit cannot create two orders.
-    """
-
-    permission_classes = [IsManagerOrSupport]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_intake"
-
-    @extend_schema(
-        operation_id="order_staff_intake",
-        request=StaffOrderIntakeSerializer,
-        responses={201: OrderDetailSerializer},
-        tags=["order_intake"],
-    )
-    def post(self, request):
-        """Create the confirmed order.
-
-        Args:
-            request: the POST request carrying contact, source, payment, and
-                staff-entered lines.
-
-        Returns:
-            Response: ``201 Created`` with the order detail, ``400`` for
-                validation/stock errors, or ``409`` when the same
-                idempotency key is already being processed.
-        """
-        from apps.core.idempotency import (
-            acquire_processing_lock,
-            read_cached_result,
-            release_processing_lock,
-            require_idempotency_key,
-            store_result,
-        )
-
-        key = require_idempotency_key(request)
-        scope = f"u{request.user.pk}"
-        cached = read_cached_result(scope, key)
-        if cached is not None:
-            return Response(cached["data"], status=cached["status"])
-        if not acquire_processing_lock(scope, key):
-            return Response(
-                {
-                    "detail": "A request with this Idempotency-Key is already in progress."
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-        try:
-            input_serializer = StaffOrderIntakeSerializer(data=request.data)
-            input_serializer.is_valid(raise_exception=True)
-            data = input_serializer.validated_data
-            order = _service_error_to_400(create_staff_order)(
-                staff_user=request.user,
-                phone=data["phone"],
-                lines=data["items"],
-                order_source=data["order_source"],
-                payment_method=data["payment_method"],
-                payment_reference=data.get("payment_reference", ""),
-                email=data.get("email", ""),
-                notes=data.get("notes", ""),
-                delivery_zone_id=data.get("delivery_zone_id"),
-                shipping_address_id=data.get("shipping_address_id"),
-                inquiry_id=data.get("inquiry_id"),
-            )
-            response_data = OrderDetailSerializer(order).data
-            store_result(scope, key, status.HTTP_201_CREATED, response_data)
-            return Response(response_data, status=status.HTTP_201_CREATED)
-        finally:
-            release_processing_lock(scope, key)
