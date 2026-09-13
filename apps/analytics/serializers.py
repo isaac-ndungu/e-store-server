@@ -105,6 +105,8 @@ class SummarySerializer(serializers.Serializer):
     period = serializers.DictField()
     sales = serializers.DictField()
     orders_by_status = serializers.ListField()
+    orders_by_source = serializers.ListField()
+    inquiries = serializers.DictField()
     stock = serializers.DictField()
     catalogue = serializers.DictField()
     products = serializers.ListField()

@@ -9,12 +9,14 @@ from django.urls import path
 
 from apps.analytics.views import (
     DashboardSummaryView,
+    InquiriesReportView,
     NotificationsReportView,
     ProductPerformanceReportView,
     PromotionsReportView,
     ReturnsReportView,
     ReviewsReportView,
     SalesReportView,
+    SourceReportView,
     StockReportView,
     SupportReportView,
     TrafficReportView,
@@ -23,6 +25,16 @@ from apps.analytics.views import (
 urlpatterns = [
     path("analytics/summary/", DashboardSummaryView.as_view(), name="summary"),
     path("analytics/reports/sales/", SalesReportView.as_view(), name="sales-report"),
+    path(
+        "analytics/reports/sources/",
+        SourceReportView.as_view(),
+        name="sources-report",
+    ),
+    path(
+        "analytics/reports/inquiries/",
+        InquiriesReportView.as_view(),
+        name="inquiries-report",
+    ),
     path("analytics/reports/stock/", StockReportView.as_view(), name="stock-report"),
     path(
         "analytics/reports/products/",

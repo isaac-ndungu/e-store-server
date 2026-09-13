@@ -21,10 +21,8 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
 from apps.catalog.models import Category, Product, ProductVariant
-from apps.inventory.models import Inventory, StockReservation, Warehouse
 from apps.notifications.models import NotificationLog
 from apps.orders.models import Order, OrderItem
-from apps.payments.models import MpesaB2CPayout, Payment
 from apps.promotions.models import Coupon, CouponRedemption, Discount
 from apps.returns.models import ReturnRequest
 from apps.reviews.models import Review
@@ -33,6 +31,8 @@ from apps.support.models import Ticket
 
 SUMMARY_URL = "api:analytics:summary"
 SALES_URL = "api:analytics:sales-report"
+SOURCES_URL = "api:analytics:sources-report"
+INQUIRIES_URL = "api:analytics:inquiries-report"
 STOCK_URL = "api:analytics:stock-report"
 PRODUCTS_URL = "api:analytics:products-report"
 PROMOTIONS_URL = "api:analytics:promotions-report"
@@ -45,6 +45,8 @@ NOTIFICATIONS_URL = "api:analytics:notifications-report"
 ENDPOINTS = [
     SUMMARY_URL,
     SALES_URL,
+    SOURCES_URL,
+    INQUIRIES_URL,
     STOCK_URL,
     PRODUCTS_URL,
     PROMOTIONS_URL,
@@ -129,16 +131,14 @@ class AnalyticsAccessControlTests(_AnalystClient):
             )
 
     def test_customer_token_rejected(self):
-        """A logged-in customer cannot read any report."""
+        """A customer credential gets no token to read any report with."""
         _make_user()
-        _login(self.client)
-        for url_name in ENDPOINTS:
-            url = reverse(url_name)
-            self.assertEqual(
-                self.client.get(url).status_code,
-                status.HTTP_403_FORBIDDEN,
-                f"{url_name} allowed customer access",
-            )
+        login = self.client.post(
+            reverse("api:accounts:login"),
+            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_support_and_courier_roles_rejected(self):
         """Support and courier roles cannot read revenue reports."""
@@ -209,14 +209,6 @@ class SummaryReconciliationTests(_AnalystClient):
             sku="FRIDGE-1-SILVER",
             price=Decimal("30000.00"),
         )
-        warehouse = Warehouse.objects.create(name="Main", is_active=True)
-        self.inventory = Inventory.objects.create(
-            variant=self.variant,
-            warehouse=warehouse,
-            quantity=10,
-            reserved=2,
-            low_stock_threshold=5,
-        )
 
         # Two delivered orders plus one cancelled order.
         self.delivered = _make_order(
@@ -225,7 +217,7 @@ class SummaryReconciliationTests(_AnalystClient):
             subtotal=Decimal("60000.00"),
             grand_total=Decimal("69180.00"),
             payment_method="mpesa",
-            shipping_total=Decimal("500.00"),
+            delivery_fee=Decimal("500.00"),
             shipping_tax_amount=Decimal("80.00"),
             tax_total=Decimal("9600.00"),
             discount_total=Decimal("1000.00"),
@@ -244,6 +236,7 @@ class SummaryReconciliationTests(_AnalystClient):
             status_name="cancelled",
             subtotal=Decimal("50000.00"),
             grand_total=Decimal("50000.00"),
+            refund_amount=Decimal("5000.00"),
             payment_method="mpesa",
             placed_at=now - timedelta(hours=6),
         )
@@ -263,57 +256,6 @@ class SummaryReconciliationTests(_AnalystClient):
                 tax_rate=Decimal("16.00"),
                 tax=line_total * Decimal("0.16"),
             )
-
-        # Completed payments for the delivered orders plus a failed one.
-        Payment.objects.create(
-            order=self.delivered,
-            provider="mpesa",
-            amount=Decimal("69180.00"),
-            status="completed",
-            created_at=self.delivered.placed_at,
-        )
-        Payment.objects.create(
-            order=self.other_delivered,
-            provider="cod",
-            amount=Decimal("30000.00"),
-            status="completed",
-            created_at=self.other_delivered.placed_at,
-        )
-        Payment.objects.create(
-            order=self.delivered,
-            provider="mpesa",
-            amount=Decimal("69180.00"),
-            status="failed",
-            created_at=self.delivered.placed_at,
-        )
-
-        # A successful refund payout plus an initiation-only one.
-        MpesaB2CPayout.objects.create(
-            order=self.delivered,
-            reason="return_refund",
-            phone_number="+254712345678",
-            amount=Decimal("5000.00"),
-            conversation_id="conv-1",
-            status="success",
-            created_at=self.delivered.placed_at,
-        )
-        MpesaB2CPayout.objects.create(
-            order=self.delivered,
-            reason="return_refund",
-            phone_number="+254712345678",
-            amount=Decimal("5000.00"),
-            conversation_id="conv-2",
-            status="pending",
-            created_at=self.delivered.placed_at,
-        )
-
-        # One active reservation against the seeded stock.
-        StockReservation.objects.create(
-            inventory=self.inventory,
-            quantity=2,
-            expires_at=now + timedelta(minutes=20),
-            status="active",
-        )
 
         # A redeemed coupon and a live discount.
         self.coupon = Coupon.objects.create(
@@ -412,7 +354,7 @@ class SummaryReconciliationTests(_AnalystClient):
         self.assertEqual(sales["discount"], Decimal("1000.00"))
         # Tax: 9600 order VAT + 80 shipping VAT from the first order only.
         self.assertEqual(sales["tax_collected"], Decimal("9680.00"))
-        # Collected: two completed payments (69,180 + 30,000).
+        # Collected: kept-order value (69,180 + 30,000).
         self.assertEqual(sales["collected"], Decimal("99180.00"))
         # Refund outflow: the single success payout.
         self.assertEqual(sales["refund_outflow"], Decimal("5000.00"))
@@ -425,15 +367,10 @@ class SummaryReconciliationTests(_AnalystClient):
         self.assertEqual(orders_by_status["delivered"]["value"], Decimal("99180.00"))
 
         stock = data["stock"]
-        self.assertEqual(stock["units"], 10)
-        # The active reservation of 2 is what drives Inventory.reserved=2;
-        # the snapshot reads the row counts, never a secondary computation.
-        self.assertEqual(stock["reserved"], 2)
-        self.assertEqual(stock["available"], 8)
+        self.assertEqual(stock["in_stock"], 1)
         self.assertEqual(stock["low_stock"], 0)
-        self.assertEqual(stock["active_reservations"], 1)
+        self.assertEqual(stock["out_of_stock"], 0)
         self.assertEqual(stock["variants"], 1)
-        self.assertEqual(stock["warehouses"], 1)
 
         self.assertEqual(data["catalogue"]["products"], 1)
         self.assertEqual(data["catalogue"]["variants"], 1)
@@ -488,13 +425,6 @@ class PeriodFilterTests(_AnalystClient):
             subtotal=Decimal("10000.00"),
             grand_total=Decimal("10000.00"),
             placed_at=inside,
-        )
-        Payment.objects.create(
-            order=self.inside_order,
-            provider="cod",
-            amount=Decimal("10000.00"),
-            status="completed",
-            created_at=inside,
         )
         _make_order(
             _make_user(email="old@example.com", username="old"),
@@ -663,30 +593,31 @@ class QueryWhitelistTests(_AnalystClient):
 
 
 class StockSnapshotTests(_AnalystClient):
-    """Stock aggregates span all warehouses, per domain rule one."""
+    """The stock snapshot counts variants by their staff-set status."""
 
-    def test_stock_snapshot_combines_warehouses(self):
-        """A variant held across two warehouses contributes both rows."""
+    def test_stock_snapshot_counts_variants_by_status(self):
+        """Active variants are counted under their staff-set status."""
         product = Product.objects.create(name="P", slug="p", sku="P-1", description="d")
-        variant = ProductVariant.objects.create(
-            product=product, sku="P-1-A", price=Decimal("100.00")
+        ProductVariant.objects.create(
+            product=product,
+            sku="P-1-A",
+            price=Decimal("100.00"),
+            stock_status="low_stock",
         )
-        w1 = Warehouse.objects.create(name="W1", is_active=True)
-        w2 = Warehouse.objects.create(name="W2", is_active=True)
-        Inventory.objects.create(variant=variant, warehouse=w1, quantity=5, reserved=1)
-        Inventory.objects.create(variant=variant, warehouse=w2, quantity=3, reserved=0)
+        ProductVariant.objects.create(
+            product=product,
+            sku="P-1-B",
+            price=Decimal("100.00"),
+            stock_status="out_of_stock",
+        )
 
         response = self.client.get(reverse(STOCK_URL))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         stock = response.data
-        self.assertEqual(stock["units"], 8)
-        self.assertEqual(stock["reserved"], 1)
-        self.assertEqual(stock["available"], 7)
-        self.assertEqual(stock["variants"], 1)
-        self.assertEqual(stock["warehouses"], 2)
-        # w1 holds 4 available vs its threshold of 5, so it flags low stock;
-        # w2's 3 available vs threshold 5 also flags. Both count.
-        self.assertEqual(stock["low_stock"], 2)
+        self.assertEqual(stock["in_stock"], 0)
+        self.assertEqual(stock["low_stock"], 1)
+        self.assertEqual(stock["out_of_stock"], 1)
+        self.assertEqual(stock["variants"], 2)
 
 
 class QueryScaleTests(_AnalystClient):
@@ -721,7 +652,7 @@ class QueryScaleTests(_AnalystClient):
                     phone=f"+2547999{i % 1000000:06d}",
                     status="delivered",
                     subtotal=Decimal(f"1000.{i % 100:02d}"),
-                    shipping_total=Decimal("0.00"),
+                    delivery_fee=Decimal("0.00"),
                     tax_total=Decimal("160.00"),
                     grand_total=Decimal(f"1160.{i % 100:02d}"),
                 )
@@ -729,3 +660,108 @@ class QueryScaleTests(_AnalystClient):
             ],
             batch_size=500,
         )
+
+
+class OrderSourceReportTests(_AnalystClient):
+    """The order-source split replaces payment-method groupings."""
+
+    def test_sources_group_counts_and_values(self):
+        """WhatsApp/email/manual rows group with exact counts and values."""
+        buyer = _make_user()
+        _make_order(
+            buyer,
+            status_name="delivered",
+            subtotal=Decimal("10000.00"),
+            grand_total=Decimal("10000.00"),
+            order_source="whatsapp",
+        )
+        _make_order(
+            buyer,
+            status_name="delivered",
+            subtotal=Decimal("20000.00"),
+            grand_total=Decimal("20000.00"),
+            order_source="email",
+        )
+        _make_order(
+            buyer,
+            status_name="delivered",
+            subtotal=Decimal("5000.00"),
+            grand_total=Decimal("5000.00"),
+            order_source="admin_manual",
+        )
+        response = self.client.get(reverse(SOURCES_URL))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        by_source = {row["source"]: row for row in response.data["sources"]}
+        self.assertEqual(by_source["whatsapp"]["count"], 1)
+        self.assertEqual(by_source["whatsapp"]["value"], Decimal("10000.00"))
+        self.assertEqual(by_source["email"]["value"], Decimal("20000.00"))
+        self.assertEqual(by_source["admin_manual"]["value"], Decimal("5000.00"))
+
+    def test_sources_period_filter(self):
+        """Orders outside from/to do not appear in the source split."""
+        buyer = _make_user()
+        now = timezone.now()
+        _make_order(
+            buyer,
+            status_name="delivered",
+            subtotal=Decimal("10000.00"),
+            grand_total=Decimal("10000.00"),
+            order_source="whatsapp",
+            placed_at=now - timedelta(days=30),
+        )
+        _make_order(
+            buyer,
+            status_name="delivered",
+            subtotal=Decimal("7000.00"),
+            grand_total=Decimal("7000.00"),
+            order_source="email",
+            placed_at=now - timedelta(days=1),
+        )
+        response = self.client.get(
+            reverse(SOURCES_URL),
+            {
+                "from": (now - timedelta(days=2)).isoformat(),
+                "to": now.isoformat(),
+            },
+        )
+        by_source = {row["source"]: row for row in response.data["sources"]}
+        self.assertNotIn("whatsapp", by_source)
+        self.assertEqual(by_source["email"]["value"], Decimal("7000.00"))
+
+    def test_summary_includes_sources_and_inquiries(self):
+        """The assembled summary carries the source split and inquiries."""
+        response = self.client.get(reverse(SUMMARY_URL))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("orders_by_source", response.data)
+        self.assertIn("inquiries", response.data)
+
+
+class InquiryConversionReportTests(_AnalystClient):
+    """The inquiry report captures the click-to-order funnel."""
+
+    def test_conversion_math(self):
+        """Converted over total matches seeded inquiry rows."""
+        from apps.inquiries.models import Inquiry
+
+        Inquiry.objects.create(channel="whatsapp", cart_snapshot=[{"sku": "A"}])
+        Inquiry.objects.create(channel="email", cart_snapshot=[{"sku": "B"}])
+        converted = Inquiry.objects.create(
+            channel="whatsapp", cart_snapshot=[{"sku": "C"}]
+        )
+        converted.status = "converted"
+        converted.save(update_fields=["status", "updated_at"])
+        response = self.client.get(reverse(INQUIRIES_URL))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(data["converted"], 1)
+        self.assertEqual(data["conversion_rate_percent"], Decimal("33.33"))
+        by_channel = {row["channel"]: row["count"] for row in data["by_channel"]}
+        self.assertEqual(by_channel["whatsapp"], 2)
+        self.assertEqual(by_channel["email"], 1)
+
+    def test_empty_funnel_is_zero(self):
+        """With no inquiries the rate is zero, not a division error."""
+        response = self.client.get(reverse(INQUIRIES_URL))
+        self.assertEqual(response.data["total"], 0)
+        self.assertEqual(response.data["conversion_rate_percent"], Decimal("0.00"))

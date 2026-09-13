@@ -17,7 +17,9 @@ from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsManagerOrAnalyst
 from apps.analytics.selectors import (
+    inquiries_summary,
     notifications_summary,
+    orders_by_source,
     product_performance,
     promotions_summary,
     returns_summary,
@@ -140,8 +142,50 @@ class SalesReportView(AnalyticsAPIView):
         )
 
 
+class SourceReportView(AnalyticsAPIView):
+    """Return order count and value grouped by order source."""
+
+    @extend_schema(
+        operation_id="analytics_source_report",
+        responses={200: dict},
+    )
+    def get(self, request):
+        """Return the order-source breakdown.
+
+        Args:
+            request: the GET request with optional ``from``/``to``.
+
+        Returns:
+            Response: ``{"sources": [...]}``.
+        """
+        params = self.validated_params()
+        return Response(
+            {"sources": orders_by_source(params.get("start"), params.get("end"))}
+        )
+
+
+class InquiriesReportView(AnalyticsAPIView):
+    """Return inquiry capture and conversion figures for the period."""
+
+    @extend_schema(
+        operation_id="analytics_inquiries_report",
+        responses={200: dict},
+    )
+    def get(self, request):
+        """Return the inquiry-conversion report.
+
+        Args:
+            request: the GET request with optional ``from``/``to``.
+
+        Returns:
+            Response: the inquiry aggregate.
+        """
+        params = self.validated_params()
+        return Response(inquiries_summary(params.get("start"), params.get("end")))
+
+
 class StockReportView(AnalyticsAPIView):
-    """Return the current stock-and-reservations snapshot."""
+    """Return the current stock snapshot."""
 
     @extend_schema(
         operation_id="analytics_stock_report",

@@ -1,14 +1,14 @@
 """Read-only aggregation helpers for the analytics app.
 
 Every report here aggregates from the platform's source-of-truth tables —
-orders, payments, inventory, returns, promotions, support, reviews, social
-proof, and notifications — so a dashboard figure always reconciles against the
+orders, returns, promotions, support, reviews, social proof, and
+notifications — so a dashboard figure always reconciles against the
 underlying rows. Aggregations that sum money use ``Decimal`` exclusively (never
 ``float``) and time-series grouping is pushed into the database with Django's
 ``Trunc`` functions so a large table never fans out into one query per row.
 
 The reports intentionally read only the tables that exist; sections whose
-domain has no backing store yet (B2B quotes, a loyalty ledger, COD collections,
+domain has no backing store yet (a loyalty ledger, COD collections,
 eTIMS credit notes) are simply not reported rather than invented.
 """
 
@@ -28,10 +28,9 @@ from django.utils import timezone
 
 from apps.bundles.models import Bundle
 from apps.catalog.models import Product, ProductVariant
-from apps.inventory.models import Inventory, StockReservation
+from apps.inquiries.models import Inquiry
 from apps.notifications.models import NotificationLog
 from apps.orders.models import Order, OrderItem
-from apps.payments.models import MpesaB2CPayout, Payment
 from apps.promotions.models import CouponRedemption, Discount
 from apps.returns.models import ReturnRequest
 from apps.reviews.models import Review
@@ -88,10 +87,11 @@ def sales_summary(from_time=None, to_time=None):
     """Return aggregate sales figures for the period.
 
     ``order_value`` sums the grand total of every non-cancelled, non-refunded
-    order in the period; ``tax_collected`` adds order VAT to shipping VAT;
-    ``collected`` sums provider-agnostic completed payments (the ledger of
-    money actually received); ``refund_outflow`` sums successful refund
-    payouts; and ``net`` is collected minus refunds. Figures are ``Decimal``.
+    order in the period; ``tax_collected`` adds order VAT to delivery VAT;
+    ``collected`` equals order value — payment is arranged by staff before an
+    order is created, so kept orders count as received; ``refund_outflow``
+    sums the recorded refund amounts on cancelled/refunded orders; and
+    ``net`` is collected minus refunds. Figures are ``Decimal``.
 
     Args:
         from_time (datetime | None): inclusive lower bound, or None.
@@ -117,7 +117,7 @@ def sales_summary(from_time=None, to_time=None):
         ),
         shipping=Coalesce(
             Sum(
-                "shipping_total",
+                "delivery_fee",
                 output_field=DecimalField(max_digits=20, decimal_places=2),
             ),
             Decimal(0),
@@ -145,28 +145,19 @@ def sales_summary(from_time=None, to_time=None):
         order_count=Count("pk"),
     )
 
-    collected = apply_period(
-        Payment.objects.filter(status="completed"),
-        from_time,
-        to_time,
-        field="created_at",
-    ).aggregate(
-        value=Coalesce(
-            Sum("amount", output_field=DecimalField(max_digits=20, decimal_places=2)),
-            Decimal(0),
-        )
-    )[
-        "value"
-    ]
+    collected = totals["order_value"]
 
     refund_outflow = apply_period(
-        MpesaB2CPayout.objects.filter(status="success"),
+        Order.objects.filter(status__in=("cancelled", "refunded")),
         from_time,
         to_time,
-        field="created_at",
+        field="placed_at",
     ).aggregate(
         value=Coalesce(
-            Sum("amount", output_field=DecimalField(max_digits=20, decimal_places=2)),
+            Sum(
+                "refund_amount",
+                output_field=DecimalField(max_digits=20, decimal_places=2),
+            ),
             Decimal(0),
         )
     )[
@@ -222,6 +213,83 @@ def orders_by_status(from_time=None, to_time=None):
         {"status": row["status"], "count": row["count"], "value": row["value"]}
         for row in rows
     ]
+
+
+def orders_by_source(from_time=None, to_time=None):
+    """Return order count and value grouped by order source for the period.
+
+    The source split (whatsapp/email/admin-manual) is the primary channel
+    breakdown: every order is staff-created after a WhatsApp/email hand-off
+    or entered manually, so this replaces any payment-method grouping.
+
+    Args:
+        from_time (datetime | None): inclusive lower bound, or None.
+        to_time (datetime | None): inclusive upper bound, or None.
+
+    Returns:
+        list: one ``{"source", "count", "value"}`` entry per source with
+            orders in the period.
+    """
+    rows = (
+        apply_period(Order.objects.all(), from_time, to_time)
+        .values("order_source")
+        .annotate(
+            count=Count("pk"),
+            value=Coalesce(
+                Sum(
+                    "grand_total",
+                    output_field=DecimalField(max_digits=20, decimal_places=2),
+                ),
+                Decimal(0),
+            ),
+        )
+        .order_by("order_source")
+    )
+    return [
+        {"source": row["order_source"], "count": row["count"], "value": row["value"]}
+        for row in rows
+    ]
+
+
+def inquiries_summary(from_time=None, to_time=None):
+    """Return inquiry capture and conversion figures for the period.
+
+    ``total`` counts hand-offs logged in the period; ``by_channel`` and
+    ``by_status`` split the same set; ``converted`` counts rows already
+    linked to an order via the staff intake flow; ``conversion_rate_percent``
+    is converted over total to two decimal places.
+
+    Args:
+        from_time (datetime | None): inclusive lower bound, or None.
+        to_time (datetime | None): inclusive upper bound, or None.
+
+    Returns:
+        dict: inquiry aggregate for the period.
+    """
+    inquiries = apply_period(
+        Inquiry.objects.all(), from_time, to_time, field="created_at"
+    )
+    total = inquiries.count()
+    by_channel = list(
+        inquiries.values("channel").annotate(count=Count("pk")).order_by("channel")
+    )
+    by_status = list(
+        inquiries.values("status").annotate(count=Count("pk")).order_by("status")
+    )
+    converted = inquiries.filter(status="converted").count()
+    if total:
+        rate = (Decimal(converted) / Decimal(total) * Decimal(100)).quantize(
+            Decimal("0.01")
+        )
+    else:
+        rate = Decimal("0.00")
+    return {
+        "total": total,
+        "by_channel": by_channel,
+        "by_status": by_status,
+        "converted": converted,
+        "conversion_rate_percent": rate,
+    }
 
 
 def sales_timeseries(from_time=None, to_time=None, group_by="day"):
@@ -280,37 +348,30 @@ def sales_timeseries(from_time=None, to_time=None, group_by="day"):
 
 
 def stock_snapshot():
-    """Return a current stock-and-reservations snapshot across all warehouses.
+    """Return a current availability snapshot by staff-set stock status.
 
-    ``available`` is total on-hand minus reserved across every warehouse (a
-    variant held in several warehouses contributes the sum of its rows, never
-    a single row assumed). ``low_stock`` counts inventory rows whose available
-    units sit at or below their reorder point, and ``active_reservations`` is
-    the number of reservations still held.
+    Availability is a manual flag on each variant, not a counted quantity:
+    the snapshot counts active variants per ``stock_status`` value, so staff
+    see at a glance how much of the catalogue is sellable, running low, or
+    off sale.
 
     Returns:
-        dict: aggregate stock figures for the whole inventory.
+        dict: variant counts per stock status plus the active-variant total.
     """
-    totals = Inventory.objects.aggregate(
-        units=Coalesce(Sum("quantity", output_field=IntegerField()), 0),
-        reserved=Coalesce(Sum("reserved", output_field=IntegerField()), 0),
-        variants=Count("variant", distinct=True),
-        warehouses=Count("warehouse", distinct=True),
+    counts = (
+        ProductVariant.objects.filter(is_active=True, product__is_active=True)
+        .values("stock_status")
+        .annotate(count=Count("pk"))
     )
-    active_reservations = StockReservation.objects.filter(status="active").count()
-    low_stock = sum(
-        1
-        for inv in Inventory.objects.only("quantity", "reserved", "low_stock_threshold")
-        if inv.available <= inv.low_stock_threshold
-    )
+    by_status = {row["stock_status"]: row["count"] for row in counts}
+    in_stock = by_status.get("in_stock", 0)
+    low_stock = by_status.get("low_stock", 0)
+    out_of_stock = by_status.get("out_of_stock", 0)
     return {
-        "units": totals["units"],
-        "reserved": totals["reserved"],
-        "available": totals["units"] - totals["reserved"],
-        "variants": totals["variants"],
-        "warehouses": totals["warehouses"],
+        "in_stock": in_stock,
         "low_stock": low_stock,
-        "active_reservations": active_reservations,
+        "out_of_stock": out_of_stock,
+        "variants": in_stock + low_stock + out_of_stock,
     }
 
 
@@ -576,6 +637,8 @@ def summary(from_time=None, to_time=None):
         },
         "sales": sales_summary(from_time, to_time),
         "orders_by_status": orders_by_status(from_time, to_time),
+        "orders_by_source": orders_by_source(from_time, to_time),
+        "inquiries": inquiries_summary(from_time, to_time),
         "stock": stock_snapshot(),
         "catalogue": catalogue_summary(),
         "products": product_performance(from_time, to_time, limit=5),
