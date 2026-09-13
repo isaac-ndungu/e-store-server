@@ -6,6 +6,7 @@ reference for how catalog data is fetched. Every queryset uses
 queries.
 """
 
+from django.db import connection
 from django.db.models import Count, Prefetch
 
 from apps.catalog.models import Brand, Category, Product, ProductImage, ProductVariant
@@ -130,4 +131,38 @@ def get_all_products_admin():
             )
         )
         .order_by("-created_at")
+    )
+
+
+def order_by_search_rank(queryset, term):
+    """Order a filtered product queryset by full-text relevance.
+
+    On PostgreSQL the queryset is annotated with a weighted ``SearchRank``
+    (name weighted above sku/short description, description lowest) and
+    ordered best match first. On any other backend the queryset is
+    returned unchanged so tests running on SQLite keep passing. Filtering
+    itself stays with DRF's ``SearchFilter``; this only improves ordering.
+
+    Args:
+        queryset: the already-filtered product queryset.
+        term (str): the raw ``search`` query param.
+
+    Returns:
+        QuerySet: the queryset ordered by relevance when supported.
+    """
+    if not term or not term.strip() or connection.vendor != "postgresql":
+        return queryset
+    try:
+        from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+    except ImportError:
+        return queryset
+    vector = (
+        SearchVector("name", weight="A")
+        + SearchVector("sku", weight="B")
+        + SearchVector("short_description", weight="B")
+        + SearchVector("description", weight="C")
+    )
+    query = SearchQuery(term.strip())
+    return queryset.annotate(search_rank=SearchRank(vector, query)).order_by(
+        "-search_rank", "-created_at"
     )

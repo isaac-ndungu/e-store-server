@@ -492,6 +492,30 @@ class ProductListBrowseTests(APITestCase):
         names = [p["name"] for p in response.data["results"]]
         self.assertEqual(names, sorted(names))
 
+    def test_explicit_ordering_wins_over_search_relevance(self):
+        """An explicit ordering param is honoured on a text search."""
+        response = self.client.get(
+            URLS["products"], {"search": "Fridge", "ordering": "name"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["count"], 2)
+        names = [p["name"] for p in response.data["results"]]
+        self.assertEqual(names, sorted(names))
+
+    def test_search_rank_helper_passes_through_off_postgres(self):
+        """The rank helper only reorders on PostgreSQL (tests run SQLite)."""
+        from apps.catalog.selectors import order_by_search_rank
+
+        queryset = Product.objects.all()
+        self.assertEqual(
+            list(order_by_search_rank(queryset, "Fridge").values_list("pk", flat=True)),
+            list(queryset.values_list("pk", flat=True)),
+        )
+        self.assertEqual(
+            list(order_by_search_rank(queryset, "").values_list("pk", flat=True)),
+            list(queryset.values_list("pk", flat=True)),
+        )
+
     def test_primary_image_included_in_list(self):
         """The product list exposes the primary image for each product."""
         product = Product.objects.get(slug="fridge-200l")
@@ -737,7 +761,7 @@ class CategoryAdminTests(APITestCase):
     def test_customer_cannot_create_category(self):
         """A plain customer token is rejected from category creation."""
         _make_user()
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
             URLS["admin_categories"], {"name": "Cat"}, format="json"
         )
@@ -836,7 +860,7 @@ class ProductAdminTests(APITestCase):
     def test_customer_cannot_manage_products(self):
         """A plain customer cannot manage products."""
         _make_user()
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
             URLS["admin_products"],
             {"name": "P", "sku": "P-1", "description": "d"},
@@ -1039,7 +1063,7 @@ class FacetDefinitionCRUDTests(APITestCase):
     def test_customer_cannot_manage_facets(self):
         """A plain customer cannot manage facet definitions."""
         _make_user()
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.get(URLS["admin_facets"])
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 

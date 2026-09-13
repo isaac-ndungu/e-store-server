@@ -89,10 +89,7 @@ class Product(models.Model):
     treatment at checkout — a cart can mix standard/zero-rated/exempt products,
     so tax is always computed per line item, never from a single flat rate.
 
-    ``tracks_serial_numbers`` controls whether inventory for this product is
-    tracked at the individual serial-unit level (e.g. appliances with
-    warranties) or as a simple quantity count. ``last_restocked_at`` drives
-    the ``restocked`` smart-collection rule.
+    ``last_restocked_at`` drives the ``restocked`` smart-collection rule.
     """
 
     PRODUCT_TYPE_CHOICES = (
@@ -158,7 +155,6 @@ class Product(models.Model):
     datasheet_pdf = models.FileField(
         upload_to="products/datasheets/", blank=True, validators=[validate_pdf_upload]
     )
-    tracks_serial_numbers = models.BooleanField(default=False)
     warranty_duration_months = models.PositiveIntegerField(null=True, blank=True)
     warranty_type = models.CharField(
         max_length=20, choices=WARRANTY_TYPE_CHOICES, blank=True
@@ -273,8 +269,16 @@ class ProductVariant(models.Model):
     ``compare_at_price`` / ``cost_price``. ``attributes`` is a JSON dict
     holding the variant-specific attributes (e.g. ``{"color": "Silver",
     "capacity": "200L"}``). ``package_weight`` and ``package_dimensions``
-    are used for volumetric shipping fee calculation.
+    are staff reference data for quoting delivery, not inputs to any fee
+    formula. ``stock_status`` is set manually by staff — there is no
+    quantity tracking behind it.
     """
+
+    STOCK_STATUS_CHOICES = (
+        ("in_stock", "In Stock"),
+        ("low_stock", "Low Stock"),
+        ("out_of_stock", "Out of Stock"),
+    )
 
     product = models.ForeignKey(
         Product, related_name="variants", on_delete=models.CASCADE
@@ -297,19 +301,11 @@ class ProductVariant(models.Model):
     )
     package_dimensions = models.JSONField(default=dict, blank=True)
     pieces_per_unit = models.PositiveIntegerField(default=1)
-    stock_status_text = models.CharField(max_length=100, blank=True)
-    STOCK_STATUS_OVERRIDE_CHOICES = (
-        ("", "Automatic (from inventory counts)"),
-        ("in_stock", "In Stock"),
-        ("low_stock", "Low Stock"),
-        ("out_of_stock", "Out of Stock"),
-    )
-    stock_status_override = models.CharField(
+    stock_status = models.CharField(
         max_length=20,
-        choices=STOCK_STATUS_OVERRIDE_CHOICES,
-        default="",
-        blank=True,
-        help_text="Staff-set display override. Blank follows inventory counts.",
+        choices=STOCK_STATUS_CHOICES,
+        default="in_stock",
+        help_text="Staff-set availability. No quantity is tracked behind it.",
     )
     expected_restock_date = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
@@ -322,6 +318,7 @@ class ProductVariant(models.Model):
             models.Index(fields=["product"], name="var_product_idx"),
             models.Index(fields=["sku"], name="var_sku_idx"),
             models.Index(fields=["is_active"], name="var_active_idx"),
+            models.Index(fields=["stock_status"], name="var_stock_status_idx"),
             GinIndex(
                 name="var_attrs_gin_idx",
                 fields=["attributes"],
@@ -443,7 +440,7 @@ class FacetDefinition(models.Model):
             "is_featured",
         }
     )
-    FACETABLE_VARIANT_FIELDS = frozenset({"is_active", "stock_status_text", "price"})
+    FACETABLE_VARIANT_FIELDS = frozenset({"is_active", "stock_status", "price"})
 
     name = models.CharField(max_length=100)
     key = models.CharField(

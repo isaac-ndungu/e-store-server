@@ -35,6 +35,7 @@ from apps.catalog.selectors import (
     get_all_products_admin,
     get_product_by_slug,
     get_product_list_queryset,
+    order_by_search_rank,
 )
 from apps.catalog.serializers import (
     BrandDetailSerializer,
@@ -192,8 +193,10 @@ class ProductListView(generics.ListAPIView):
     """List active products with search, filtering, ordering, and faceted counts.
 
     Uses DRF's ``SearchFilter`` (``icontains`` on name, description,
-    short_description, sku) as an interim implementation. Full-text search
-    with autocomplete/typo tolerance is planned for a later step.
+    short_description, sku) for matching, with Postgres full-text rank
+    ordering applied on top when the database supports it. A dedicated
+    external engine with typo tolerance and autocomplete stays deferred
+    until catalog size and traffic justify the extra service.
 
     Faceted filtering validates query params against active
     ``FacetDefinition`` rows before applying JSON field lookups, preventing
@@ -218,11 +221,18 @@ class ProductListView(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         """Override to include faceted counts in the response.
 
-        Applies validated facet filters to the base queryset, then computes
-        aggregate counts for all active facets.
+        Applies validated facet filters to the base queryset, orders text
+        searches by relevance unless the caller asked for an explicit
+        ordering, then computes aggregate counts for all active facets.
         """
         queryset = self.filter_queryset(self.get_queryset())
         queryset = queryset.filter(validate_facet_params(request.query_params))
+        if request.query_params.get("search") and not request.query_params.get(
+            "ordering"
+        ):
+            queryset = order_by_search_rank(
+                queryset, request.query_params.get("search")
+            )
 
         page = self.paginate_queryset(queryset)
         if page is not None:

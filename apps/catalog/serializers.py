@@ -441,6 +441,7 @@ class ProductVariantListSerializer(serializers.ModelSerializer):
             "attributes",
             "price",
             "compare_at_price",
+            "stock_status",
             "is_active",
         ]
         read_only_fields = ["id", "sku", "attributes", "price", "compare_at_price"]
@@ -468,8 +469,7 @@ class ProductVariantDetailSerializer(serializers.ModelSerializer):
             "package_weight",
             "package_dimensions",
             "pieces_per_unit",
-            "stock_status_text",
-            "stock_status_override",
+            "stock_status",
             "expected_restock_date",
             "is_active",
             "pricing_tiers",
@@ -498,8 +498,7 @@ class ProductVariantWriteSerializer(serializers.ModelSerializer):
             "package_weight",
             "package_dimensions",
             "pieces_per_unit",
-            "stock_status_text",
-            "stock_status_override",
+            "stock_status",
             "expected_restock_date",
             "is_active",
         ]
@@ -720,7 +719,6 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "manual_pdf",
             "installation_guide_pdf",
             "datasheet_pdf",
-            "tracks_serial_numbers",
             "warranty_duration_months",
             "warranty_type",
             "warranty_provider",
@@ -828,7 +826,6 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             "manual_pdf",
             "installation_guide_pdf",
             "datasheet_pdf",
-            "tracks_serial_numbers",
             "warranty_duration_months",
             "warranty_type",
             "warranty_provider",
