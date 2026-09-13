@@ -42,8 +42,11 @@ from apps.catalog.validators import validate_image_upload
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.core.idempotency import (
     acquire_processing_lock,
+    conflicting_key_response,
+    payload_conflict,
     read_cached_result,
     release_processing_lock,
+    request_fingerprint,
     require_idempotency_key,
     store_result,
 )
@@ -429,8 +432,11 @@ class ReviewPhotoUploadView(APIView):
         """
         key = require_idempotency_key(request)
         _user, _session_key, scope = _caller_identity(request)
+        fingerprint = request_fingerprint(request)
         cached = read_cached_result(scope, key)
         if cached is not None:
+            if payload_conflict(cached, fingerprint):
+                return conflicting_key_response()
             return Response(cached["data"], status=cached["status"])
         if not acquire_processing_lock(scope, key):
             return Response(
@@ -442,17 +448,20 @@ class ReviewPhotoUploadView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
         try:
-            return self._process_upload(request, scope, key)
+            return self._process_upload(request, scope, key, fingerprint)
         finally:
             release_processing_lock(scope, key)
 
-    def _process_upload(self, request, scope, key):
+    def _process_upload(self, request, scope, key, fingerprint):
         """Run the upload and cache the result against the idempotency key.
 
         Args:
             request: the multipart POST request carrying ``image``.
             scope (str): the caller's idempotency scope.
             key (str): the caller's idempotency key.
+            fingerprint (str): hash of the request captured before the file
+                was consumed, stored so a repeat with a different file
+                conflicts instead of replaying.
 
         Returns:
             Response: the processed upload response.
@@ -507,7 +516,7 @@ class ReviewPhotoUploadView(APIView):
         serializer = ReviewPhotoSerializer(photo)
         response = Response(serializer.data, status=status.HTTP_201_CREATED)
         if response.status_code == status.HTTP_201_CREATED:
-            store_result(scope, key, response.status_code, response.data)
+            store_result(scope, key, response.status_code, response.data, fingerprint)
         return response
 
 

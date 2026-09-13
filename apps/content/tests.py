@@ -287,6 +287,10 @@ class ContentPageAdminEndpointTests(APITestCase):
         self.client.credentials()
         _login(self.client, email=email)
 
+    def _force_auth_as(self, email):
+        self.client.credentials()
+        self.client.force_authenticate(user=User.objects.get(email=email))
+
     def test_anonymous_cannot_reach_admin_endpoints(self):
         """An unauthenticated caller is rejected out right."""
         for url in (self.list_url, self.create_url, self.detail_url):
@@ -295,8 +299,8 @@ class ContentPageAdminEndpointTests(APITestCase):
 
     def test_non_manager_roles_are_rejected(self):
         """Only manager-role tokens may manage content pages."""
+        self._force_auth_as("buyer@example.com")
         for email in (
-            "buyer@example.com",
             "support@example.com",
             "analyst@example.com",
         ):
@@ -419,6 +423,10 @@ class BannerAdminEndpointTests(APITestCase):
         self.client.credentials()
         _login(self.client, email=email)
 
+    def _force_auth_as(self, email):
+        self.client.credentials()
+        self.client.force_authenticate(user=User.objects.get(email=email))
+
     def test_anonymous_cannot_reach_admin_endpoints(self):
         """An unauthenticated caller is rejected out right."""
         response = self.client.get(self.list_url)
@@ -426,7 +434,7 @@ class BannerAdminEndpointTests(APITestCase):
 
     def test_non_manager_roles_are_rejected(self):
         """Only manager-role tokens may manage banners."""
-        self._login_as("buyer@example.com")
+        self._force_auth_as("buyer@example.com")
         response = self.client.get(self.list_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
@@ -526,7 +534,7 @@ class ManagerAccessTests(APITestCase):
 
     def test_customer_token_cannot_reach_any_admin_route(self):
         """Every admin route rejects a customer token with 403."""
-        _login(self.client)
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         admin_routes = [
             ("api:content:content-page-admin-list", None),
             ("api:content:content-page-admin-create", None),

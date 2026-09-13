@@ -66,7 +66,7 @@ def _make_order(status="confirmed"):
         status=status,
         currency="KES",
         subtotal=Decimal("100.00"),
-        shipping_total=Decimal("0.00"),
+        delivery_fee=Decimal("0.00"),
         tax_total=Decimal("16.00"),
         grand_total=Decimal("116.00"),
     )

@@ -1,16 +1,13 @@
-"""Consolidated cross-user access (IDOR) audit.
+"""Consolidated access audit.
 
-Every endpoint that resolves a resource from an id in the URL must verify the
-caller owns that resource (or holds the required role). The per-app suites
-already spot-check this; this file runs the same probe uniformly across every
-owner-scoped endpoint: create a resource as user A, then as user B request it
-and expect a 404 (never user A's data, never a 403 that reveals the id exists).
+Every endpoint that resolves a resource from an id in the URL must verify
+the caller holds the required role. The per-app suites already spot-check
+this; this file probes uniformly: anonymous callers are rejected, wrong-role
+tokens are refused, and staff-shared resources admit every staff role while
+customer tokens are rejected outright.
 
-Staff-shared resources (the address directory) invert the probe: any staff
-role reaches every entry while customer tokens are rejected outright.
-
-An endpoint added later that takes an id without the ownership filter fails
-here even if its own app's tests never exercise a second caller.
+An endpoint added later without the role gate fails here even if its own
+app's tests never exercise a second caller.
 """
 
 from decimal import Decimal
@@ -21,15 +18,11 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import Address, User
-from apps.cart.models import CartItem
-from apps.cart.services import add_item, get_or_create_cart
 from apps.catalog.models import Category, Product, ProductVariant
-from apps.inventory.models import Inventory, Warehouse
 from apps.orders.models import Order, OrderItem
-from apps.payments.models import MpesaTransaction
 from apps.returns.models import ReturnRequest
 from apps.reviews.models import Review, ReviewPhoto
-from apps.support.models import ChatMessage, ChatSession, Ticket, TicketMessage
+from apps.support.models import Ticket
 
 
 def _make_user(suffix, role="customer"):
@@ -61,16 +54,6 @@ def _make_product():
         is_active=True,
     )
     return product, variant
-
-
-def _stock_variant(variant, quantity=10):
-    """Ensure a variant has count-tracked stock in a test warehouse."""
-    warehouse, _ = Warehouse.objects.get_or_create(name="Main")
-    Inventory.objects.update_or_create(
-        variant=variant,
-        warehouse=warehouse,
-        defaults={"quantity": quantity},
-    )
 
 
 def _login(client, user):
@@ -122,100 +105,28 @@ class AddressIdorAuditTests(APITestCase):
         self.assertEqual(self.client.get(self.url).status_code, status.HTTP_200_OK)
 
 
-class CartIdorAuditTests(APITestCase):
-    """A second user cannot reach or mutate user A's cart items."""
-
-    def setUp(self):
-        cache.clear()
-        _, self.variant = _make_product()
-        _stock_variant(self.variant)
-        self.owner = _make_user("owner")
-        self.other = _make_user("other")
-        cart = get_or_create_cart(user=self.owner)
-        add_item(cart, variant_id=self.variant.pk, quantity=1)
-        self.item = cart.items.first()
-        self.url = reverse(
-            "api:cart:cart-item-detail", kwargs={"item_id": self.item.pk}
-        )
-
-    def test_other_user_gets_404_on_partial_update(self):
-        """Editing someone else's cart line is a 404."""
-        _login(self.client, self.other)
-        response = self.client.patch(self.url, {"quantity": 5}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_other_user_gets_404_on_delete(self):
-        """Deleting someone else's cart line is a 404 and leaves it intact."""
-        _login(self.client, self.other)
-        self.assertEqual(
-            self.client.delete(self.url).status_code, status.HTTP_404_NOT_FOUND
-        )
-        self.assertTrue(CartItem.objects.filter(pk=self.item.pk).exists())
-
-
 class SupportIdorAuditTests(APITestCase):
-    """A second user cannot reach user A's tickets, chats, or attachments."""
+    """Staff ticket console admits staff and refuses customer tokens."""
 
     def setUp(self):
         cache.clear()
-        self.owner = _make_user("owner")
-        self.other = _make_user("other")
+        self.staff = _make_user("staff", role="support")
+        self.customer = _make_user("customer")
         self.ticket = Ticket.objects.create(
-            user=self.owner, category="other", subject="Broken fan"
-        )
-        self.session = ChatSession.objects.create(
-            user=self.owner,
+            user=self.staff, category="other", subject="Broken fan"
         )
 
-    def test_other_user_gets_404_on_ticket_detail(self):
-        """Another customer's ticket detail resolves to 404."""
-        url = reverse("api:support:ticket-detail", kwargs={"ticket_id": self.ticket.pk})
-        _login(self.client, self.other)
-        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+    def test_staff_can_list_tickets(self):
+        """Support staff can read the ticket queue."""
+        url = reverse("api:support:ticket-list-create")
+        _login(self.client, self.staff)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
 
-    def test_other_user_gets_404_on_ticket_message_create(self):
-        """Posting into another customer's ticket is a 404."""
-        url = reverse(
-            "api:support:ticket-message-create", kwargs={"ticket_id": self.ticket.pk}
-        )
-        _login(self.client, self.other)
-        response = self.client.post(url, {"message": "Spam"}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(TicketMessage.objects.filter(ticket=self.ticket).count(), 0)
-
-    def test_other_user_gets_404_on_chat_session_detail(self):
-        """Another customer's chat session detail resolves to 404."""
-        url = reverse(
-            "api:support:chat-session-detail", kwargs={"session_id": self.session.pk}
-        )
-        _login(self.client, self.other)
-        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_other_user_gets_404_on_chat_message_create(self):
-        """Posting into another customer's chat session is a 404."""
-        url = reverse(
-            "api:support:chat-message-create", kwargs={"session_id": self.session.pk}
-        )
-        _login(self.client, self.other)
-        response = self.client.post(
-            url,
-            {"message": "Spam"},
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="idor-chat-msg",
-        )
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertEqual(ChatMessage.objects.filter(session=self.session).count(), 0)
-
-    def test_other_user_gets_404_on_chat_end(self):
-        """Ending another customer's chat session is a 404."""
-        url = reverse(
-            "api:support:chat-session-end", kwargs={"session_id": self.session.pk}
-        )
-        _login(self.client, self.other)
-        response = self.client.post(url)
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.session.refresh_from_db()
-        self.assertIsNone(self.session.ended_at)
+    def test_customer_cannot_list_tickets(self):
+        """A customer token is refused from the ticket queue."""
+        url = reverse("api:support:ticket-list-create")
+        _login(self.client, self.customer)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
 
 
 class ReviewPhotoIdorAuditTests(APITestCase):
@@ -252,72 +163,61 @@ class ReviewPhotoIdorAuditTests(APITestCase):
         self.assertTrue(ReviewPhoto.objects.filter(pk=self.photo.pk).exists())
 
 
-class OrderAndPaymentIdorAuditTests(APITestCase):
-    """A second user cannot reach user A's orders or their payment state."""
+class OrderRoleAuditTests(APITestCase):
+    """The staff order-status endpoint admits fulfilment roles only."""
 
     def setUp(self):
         cache.clear()
-        self.owner = _make_user("owner")
-        self.other = _make_user("other")
+        self.staff = _make_user("staff", role="support")
+        self.analyst = _make_user("analyst", role="analyst")
+        self.customer = _make_user("customer")
         _, self.variant = _make_product()
-        _stock_variant(self.variant)
-        cart = get_or_create_cart(user=self.owner)
-        add_item(cart, variant_id=self.variant.pk, quantity=1)
         self.order = Order.objects.create(
-            user=self.owner,
             phone="+254712345678",
-            status="pending",
+            status="confirmed",
             subtotal=Decimal("5000.00"),
             grand_total=Decimal("5000.00"),
         )
-        self.txn = MpesaTransaction.objects.create(
-            order=self.order,
-            phone_number=self.order.phone,
-            amount=self.order.grand_total,
-            checkout_request_id="ws_CO_IDOR_AUDIT",
-            status="pending",
+        self.url = reverse(
+            "api:orders:order-status-update", kwargs={"order_id": self.order.pk}
         )
 
-    def test_other_user_gets_404_on_order_detail(self):
-        """Another user's order id resolves to 404."""
-        url = reverse("api:orders:order-detail", kwargs={"order_ref": self.order.pk})
-        _login(self.client, self.other)
-        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+    def test_anonymous_rejected(self):
+        """Anonymous callers cannot move an order."""
+        response = self.client.post(self.url, {"to_status": "processing"})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_other_user_gets_404_on_order_cancel(self):
-        """Cancelling another user's order is a 404."""
-        url = reverse("api:orders:order-cancel", kwargs={"order_ref": self.order.pk})
-        _login(self.client, self.other)
-        response = self.client.post(
-            url, {}, format="json", HTTP_IDEMPOTENCY_KEY="idor-audit-cancel"
-        )
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+    def test_customer_rejected(self):
+        """A customer token cannot move an order."""
+        _login(self.client, self.customer)
+        response = self.client.post(self.url, {"to_status": "processing"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_other_user_gets_404_on_mpesa_transaction(self):
-        """Another user's M-Pesa transaction resolves to 404."""
-        url = reverse(
-            "api:payments:mpesa-transaction-status",
-            kwargs={"transaction_id": self.txn.pk},
-        )
-        _login(self.client, self.other)
-        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+    def test_analyst_rejected(self):
+        """An analyst token cannot move an order."""
+        _login(self.client, self.analyst)
+        response = self.client.post(self.url, {"to_status": "processing"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_support_moves_order(self):
+        """Support staff can advance the order."""
+        _login(self.client, self.staff)
+        response = self.client.post(self.url, {"to_status": "processing"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
 class ReturnIdorAuditTests(APITestCase):
-    """A second user cannot open or read a return on user A's order."""
+    """Return endpoints admit fulfilment roles only."""
 
     def setUp(self):
         cache.clear()
-        self.owner = _make_user("owner")
-        self.other = _make_user("other")
+        self.staff = _make_user("staff", role="support")
+        self.analyst = _make_user("analyst", role="analyst")
+        self.customer = _make_user("customer")
         _, self.variant = _make_product()
-        _stock_variant(self.variant)
-        cart = get_or_create_cart(user=self.owner)
-        add_item(cart, variant_id=self.variant.pk, quantity=1)
         self.order = Order.objects.create(
-            user=self.owner,
             phone="+254712345678",
-            status="pending",
+            status="delivered",
             subtotal=Decimal("5000.00"),
             grand_total=Decimal("5000.00"),
         )
@@ -338,73 +238,81 @@ class ReturnIdorAuditTests(APITestCase):
             status="requested",
         )
 
-    def test_other_user_cannot_create_return_on_foreign_order(self):
-        """Opening a return against another user's order is a 404."""
+    def test_anonymous_cannot_file_return(self):
+        """Unauthenticated callers cannot file a return."""
         url = reverse("api:returns:order-return-requests", args=[self.order.pk])
-        _login(self.client, self.other)
         response = self.client.post(
             url,
             {"reason": "faulty", "requested_resolution": "refund"},
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_other_user_gets_404_on_return_request_detail(self):
-        """Reading another user's return request is a 404."""
+    def test_customer_cannot_file_return(self):
+        """A customer token cannot file a return."""
+        url = reverse("api:returns:order-return-requests", args=[self.order.pk])
+        _login(self.client, self.customer)
+        response = self.client.post(
+            url,
+            {"reason": "faulty", "requested_resolution": "refund"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_analyst_cannot_file_return(self):
+        """An analyst token cannot file a return."""
+        url = reverse("api:returns:order-return-requests", args=[self.order.pk])
+        _login(self.client, self.analyst)
+        response = self.client.post(
+            url,
+            {"reason": "faulty", "requested_resolution": "refund"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_support_can_read_return_detail(self):
+        """Support staff can read the return request detail."""
         url = reverse(
             "api:returns:order-return-request-detail",
             kwargs={
-                "order_ref": self.order.pk,
+                "order_id": self.order.pk,
                 "return_request_id": self.return_request.pk,
             },
         )
-        _login(self.client, self.other)
-        self.assertEqual(self.client.get(url).status_code, status.HTTP_404_NOT_FOUND)
+        _login(self.client, self.staff)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
 
 
 class AnonymousAccessAuditTests(APITestCase):
-    """Owned resources reject unauthenticated callers.
+    """Staff resources reject unauthenticated callers.
 
-    Every owner-scoped resource must reject an anonymous caller with an
+    Every staff-scoped resource must reject an anonymous caller with an
     authentication error, never return the resource. This is the anonymous
-    counterpart to the cross-user probes above and is run uniformly across the
+    counterpart to the role probes above and is run uniformly across the
     same endpoint set so a regression can't hide in a per-app suite.
     """
 
     def setUp(self):
         cache.clear()
-        self.owner = _make_user("owner")
+        self.staff = _make_user("staff", role="support")
         self.address = Address.objects.create(
-            user=self.owner,
+            user=None,
             label="Home",
-            recipient_name="Owner",
+            recipient_name="Repeat Buyer",
             phone_number="+254700111222",
             county="Nairobi",
             area_name="Westlands",
         )
         product, self.variant = _make_product()
-        _stock_variant(self.variant)
-        cart = get_or_create_cart(user=self.owner)
-        add_item(cart, variant_id=self.variant.pk, quantity=1)
-        self.cart_item = cart.items.first()
         self.order = Order.objects.create(
-            user=self.owner,
             phone="+254712345678",
-            status="pending",
+            status="delivered",
             subtotal=Decimal("5000.00"),
             grand_total=Decimal("5000.00"),
         )
-        self.txn = MpesaTransaction.objects.create(
-            order=self.order,
-            phone_number=self.order.phone,
-            amount=self.order.grand_total,
-            checkout_request_id="ws_CO_ANON_AUDIT",
-            status="pending",
-        )
         self.ticket = Ticket.objects.create(
-            user=self.owner, category="other", subject="Anonymous probe"
+            user=self.staff, category="other", subject="Anonymous probe"
         )
-        self.chat = ChatSession.objects.create(user=self.owner)
         self.order_item = OrderItem.objects.create(
             order=self.order,
             product=product,
@@ -431,80 +339,25 @@ class AnonymousAccessAuditTests(APITestCase):
         )
 
     def test_anonymous_rejected_on_account_address(self):
-        """An unauthenticated caller cannot read another account's address."""
+        """An unauthenticated caller cannot read the staff directory."""
         url = reverse("api:accounts:address-detail", kwargs={"pk": self.address.pk})
         self._assert_rejected(lambda: self.client.get(url))
 
-    def test_anonymous_rejected_on_cart_item(self):
-        """An unauthenticated caller cannot mutate another account's cart.
-
-        Cart endpoints deliberately permit anonymous guests, so the gate is
-        unknown-session resolution: a caller with no session resolves their own
-        empty guest cart and user A's line inside it is a 404, exactly like a
-        cross-user probe.
-        """
-        url = reverse(
-            "api:cart:cart-item-detail", kwargs={"item_id": self.cart_item.pk}
-        )
-        response = self.client.patch(url, {"quantity": 1}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_anonymous_rejected_on_order_detail(self):
-        """An unauthenticated caller cannot read an order.
-
-        Order detail is deliberately open to anonymous *guests* who hold the
-        unguessable lookup token returned at creation, so the anonymous
-        rejection is resolution-based: an int id probe (or a guessed token)
-        resolves to 404 and reveals nothing.
-        """
-        url = reverse("api:orders:order-detail", kwargs={"order_ref": self.order.pk})
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_anonymous_rejected_on_mpesa_transaction(self):
-        """An unauthenticated caller cannot read a payment's state."""
-        url = reverse(
-            "api:payments:mpesa-transaction-status",
-            kwargs={"transaction_id": self.txn.pk},
-        )
+    def test_anonymous_rejected_on_ticket_list(self):
+        """An unauthenticated caller cannot read the ticket queue."""
+        url = reverse("api:support:ticket-list-create")
         self._assert_rejected(lambda: self.client.get(url))
-
-    def test_anonymous_rejected_on_ticket_detail(self):
-        """An unauthenticated caller cannot read a ticket thread."""
-        url = reverse("api:support:ticket-detail", kwargs={"ticket_id": self.ticket.pk})
-        self._assert_rejected(lambda: self.client.get(url))
-
-    def test_anonymous_rejected_on_chat_session(self):
-        """An unauthenticated caller cannot read a chat thread.
-
-        Chat endpoints deliberately permit anonymous guests, so the
-        authentication gate for them is unknown-session resolution: a caller
-        with no session can never reach an existing session, which resolves to
-        404 exactly like a cross-user probe.
-        """
-        url = reverse(
-            "api:support:chat-session-detail",
-            kwargs={"session_id": self.chat.pk},
-        )
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_anonymous_rejected_on_return_request(self):
-        """An unauthenticated caller cannot read a return request.
-
-        Return-request lookups route through the order resolver, which treats
-        the anonymous int-id probe as a guest token lookup that can never
-        match, so the anonymous rejection is a 404 that reveals nothing.
-        """
+        """An unauthenticated caller cannot read a return request."""
         url = reverse(
             "api:returns:order-return-request-detail",
             kwargs={
-                "order_ref": self.order.pk,
+                "order_id": self.order.pk,
                 "return_request_id": self.return_request.pk,
             },
         )
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self._assert_rejected(lambda: self.client.get(url))
 
     def test_anonymous_rejected_on_current_user(self):
         """The /me/ endpoint requires an authenticated caller."""

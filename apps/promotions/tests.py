@@ -785,7 +785,7 @@ class PromotionAdminApiTests(APITestCase):
     def test_customer_cannot_manage_discounts(self):
         """A plain customer is rejected from creating a discount."""
         _make_user()
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
             URLS["admin_discounts"],
             {

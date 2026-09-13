@@ -24,13 +24,9 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.cart.services import add_item, get_or_create_cart
 from apps.catalog.models import Category, Product, ProductVariant
 from apps.core.models import SiteConfig
-from apps.orders.services import (
-    confirm_order_from_verification,
-    create_order_from_cart,
-)
+from apps.orders.services import create_staff_order
 from apps.reviews.cache import invalidate_feature_enabled
 from apps.reviews.models import (
     ProductAnswer,
@@ -44,7 +40,6 @@ from apps.reviews.services import (
     set_review_approval,
 )
 from apps.reviews.tasks import cleanup_orphan_review_photos
-from apps.shipping.models import DeliveryZone
 
 _SEQ = [0]
 
@@ -109,42 +104,23 @@ def _make_product(price="5000.00", **kwargs):
     return product, variant
 
 
-def _delivery_zone():
-    """Return a reusable active delivery zone for physical orders."""
-    zone, _ = DeliveryZone.objects.get_or_create(
-        county="Nairobi",
-        area_name="Westlands",
-        defaults={"base_fee": "200.00", "per_kg_rate": "50.00"},
-    )
-    return zone
-
-
 def _place_cod_order(variant, phone="+254712345678", quantity=1):
-    """Place a guest COD order for a stocked variant and confirm it."""
-    _stock_variant(variant)
+    """Create a confirmed intake order for a variant."""
     _SEQ[0] += 1
-    cart = get_or_create_cart(session_key=f"review-cart-{_SEQ[0]}")
-    add_item(cart, variant_id=variant.pk, quantity=quantity)
-    order = create_order_from_cart(
-        cart=cart,
+    staff = User.objects.create_user(
+        email=f"reviewstaff{_SEQ[0]}@example.com",
+        username=f"reviewstaff{_SEQ[0]}",
+        password="StrongPass123!",
+        phone_number="+254700000001",
+        role="support",
+    )
+    return create_staff_order(
+        staff_user=staff,
         phone=phone,
+        lines=[{"variant_id": variant.pk, "quantity": quantity}],
+        order_source="whatsapp",
         payment_method="cod",
-        delivery_zone_id=_delivery_zone().pk,
     )
-    return confirm_order_from_verification(order)
-
-
-def _stock_variant(variant, quantity=20):
-    """Ensure a count-tracked variant has stock in a test warehouse."""
-    from apps.inventory.models import Inventory, Warehouse
-
-    warehouse, _ = Warehouse.objects.get_or_create(name="Main")
-    Inventory.objects.update_or_create(
-        variant=variant,
-        warehouse=warehouse,
-        defaults={"quantity": quantity, "reserved": 0},
-    )
-    return warehouse
 
 
 def _tiny_png():
@@ -173,7 +149,6 @@ class ReviewRatingServiceTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.product, self.variant = _make_product()
-        _stock_variant(self.variant)
 
     def test_new_review_starts_hidden(self):
         """A fresh submission is unapproved and moves no aggregate."""
@@ -290,16 +265,12 @@ class ReviewRatingServiceTests(APITestCase):
             )
         self.assertEqual(Review.objects.count(), 0)
 
-    def test_verified_purchase_rejects_pending_order_line(self):
-        """An unconfirmed order line does not prove a purchase."""
-        cart = get_or_create_cart(session_key="pending-cart")
-        add_item(cart, variant_id=self.variant.pk, quantity=1)
-        order = create_order_from_cart(
-            cart=cart,
-            phone="+254712345678",
-            payment_method="cod",
-            delivery_zone_id=_delivery_zone().pk,
-        )
+    def test_verified_purchase_rejects_cancelled_order_line(self):
+        """A cancelled order line does not prove a purchase."""
+        from apps.orders.services import transition_order
+
+        order = _place_cod_order(self.variant, phone="+254712345678")
+        transition_order(order, "cancelled")
         with self.assertRaisesMessage(ValidationError, "does not qualify"):
             create_review(
                 product=self.product,
@@ -345,7 +316,6 @@ class ReviewEndpointTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.product, self.variant = _make_product()
-        _stock_variant(self.variant)
         self.review_url = reverse(
             "api:reviews:product-reviews", kwargs={"slug": self.product.slug}
         )
@@ -529,12 +499,17 @@ class ModerationEndpointTests(APITestCase):
 
     def test_moderation_list_requires_staff_role(self):
         """Customers and analysts cannot reach the moderation inbox."""
-        for email in ("buyer@example.com", "analyst@example.com"):
-            self._login_as(email)
-            response = self.client.get(reverse("api:reviews:review-moderation-list"))
-            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-            response = self.client.get(reverse("api:reviews:question-moderation-list"))
-            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.get(reverse("api:reviews:review-moderation-list"))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        response = self.client.get(reverse("api:reviews:question-moderation-list"))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.client.credentials()
+        self._login_as("analyst@example.com")
+        response = self.client.get(reverse("api:reviews:review-moderation-list"))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        response = self.client.get(reverse("api:reviews:question-moderation-list"))
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_anonymous_cannot_reach_moderation(self):
         """An unauthenticated caller is rejected outright, not filtered."""
@@ -582,7 +557,7 @@ class ModerationEndpointTests(APITestCase):
 
     def test_customer_cannot_answer_questions(self):
         """Only manager/support tokens may post staff answers."""
-        self._login_as("buyer@example.com")
+        self.client.force_authenticate(user=self.customer)
         response = self.client.post(
             reverse(
                 "api:reviews:question-answers",
@@ -677,8 +652,12 @@ class ReviewPhotoUploadTests(APITestCase):
 
     def test_authenticated_upload_binds_user(self):
         """A logged-in upload keeps the account attribution."""
-        user = _make_user()
-        _login(self.client)
+        user = _make_user(
+            email="staffup@example.com",
+            username="staffup",
+            role="support",
+        )
+        _login(self.client, email="staffup@example.com")
         with (
             mock.patch(
                 "apps.reviews.views.default_storage.save",
@@ -824,7 +803,9 @@ class ReviewPhotoDeleteTests(APITestCase):
     def test_authenticated_owner_can_delete_unattached_photo(self):
         """A logged-in owner deletes their own upload."""
         owned = _make_unattached_photo("owned.png", user=self.owner)
-        _login(self.client)
+        self.owner.role = "support"
+        self.owner.save(update_fields=["role"])
+        _login(self.client, email=self.owner.email)
         with mock.patch("apps.reviews.signals.delete_image_files") as deleter:
             response = self.client.delete(self._url(owned.pk))
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
@@ -910,7 +891,6 @@ class ReviewPhotoClaimTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.product, self.variant = _make_product()
-        _stock_variant(self.variant)
         self.other_product, _ = _make_product(price="9000.00")
         self.review_url = reverse(
             "api:reviews:product-reviews", kwargs={"slug": self.product.slug}
