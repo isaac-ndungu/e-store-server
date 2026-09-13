@@ -51,9 +51,7 @@ services:
           name: e-store-redis
           property: connectionString
 
-databases: []
-
-keyvalues:
-  - name: e-store-redis
+  - type: keyvalue
+    name: e-store-redis
     plan: free
     maxmemoryPolicy: noeviction
