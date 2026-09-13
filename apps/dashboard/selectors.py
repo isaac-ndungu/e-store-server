@@ -32,6 +32,8 @@ from django.utils import timezone
 
 from apps.analytics.selectors import (
     apply_period,
+    inquiries_summary,
+    orders_by_source,
     orders_by_status,
     product_performance,
     promotions_summary,
@@ -42,13 +44,12 @@ from apps.analytics.selectors import (
     traffic_summary,
 )
 from apps.bundles.models import Bundle
-from apps.catalog.models import Product
+from apps.catalog.models import Product, ProductVariant
 from apps.collections.models import Collection
-from apps.inventory.models import Inventory, StockReservation
-from apps.orders.models import Order, OrderItem, OrderVerification
+from apps.inquiries.models import Inquiry
+from apps.orders.models import Order, OrderItem
 from apps.promotions.models import Coupon, Discount
 from apps.returns.models import ReturnRequest
-from apps.shipping.models import DeliveryZone, WarehouseZonePriority
 from apps.support.models import Ticket
 
 # Order statuses excluded from the kept-order base, matching the analytics
@@ -57,8 +58,8 @@ _KEPT_ORDER_Q = ~Q(status__in=["cancelled", "refunded"])
 
 # Alert and staleness windows, in one place so dashboard tests can seed rows a
 # minute either side of the boundary and assert the edge behaviour.
-_RESERVATION_EXPIRY_WINDOW = timedelta(minutes=15)
 _COLLECTION_STALE_AGE = timedelta(minutes=30)
+_INQUIRY_STALE_AGE = timedelta(hours=24)
 _PROMOTION_EXPIRING_WINDOW = timedelta(hours=48)
 _SUPPORT_OLD_TICKET_AGE = timedelta(hours=24)
 _RETURN_STUCK_AGE = timedelta(hours=72)
@@ -124,6 +125,7 @@ def sales_dashboard(from_time=None, to_time=None):
     return {
         "summary": sales_summary(from_time, to_time),
         "orders_by_status": orders_by_status(from_time, to_time),
+        "orders_by_source": orders_by_source(from_time, to_time),
         "conversion": {
             "views": views,
             "delivered": delivered,
@@ -132,28 +134,87 @@ def sales_dashboard(from_time=None, to_time=None):
     }
 
 
+def source_dashboard(from_time=None, to_time=None):
+    """Return the order-source widget for the period.
+
+    The source split (whatsapp/email/admin-manual) is the primary channel
+    breakdown for staff-created orders. Each entry carries count, value, and
+    share of kept-period order value so staff see which hand-off channel
+    drives revenue.
+
+    Args:
+        from_time (datetime | None): inclusive lower bound, or None.
+        to_time (datetime | None): inclusive upper bound, or None.
+
+    Returns:
+        dict: ``sources`` rows plus ``total_orders`` and ``total_value``.
+    """
+    sources = orders_by_source(from_time, to_time)
+    total_orders = sum(row["count"] for row in sources)
+    total_value = sum((row["value"] for row in sources), Decimal(0))
+    entries = []
+    for row in sources:
+        if total_value:
+            share = (
+                Decimal(row["value"]) / Decimal(total_value) * Decimal(100)
+            ).quantize(Decimal("0.01"))
+        else:
+            share = Decimal("0.00")
+        entries.append(
+            {
+                "source": row["source"],
+                "count": row["count"],
+                "value": row["value"],
+                "share_percent": share,
+            }
+        )
+    return {
+        "total_orders": total_orders,
+        "total_value": total_value,
+        "sources": entries,
+    }
+
+
+def inquiry_conversion_dashboard(from_time=None, to_time=None):
+    """Return the inquiry-conversion funnel widget for the period.
+
+    Wraps the shared inquiry aggregate and adds funnel rates: contacted and
+    converted shares of total hand-offs, so staff see how much of the
+    WhatsApp/email queue turns into real orders.
+
+    Args:
+        from_time (datetime | None): inclusive lower bound, or None.
+        to_time (datetime | None): inclusive upper bound, or None.
+
+    Returns:
+        dict: the inquiry aggregate plus a ``funnel`` rate breakdown.
+    """
+    aggregate = inquiries_summary(from_time, to_time)
+    total = aggregate["total"]
+    by_status = {row["status"]: row["count"] for row in aggregate["by_status"]}
+    contacted = by_status.get("contacted", 0) + by_status.get("converted", 0)
+    return {
+        **aggregate,
+        "funnel": {
+            "contacted": contacted,
+            "contacted_rate_percent": _as_percent(contacted, total),
+            "converted_rate_percent": aggregate["conversion_rate_percent"],
+        },
+    }
+
+
 def cod_dashboard():
     """Return the COD-operations widget for the current state.
 
-    COD is tracked through two existing sources — ``OrderVerification`` rows
-    (the delivery OTP flow) and COD orders their own statuses — so the widget
-    is a live split of both rather than a per-collection register that does
-    not yet exist.
+    COD orders are tracked by their own fulfilment statuses — collection
+    happens at the door, so this is a live split of open, delivered, and
+    failed COD orders rather than a payment-callback funnel.
 
     Returns:
-        dict: ``verifications`` split by status and ``orders`` split by
-            fulfilment state.
+        dict: ``orders`` split by fulfilment state.
     """
-    verifications = OrderVerification.objects.all()
     cod_orders = Order.objects.filter(payment_method="cod")
     return {
-        "verifications": {
-            "total": verifications.count(),
-            "pending": verifications.filter(status="pending").count(),
-            "verified": verifications.filter(status="verified").count(),
-            "expired": verifications.filter(status="expired").count(),
-            "failed": verifications.filter(status="failed").count(),
-        },
         "orders": {
             "total": cod_orders.count(),
             "open": cod_orders.filter(status__in=_OPEN_ORDER_STATUSES).count(),
@@ -164,31 +225,16 @@ def cod_dashboard():
 
 
 def stock_dashboard():
-    """Return the stock-and-reservations widget for the current state.
+    """Return the stock widget for the current state.
 
-    Wraps the analytics stock snapshot and adds the reservation pipeline:
-    how many active reservations are close to expiring (within the sweep
-    grace window) versus how many have already passed their expiry and are
-    waiting on the next sweep to be released.
+    Wraps the analytics stock snapshot; with no pending-payment holds left
+    in the system there is no reservation pipeline to report.
 
     Returns:
-        dict: the stock snapshot plus a ``reservations`` breakdown.
+        dict: the stock snapshot.
     """
-    now = timezone.now()
-    active = StockReservation.objects.filter(status="active")
-    window_end = now + _RESERVATION_EXPIRY_WINDOW
     return {
         "snapshot": stock_snapshot(),
-        "reservations": {
-            "active": active.count(),
-            "expiry_window_minutes": int(
-                _RESERVATION_EXPIRY_WINDOW.total_seconds() // 60
-            ),
-            "expiring_soon": active.filter(
-                expires_at__gte=now, expires_at__lte=window_end
-            ).count(),
-            "overdue_unreleased": active.filter(expires_at__lt=now).count(),
-        },
     }
 
 
@@ -465,37 +511,6 @@ def returns_dashboard(from_time=None, to_time=None):
     }
 
 
-def warehouse_routing_dashboard():
-    """Return the warehouse-routing coverage widget for the current state.
-
-    A delivery zone is covered when it has at least one configured
-    ``WarehouseZonePriority`` row; zones with none fall back to an
-    unranked warehouse guess and are surfaced as routing gaps.
-
-    Returns:
-        dict: zone totals, coverage percentage, and the gap list.
-    """
-    active_zones = list(
-        DeliveryZone.objects.filter(is_active=True).only("pk", "county", "area_name")
-    )
-    configured = set(
-        WarehouseZonePriority.objects.values_list("delivery_zone_id", flat=True)
-    )
-    gaps = [
-        {"county": zone.county, "area_name": zone.area_name}
-        for zone in active_zones
-        if zone.pk not in configured
-    ]
-    total = len(active_zones)
-    covered = total - len(gaps)
-    return {
-        "zones_total": total,
-        "zones_covered": covered,
-        "coverage_percent": _as_percent(covered, total),
-        "gaps": gaps,
-    }
-
-
 def support_dashboard(from_time=None, to_time=None):
     """Return the support widget with an age breakdown of the open queue.
 
@@ -552,50 +567,41 @@ def alerts():
     now = timezone.now()
     alerts = []
 
-    stock_rows = list(
-        Inventory.objects.annotate(available_units=F("quantity") - F("reserved"))
-        .filter(available_units__lte=F("low_stock_threshold"))
-        .select_related("variant__product", "warehouse")
-        .order_by("available_units")
+    off_sale = list(
+        ProductVariant.objects.filter(
+            is_active=True, product__is_active=True, stock_status="out_of_stock"
+        )
+        .select_related("product")
+        .order_by("sku")
     )
-    if stock_rows:
-        out_of_stock = any(row.available_units == 0 for row in stock_rows)
+    thin = list(
+        ProductVariant.objects.filter(
+            is_active=True, product__is_active=True, stock_status="low_stock"
+        )
+        .select_related("product")
+        .order_by("sku")
+    )
+    if off_sale:
         alerts.append(
             {
-                "type": "low_stock",
-                "severity": "critical" if out_of_stock else "warning",
-                "count": len(stock_rows),
+                "type": "out_of_stock",
+                "severity": "critical",
+                "count": len(off_sale),
                 "items": [
-                    {
-                        "label": (
-                            f"{row.variant.sku} ({row.warehouse.name}) — "
-                            f"{row.available_units} left"
-                        )
-                    }
-                    for row in stock_rows[:8]
+                    {"label": f"{row.sku} ({row.product.name}) — out of stock"}
+                    for row in off_sale[:8]
                 ],
             }
         )
-
-    expiring = StockReservation.objects.filter(
-        status="active", expires_at__lte=now + _RESERVATION_EXPIRY_WINDOW
-    ).select_related("inventory__variant", "order_item__order")
-    expiring_count = expiring.count()
-    if expiring_count:
+    if thin:
         alerts.append(
             {
-                "type": "reservation_expiring",
+                "type": "low_stock",
                 "severity": "warning",
-                "count": expiring_count,
+                "count": len(thin),
                 "items": [
-                    {
-                        "label": (
-                            f"{reservation.inventory.variant.sku} reservation "
-                            f"{reservation.pk} expires "
-                            f"{reservation.expires_at.isoformat()}"
-                        )
-                    }
-                    for reservation in expiring.order_by("expires_at")[:8]
+                    {"label": f"{row.sku} ({row.product.name}) — low stock"}
+                    for row in thin[:8]
                 ],
             }
         )
@@ -655,6 +661,23 @@ def alerts():
                 "severity": "info",
                 "count": len(stale_smart),
                 "items": [{"label": f"collection {c.slug}"} for c in stale_smart[:8]],
+            }
+        )
+
+    stale_inquiries = Inquiry.objects.filter(
+        status="new", created_at__lt=now - _INQUIRY_STALE_AGE
+    ).order_by("created_at")
+    stale_inquiry_count = stale_inquiries.count()
+    if stale_inquiry_count:
+        alerts.append(
+            {
+                "type": "stale_inquiries",
+                "severity": "warning",
+                "count": stale_inquiry_count,
+                "items": [
+                    {"label": f"inquiry {inquiry.reference}"}
+                    for inquiry in stale_inquiries[:8]
+                ],
             }
         )
 

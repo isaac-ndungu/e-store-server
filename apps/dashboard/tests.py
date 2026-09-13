@@ -26,15 +26,16 @@ from apps.accounts.models import User
 from apps.bundles.models import Bundle
 from apps.catalog.models import Product, ProductVariant
 from apps.collections.models import Collection
-from apps.inventory.models import Inventory, StockReservation, Warehouse
-from apps.orders.models import Order, OrderItem, OrderVerification
+from apps.inquiries.models import Inquiry
+from apps.orders.models import Order, OrderItem
 from apps.promotions.models import Coupon, Discount
 from apps.returns.models import ReturnRequest
-from apps.shipping.models import DeliveryZone, WarehouseZonePriority
 from apps.social_proof.models import ProductViewEvent
 from apps.support.models import Ticket
 
 SALES_URL = "api:dashboard:sales"
+SOURCES_URL = "api:dashboard:sources"
+INQUIRY_CONVERSION_URL = "api:dashboard:inquiry-conversion"
 COD_URL = "api:dashboard:cod-operations"
 STOCK_URL = "api:dashboard:stock"
 PRODUCTS_URL = "api:dashboard:products"
@@ -42,12 +43,13 @@ COLLECTIONS_URL = "api:dashboard:collections"
 BUNDLES_URL = "api:dashboard:bundles"
 PROMOTIONS_URL = "api:dashboard:promotions"
 RETURNS_URL = "api:dashboard:returns"
-WAREHOUSE_URL = "api:dashboard:warehouse-routing"
 SUPPORT_URL = "api:dashboard:support"
 ALERTS_URL = "api:dashboard:alerts"
 
 ENDPOINTS = [
     SALES_URL,
+    SOURCES_URL,
+    INQUIRY_CONVERSION_URL,
     COD_URL,
     STOCK_URL,
     PRODUCTS_URL,
@@ -55,7 +57,6 @@ ENDPOINTS = [
     BUNDLES_URL,
     PROMOTIONS_URL,
     RETURNS_URL,
-    WAREHOUSE_URL,
     SUPPORT_URL,
     ALERTS_URL,
 ]
@@ -115,17 +116,11 @@ def _make_product(sku, name, **kwargs):
     return product, variant
 
 
-def _make_inventory(variant, warehouse_name="Nairobi WH", **kwargs):
-    """Create a warehouse and an inventory row for a variant."""
-    warehouse = Warehouse.objects.create(name=warehouse_name)
-    return Inventory.objects.create(
-        variant=variant,
-        warehouse=warehouse,
-        quantity=kwargs.pop("quantity", 10),
-        reserved=kwargs.pop("reserved", 0),
-        low_stock_threshold=kwargs.pop("low_stock_threshold", 5),
-        **kwargs,
-    )
+def _flag_variant(variant, stock_status):
+    """Set a variant's staff availability flag."""
+    variant.stock_status = stock_status
+    variant.save(update_fields=["stock_status"])
+    return variant
 
 
 def _make_item(order, variant, *, quantity=1, unit_price, total_price, **kwargs):
@@ -179,16 +174,14 @@ class DashboardAccessControlTests(_AnalystClient):
             )
 
     def test_customer_token_rejected(self):
-        """A logged-in customer cannot read any widget."""
+        """A customer credential gets no token to read any widget with."""
         _make_user()
-        _login(self.client)
-        for url_name in ENDPOINTS:
-            url = reverse(url_name)
-            self.assertEqual(
-                self.client.get(url).status_code,
-                status.HTTP_403_FORBIDDEN,
-                f"{url_name} allowed customer access",
-            )
+        login = self.client.post(
+            reverse("api:accounts:login"),
+            {"email": "buyer@example.com", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_support_and_courier_roles_rejected(self):
         """Support and courier roles cannot read revenue widgets."""
@@ -260,7 +253,6 @@ class DashboardParamValidationTests(_AnalystClient):
             COD_URL,
             STOCK_URL,
             COLLECTIONS_URL,
-            WAREHOUSE_URL,
             ALERTS_URL,
         ):
             url = reverse(url_name)
@@ -368,34 +360,6 @@ class SalesDashboardTests(_AnalystClient):
 class CodDashboardTests(_AnalystClient):
     """The COD-operations widget reconciles status splits."""
 
-    def test_verification_status_split(self):
-        """The verification split matches the seeded OrderVerification rows."""
-        user = _make_user()
-        expected = {"pending": 2, "verified": 1, "failed": 1, "expired": 1}
-        for index, item in enumerate(expected.items()):
-            status_name, count = item
-            for _ in range(count):
-                order = _make_order(
-                    user,
-                    status_name="pending",
-                    subtotal=Decimal("100.00"),
-                    grand_total=Decimal("100.00"),
-                )
-                OrderVerification.objects.create(
-                    order=order,
-                    otp_code=f"{index:06d}",
-                    phone_number="+254712345678",
-                    status=status_name,
-                )
-        response = self.client.get(reverse(COD_URL))
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        verifications = response.data["verifications"]
-        self.assertEqual(verifications["total"], 5)
-        for key, count in expected.items():
-            self.assertEqual(
-                verifications[key], count, f"verification {key} split wrong"
-            )
-
     def test_cod_order_status_split(self):
         """The COD order split matches seeded COD orders."""
         user = _make_user()
@@ -436,58 +400,21 @@ class CodDashboardTests(_AnalystClient):
 
 
 class StockDashboardTests(_AnalystClient):
-    """The stock widget reconciles snapshot and reservation windows."""
+    """The stock widget counts variants by staff-set status."""
 
-    def test_snapshot_reconciles_across_warehouses(self):
-        """Units, reserved, and available are summed across warehouses."""
-        first_product, first_variant = _make_product("SNAP1", "Snap One")
-        _make_inventory(first_variant, "Nairobi WH", quantity=6, reserved=2)
-        _make_inventory(first_variant, "Mombasa WH", quantity=4, reserved=0)
+    def test_snapshot_counts_statuses(self):
+        """In-stock, low, and out-of-stock variants are counted separately."""
+        _, in_variant = _make_product("SNAP1", "Snap One")
+        _, low_variant = _make_product("SNAP2", "Snap Two")
+        _, out_variant = _make_product("SNAP3", "Snap Three")
+        _flag_variant(low_variant, "low_stock")
+        _flag_variant(out_variant, "out_of_stock")
         response = self.client.get(reverse(STOCK_URL))
         snapshot = response.data["snapshot"]
-        self.assertEqual(snapshot["units"], 10)
-        self.assertEqual(snapshot["reserved"], 2)
-        self.assertEqual(snapshot["available"], 8)
-
-    def test_reservation_expiry_boundary(self):
-        """Reservations just inside the expiry window are flagged, just outside not."""
-        _, variant = _make_product("RES1", "Reserved One")
-        inventory = _make_inventory(variant, "Nairobi WH", quantity=10)
-        StockReservation.objects.create(
-            inventory=inventory,
-            quantity=1,
-            expires_at=timezone.now() + timedelta(minutes=14),
-        )
-        StockReservation.objects.create(
-            inventory=inventory,
-            quantity=1,
-            expires_at=timezone.now() + timedelta(minutes=16),
-        )
-        response = self.client.get(reverse(STOCK_URL))
-        reservations = response.data["reservations"]
-        self.assertEqual(reservations["active"], 2)
-        self.assertEqual(reservations["expiring_soon"], 1)
-        self.assertEqual(reservations["overdue_unreleased"], 0)
-
-    def test_overdue_unreleased_boundary(self):
-        """Reservations past expiry are overdue; released ones are not counted."""
-        _, variant = _make_product("RES2", "Reserved Two")
-        inventory = _make_inventory(variant, "Nairobi WH", quantity=10)
-        StockReservation.objects.create(
-            inventory=inventory,
-            quantity=1,
-            expires_at=timezone.now() - timedelta(minutes=1),
-        )
-        StockReservation.objects.create(
-            inventory=inventory,
-            quantity=1,
-            expires_at=timezone.now() + timedelta(minutes=1),
-            status="released",
-        )
-        response = self.client.get(reverse(STOCK_URL))
-        reservations = response.data["reservations"]
-        self.assertEqual(reservations["active"], 1)
-        self.assertEqual(reservations["overdue_unreleased"], 1)
+        self.assertEqual(snapshot["in_stock"], 1)
+        self.assertEqual(snapshot["low_stock"], 1)
+        self.assertEqual(snapshot["out_of_stock"], 1)
+        self.assertEqual(snapshot["variants"], 3)
 
 
 class ProductsDashboardTests(_AnalystClient):
@@ -776,36 +703,6 @@ class ReturnsDashboardTests(_AnalystClient):
         self.assertEqual(response.data["resolution"]["stuck_open_over_threshold"], 1)
 
 
-class WarehouseRoutingDashboardTests(_AnalystClient):
-    """The warehouse-routing widget surfaces zones without a priority."""
-
-    def test_zones_without_priority_surfaced_as_gaps(self):
-        """Zones with zero WarehouseZonePriority rows are flagged as gaps."""
-        covered = DeliveryZone.objects.create(
-            county="Nairobi", area_name="Westlands", base_fee=Decimal("200.00")
-        )
-        DeliveryZone.objects.create(
-            county="Nairobi", area_name="Githurai", base_fee=Decimal("250.00")
-        )
-        DeliveryZone.objects.create(
-            county="Mombasa", area_name="Nyali", base_fee=Decimal("300.00")
-        )
-        warehouse = Warehouse.objects.create(name="Nairobi WH")
-        WarehouseZonePriority.objects.create(
-            delivery_zone=covered, warehouse=warehouse, priority=0
-        )
-        response = self.client.get(reverse(WAREHOUSE_URL))
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        data = response.data
-        self.assertEqual(data["zones_total"], 3)
-        self.assertEqual(data["zones_covered"], 1)
-        self.assertEqual(data["coverage_percent"], Decimal("33.33"))
-        self.assertEqual(len(data["gaps"]), 2)
-        gap_areas = {(entry["county"], entry["area_name"]) for entry in data["gaps"]}
-        self.assertIn(("Nairobi", "Githurai"), gap_areas)
-        self.assertIn(("Mombasa", "Nyali"), gap_areas)
-
-
 class SupportDashboardTests(_AnalystClient):
     """The support widget reconciles the open-queue age breakdown."""
 
@@ -861,45 +758,30 @@ class SupportDashboardTests(_AnalystClient):
 class AlertsDashboardTests(_AnalystClient):
     """Every alert fires under its seeded boundary and stays silent outside."""
 
-    def test_low_stock_alert_boundary(self):
-        """Inventory at or below the threshold alerts; above it stays silent."""
+    def test_out_of_stock_alert_is_critical(self):
+        """Variants staff flagged out of stock raise a critical alert."""
         _, low_variant = _make_product("LOW1", "Low Stock")
-        _make_inventory(low_variant, "Nairobi WH", quantity=2, reserved=2)
+        _flag_variant(low_variant, "low_stock")
+        _, out_variant = _make_product("OUT1", "Out Stock")
+        _flag_variant(out_variant, "out_of_stock")
         _, fine_variant = _make_product("FINE1", "Fine Stock")
-        _make_inventory(fine_variant, "Mombasa WH", quantity=20)
         response = self.client.get(reverse(ALERTS_URL))
-        low_alerts = [a for a in response.data["alerts"] if a["type"] == "low_stock"]
-        self.assertEqual(len(low_alerts), 1)
-        self.assertEqual(low_alerts[0]["count"], 1)
-        self.assertEqual(low_alerts[0]["severity"], "critical")
+        alerts = {a["type"]: a for a in response.data["alerts"]}
+        self.assertEqual(alerts["out_of_stock"]["severity"], "critical")
+        self.assertEqual(alerts["out_of_stock"]["count"], 1)
+        self.assertEqual(alerts["low_stock"]["severity"], "warning")
+        self.assertEqual(alerts["low_stock"]["count"], 1)
 
-    def test_low_stock_silent_just_above_threshold(self):
-        """Available units just above the reorder point produce no alert."""
-        _, variant = _make_product("HIGH1", "High Stock")
-        _make_inventory(variant, "Nairobi WH", quantity=6, low_stock_threshold=5)
+    def test_stock_alerts_silent_when_everything_in_stock(self):
+        """No availability alert fires when every variant is in stock."""
+        _make_product("HIGH1", "High Stock")
         response = self.client.get(reverse(ALERTS_URL))
-        self.assertFalse(any(a["type"] == "low_stock" for a in response.data["alerts"]))
-
-    def test_reservation_expiry_alert_boundary(self):
-        """Active reservations inside the window alert; outside stays silent."""
-        _, variant = _make_product("RESA", "Alert Reservation")
-        inventory = _make_inventory(variant, "Nairobi WH", quantity=10)
-        StockReservation.objects.create(
-            inventory=inventory,
-            quantity=1,
-            expires_at=timezone.now() + timedelta(minutes=14),
+        self.assertFalse(
+            any(
+                a["type"] in ("low_stock", "out_of_stock")
+                for a in response.data["alerts"]
+            )
         )
-        StockReservation.objects.create(
-            inventory=inventory,
-            quantity=1,
-            expires_at=timezone.now() + timedelta(minutes=16),
-        )
-        response = self.client.get(reverse(ALERTS_URL))
-        expiry_alerts = [
-            a for a in response.data["alerts"] if a["type"] == "reservation_expiring"
-        ]
-        self.assertEqual(len(expiry_alerts), 1)
-        self.assertEqual(expiry_alerts[0]["count"], 1)
 
     def test_failed_cod_alert_boundary(self):
         """Failed COD deliveries inside 24h alert; older ones stay silent."""
@@ -986,6 +868,48 @@ class AlertsDashboardTests(_AnalystClient):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["alerts"], [])
 
+    def test_stale_inquiry_alert_boundary(self):
+        """New inquiries past the staleness window alert; fresh ones stay silent."""
+        now = timezone.now()
+        stale = Inquiry.objects.create(
+            channel="whatsapp",
+            cart_snapshot=[
+                {"sku": "KTL-1", "name": "Kettle", "quantity": 1, "price": "1.00"}
+            ],
+        )
+        Inquiry.objects.filter(pk=stale.pk).update(
+            created_at=now - timedelta(hours=25), updated_at=now - timedelta(hours=25)
+        )
+        fresh = Inquiry.objects.create(
+            channel="email",
+            cart_snapshot=[
+                {"sku": "KTL-2", "name": "Kettle", "quantity": 1, "price": "1.00"}
+            ],
+        )
+        Inquiry.objects.filter(pk=fresh.pk).update(
+            created_at=now - timedelta(hours=23), updated_at=now - timedelta(hours=23)
+        )
+        contacted = Inquiry.objects.create(
+            channel="whatsapp",
+            cart_snapshot=[
+                {"sku": "KTL-3", "name": "Kettle", "quantity": 1, "price": "1.00"}
+            ],
+            status="contacted",
+        )
+        Inquiry.objects.filter(pk=contacted.pk).update(
+            created_at=now - timedelta(hours=25), updated_at=now - timedelta(hours=25)
+        )
+        response = self.client.get(reverse(ALERTS_URL))
+        stale_alerts = [
+            a for a in response.data["alerts"] if a["type"] == "stale_inquiries"
+        ]
+        self.assertEqual(len(stale_alerts), 1)
+        self.assertEqual(stale_alerts[0]["count"], 1)
+        stale.refresh_from_db()
+        self.assertEqual(
+            stale_alerts[0]["items"][0]["label"], f"inquiry {stale.reference}"
+        )
+
 
 class CollectionsServiceRefreshTests(_AnalystClient):
     """The last-refreshed write lands through the collections refresh service."""
@@ -1004,3 +928,75 @@ class CollectionsServiceRefreshTests(_AnalystClient):
         self.assertTrue(refresh_smart_collection(collection))
         refreshed = Collection.objects.get(pk=collection.pk)
         self.assertIsNotNone(refreshed.last_refreshed_at)
+
+
+class SourceDashboardTests(_AnalystClient):
+    """The order-source widget is the primary channel breakdown."""
+
+    def test_source_shares_reconcile(self):
+        """Counts, values, and shares match seeded staff-created orders."""
+        user = _make_user()
+        _make_order(
+            user,
+            status_name="delivered",
+            subtotal=Decimal("10000.00"),
+            grand_total=Decimal("10000.00"),
+            order_source="whatsapp",
+        )
+        _make_order(
+            user,
+            status_name="delivered",
+            subtotal=Decimal("30000.00"),
+            grand_total=Decimal("30000.00"),
+            order_source="email",
+        )
+        response = self.client.get(reverse(SOURCES_URL))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data
+        self.assertEqual(data["total_orders"], 2)
+        self.assertEqual(data["total_value"], Decimal("40000.00"))
+        by_source = {row["source"]: row for row in data["sources"]}
+        self.assertEqual(by_source["whatsapp"]["share_percent"], Decimal("25.00"))
+        self.assertEqual(by_source["email"]["share_percent"], Decimal("75.00"))
+
+    def test_sales_widget_carries_source_split(self):
+        """The sales widget includes the source breakdown alongside status."""
+        response = self.client.get(reverse(SALES_URL))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("orders_by_source", response.data)
+
+
+class InquiryConversionDashboardTests(_AnalystClient):
+    """The inquiry-conversion widget exposes the hand-off funnel."""
+
+    def test_funnel_rates(self):
+        """Contacted and converted rates match seeded inquiry rows."""
+        from apps.inquiries.models import Inquiry
+
+        Inquiry.objects.create(channel="whatsapp", cart_snapshot=[{"sku": "A"}])
+        contacted = Inquiry.objects.create(
+            channel="email", cart_snapshot=[{"sku": "B"}]
+        )
+        contacted.status = "contacted"
+        contacted.save(update_fields=["status", "updated_at"])
+        converted = Inquiry.objects.create(
+            channel="whatsapp", cart_snapshot=[{"sku": "C"}]
+        )
+        converted.status = "converted"
+        converted.save(update_fields=["status", "updated_at"])
+        response = self.client.get(reverse(INQUIRY_CONVERSION_URL))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data
+        self.assertEqual(data["total"], 3)
+        self.assertEqual(data["converted"], 1)
+        self.assertEqual(data["funnel"]["contacted"], 2)
+        self.assertEqual(data["funnel"]["contacted_rate_percent"], Decimal("66.67"))
+        self.assertEqual(data["funnel"]["converted_rate_percent"], Decimal("33.33"))
+
+    def test_empty_funnel(self):
+        """With no inquiries the funnel rates are zero."""
+        response = self.client.get(reverse(INQUIRY_CONVERSION_URL))
+        self.assertEqual(response.data["total"], 0)
+        self.assertEqual(
+            response.data["funnel"]["contacted_rate_percent"], Decimal("0.00")
+        )

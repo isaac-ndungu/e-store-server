@@ -12,17 +12,24 @@ from apps.dashboard.views import (
     BundlesDashboardView,
     CodOperationsDashboardView,
     CollectionsDashboardView,
+    InquiryConversionDashboardView,
     ProductsDashboardView,
     PromotionsDashboardView,
     ReturnsDashboardView,
     SalesDashboardView,
+    SourceDashboardView,
     StockDashboardView,
     SupportDashboardView,
-    WarehouseRoutingDashboardView,
 )
 
 urlpatterns = [
     path("dashboard/sales/", SalesDashboardView.as_view(), name="sales"),
+    path("dashboard/sources/", SourceDashboardView.as_view(), name="sources"),
+    path(
+        "dashboard/inquiry-conversion/",
+        InquiryConversionDashboardView.as_view(),
+        name="inquiry-conversion",
+    ),
     path(
         "dashboard/cod-operations/",
         CodOperationsDashboardView.as_view(),
@@ -42,11 +49,6 @@ urlpatterns = [
         name="promotions",
     ),
     path("dashboard/returns/", ReturnsDashboardView.as_view(), name="returns"),
-    path(
-        "dashboard/warehouse-routing/",
-        WarehouseRoutingDashboardView.as_view(),
-        name="warehouse-routing",
-    ),
     path("dashboard/support/", SupportDashboardView.as_view(), name="support"),
     path("dashboard/alerts/", AlertsDashboardView.as_view(), name="alerts"),
 ]

@@ -5,7 +5,7 @@ roles that may see revenue and internal aggregates. Like the analytics app
 these are pure read views: no create/update exists, every payload is a
 computed dict (never a writable model row), and each view resolves its query
 string through an explicit serializer before touching the database. The
-current-state widgets (COD, stock, collections, warehouse routing, alerts)
+current-state widgets (COD, stock, collections, alerts)
 accept no query parameters at all.
 """
 
@@ -21,13 +21,14 @@ from apps.dashboard.selectors import (
     bundles_dashboard,
     cod_dashboard,
     collections_dashboard,
+    inquiry_conversion_dashboard,
     products_dashboard,
     promotions_dashboard,
     returns_dashboard,
     sales_dashboard,
+    source_dashboard,
     stock_dashboard,
     support_dashboard,
-    warehouse_routing_dashboard,
 )
 from apps.dashboard.serializers import (
     DashboardQuerySerializer,
@@ -130,8 +131,50 @@ class CodOperationsDashboardView(DashboardAPIView):
         return Response(cod_dashboard())
 
 
+class SourceDashboardView(DashboardAPIView):
+    """Return the order-source widget for the period."""
+
+    @extend_schema(
+        operation_id="dashboard_sources",
+        responses={200: dict},
+    )
+    def get(self, request):
+        """Return the order-source widget.
+
+        Args:
+            request: the GET request with optional ``from``/``to``.
+
+        Returns:
+            Response: the source widget payload.
+        """
+        params = self.validated_params()
+        return Response(source_dashboard(params.get("start"), params.get("end")))
+
+
+class InquiryConversionDashboardView(DashboardAPIView):
+    """Return the inquiry-conversion funnel widget for the period."""
+
+    @extend_schema(
+        operation_id="dashboard_inquiry_conversion",
+        responses={200: dict},
+    )
+    def get(self, request):
+        """Return the inquiry-conversion widget.
+
+        Args:
+            request: the GET request with optional ``from``/``to``.
+
+        Returns:
+            Response: the inquiry-conversion widget payload.
+        """
+        params = self.validated_params()
+        return Response(
+            inquiry_conversion_dashboard(params.get("start"), params.get("end"))
+        )
+
+
 class StockDashboardView(DashboardAPIView):
-    """Return the stock-and-reservations widget for the current state."""
+    """Return the stock widget for the current state."""
 
     query_serializer_class = NoParamsSerializer
 
@@ -146,7 +189,7 @@ class StockDashboardView(DashboardAPIView):
             request: the GET request (no parameters accepted).
 
         Returns:
-            Response: the stock-and-reservations widget payload.
+            Response: the stock widget payload.
         """
         self.validated_params()
         return Response(stock_dashboard())
@@ -261,28 +304,6 @@ class ReturnsDashboardView(DashboardAPIView):
         """
         params = self.validated_params()
         return Response(returns_dashboard(params.get("start"), params.get("end")))
-
-
-class WarehouseRoutingDashboardView(DashboardAPIView):
-    """Return the warehouse-routing coverage widget."""
-
-    query_serializer_class = NoParamsSerializer
-
-    @extend_schema(
-        operation_id="dashboard_warehouse_routing",
-        responses={200: dict},
-    )
-    def get(self, request):
-        """Return the warehouse-routing widget.
-
-        Args:
-            request: the GET request (no parameters accepted).
-
-        Returns:
-            Response: the warehouse-routing widget payload.
-        """
-        self.validated_params()
-        return Response(warehouse_routing_dashboard())
 
 
 class SupportDashboardView(DashboardAPIView):
