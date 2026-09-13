@@ -154,19 +154,3 @@ def send_order_notification_task(order_id, purpose, **context):
         None: placeholder until wired to the orders app.
     """
     return None
-
-
-@shared_task
-def send_abandoned_cart_reminder_task(cart_id):
-    """Send an abandoned-cart reminder (stub).
-
-    Implemented once the cart app exists.  Will compose a reminder from
-    the ``abandoned_cart`` template and send it to the cart's contact.
-
-    Args:
-        cart_id (int): the cart to remind about.
-
-    Returns:
-        None: placeholder until wired to the cart app.
-    """
-    return None

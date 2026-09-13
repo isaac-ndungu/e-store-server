@@ -1,11 +1,11 @@
 """Tests for the notifications app.
 
 Covers the SMS service abstraction (success/failure logging through the
-provider mock, the failure contract, provider-exception propagation, OTP
-redaction from the stored message, and pre-dispatch phone validation), the
-staff-only test-send endpoint (permissions, throttle, validation, audit
-logging), notification-log retrieval with filters, and masking of internal
-error details from non-staff callers.
+provider mock, the failure contract, provider-exception propagation, and
+pre-dispatch phone validation), the staff-only test-send endpoint
+(permissions, throttle, validation, audit logging), notification-log
+retrieval with filters, and masking of internal error details from
+non-staff callers.
 """
 
 from unittest import mock
@@ -21,7 +21,6 @@ from apps.notifications.services import (
     _send_africastalking,
     send_email,
     send_notification,
-    send_otp_sms,
     send_sms,
 )
 
@@ -41,6 +40,7 @@ def _make_staff(password="StaffPass123!"):
         password=password,
         phone_number="+254712345678",
         is_staff=True,
+        role="manager",
     )
 
 
@@ -113,31 +113,6 @@ class SendSmsServiceTests(APITestCase):
         self.assertEqual(log.status, "failed")
         self.assertEqual(log.error_message, "Bad phone number")
         self.assertEqual(log.provider_message_id, "")
-
-    @mock.patch(
-        "apps.notifications.services._send_via_provider",
-        return_value={
-            "success": True,
-            "message_id": "ATXid_6789",
-            "response": {},
-            "error": "",
-        },
-    )
-    def test_send_otp_sms_redacts_otp_from_stored_message(self, mock_provider):
-        """The provider gets the full text, but the log never stores the OTP."""
-        log = send_otp_sms("+254712345678", "482913")
-        self.assertEqual(log.purpose, "otp")
-        self.assertEqual(log.status, "sent")
-
-        # The provider receives the full rendered body including the code.
-        provider_message = mock_provider.call_args[0][1]
-        self.assertIn("482913", provider_message)
-        self.assertIn("Do not share this code", provider_message)
-
-        # The audit log stores a masked body, so the live OTP is never in the DB.
-        self.assertNotIn("482913", log.message)
-        self.assertIn("******", log.message)
-        self.assertIn("Do not share this code", log.message)
 
     def test_africastalking_returns_bad_phone_error(self):
         """Africa's Talking failure status is parsed into a failed result."""
@@ -282,7 +257,7 @@ class SendTestSMSEndpointTests(APITestCase):
 
     def test_non_staff_cannot_send_test_sms(self):
         """A plain customer token is rejected (403) and no SMS is sent."""
-        _login(self.client, "buyer@example.com", "CustomerPass123!")
+        self.client.force_authenticate(user=self.customer)
         with mock.patch(
             "apps.notifications.services._send_via_provider"
         ) as mock_provider:
@@ -385,7 +360,7 @@ class NotificationLogEndpointTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.staff = _make_staff()
-        User.objects.create_user(
+        self.customer = User.objects.create_user(
             email="buyer@example.com",
             username="buyer",
             password="CustomerPass123!",
@@ -395,9 +370,9 @@ class NotificationLogEndpointTests(APITestCase):
         # Seed a couple of logs directly so list/filter behavior is testable.
         NotificationLog.objects.create(
             channel="sms",
-            purpose="otp",
+            purpose="transactional",
             recipient="+254*******78",
-            message="Your code is 123456.",
+            message="Your order update.",
             status="sent",
             provider_message_id="id_a",
             sent_by=self.staff,
@@ -420,7 +395,7 @@ class NotificationLogEndpointTests(APITestCase):
 
     def test_non_staff_cannot_list_logs(self):
         """A plain customer token is rejected (403)."""
-        _login(self.client, "buyer@example.com", "CustomerPass123!")
+        self.client.force_authenticate(user=self.customer)
         response = self.client.get(LOG_LIST_URL)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
@@ -624,6 +599,38 @@ class SecurityHardeningTests(APITestCase):
         "apps.notifications.services._send_via_provider",
         return_value={"success": True, "message_id": "", "response": {}, "error": ""},
     )
+    def test_per_recipient_hourly_cap_blocks_sustained_sends(self, mock_provider):
+        """The hourly per-recipient cap holds even when the minute window is clear."""
+        from django.core.cache import cache
+        from rest_framework import serializers
+
+        cache.set("sms_rate_hour:+254712345678", 20, timeout=3600)
+        with self.assertRaisesMessage(
+            serializers.ValidationError, "Too many SMS sends to +254712345678"
+        ):
+            send_sms("+254712345678", "Hi", "test")
+        mock_provider.assert_not_called()
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={"success": True, "message_id": "", "response": {}, "error": ""},
+    )
+    def test_per_recipient_daily_cap_blocks_sustained_sends(self, mock_provider):
+        """The daily per-recipient cap holds even when shorter windows are clear."""
+        from django.core.cache import cache
+        from rest_framework import serializers
+
+        cache.set("sms_rate_day:+254712345678", 50, timeout=86400)
+        with self.assertRaisesMessage(
+            serializers.ValidationError, "Too many SMS sends to +254712345678"
+        ):
+            send_sms("+254712345678", "Hi", "test")
+        mock_provider.assert_not_called()
+
+    @mock.patch(
+        "apps.notifications.services._send_via_provider",
+        return_value={"success": True, "message_id": "", "response": {}, "error": ""},
+    )
     def test_message_is_sanitized_via_endpoint(self, mock_provider):
         """HTML tags are stripped from the message through the send endpoint."""
         _login(self.client, "boss@example.com", "BossPass123!")
@@ -740,9 +747,11 @@ class NotificationInfrastructureTests(APITestCase):
         """A registered template renders with the supplied context."""
         from apps.notifications.notification_templates import render_message
 
-        message = render_message("sms", "otp", code="482913", expiry_minutes=10)
-        self.assertIn("482913", message)
-        self.assertIn("10 minutes", message)
+        message = render_message(
+            "sms", "order_confirmation", order_id=42, total="5000.00"
+        )
+        self.assertIn("42", message)
+        self.assertIn("5000.00", message)
 
     def test_template_registry_rejects_unknown_key(self):
         """An unregistered template key raises ValueError."""
@@ -859,64 +868,13 @@ class NotificationInfrastructureTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
 
-class LowStockAlertTests(APITestCase):
-    """Exercises the low-stock staff alert."""
-
-    def setUp(self):
-        cache.clear()
-        self.staff = _make_staff()
-
-    @mock.patch(
-        "apps.notifications.services._send_via_provider",
-        return_value={
-            "success": True,
-            "message_id": "",
-            "response": {"SMSMessageData": {"NumSegments": 1}},
-            "error": "",
-        },
-    )
-    def test_low_stock_notifies_all_staff_with_phones(self, mock_provider):
-        """Every staff user with a phone number is alerted."""
-        from apps.notifications.services import notify_low_stock
-
-        User.objects.create_user(
-            email="ops@example.com",
-            username="ops",
-            password="OpsPass123!",
-            phone_number="+254700111222",
-            is_staff=True,
-        )
-        User.objects.create_user(
-            email="nol@example.com",
-            username="nol",
-            password="NoPass123!",
-            phone_number="",
-            is_staff=True,
-        )
-
-        class _Variant:
-            name = "Kettle"
-            sku = "KTL-1"
-
-        class _Warehouse:
-            name = "Nairobi Main"
-
-        logs = notify_low_stock(_Variant(), _Warehouse(), quantity=3, threshold=5)
-
-        recipients = {log.recipient for log in logs}
-        self.assertIn("+254*******78", recipients)
-        self.assertIn("+254*******22", recipients)
-        self.assertNotIn("", recipients)
-        self.assertEqual(len(logs), 2)
-
-
 class NotificationLogDetailTests(APITestCase):
     """Exercises the single-log detail endpoint."""
 
     def setUp(self):
         cache.clear()
         self.staff = _make_staff()
-        _make_customer()
+        self.customer = _make_customer()
         self.log = NotificationLog.objects.create(
             channel="sms",
             purpose="test",
@@ -936,7 +894,7 @@ class NotificationLogDetailTests(APITestCase):
 
     def test_non_staff_cannot_get_log_detail(self):
         """A plain customer token is rejected (403)."""
-        _login(self.client, "buyer@example.com", "CustomerPass123!")
+        self.client.force_authenticate(user=self.customer)
         response = self.client.get(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
@@ -959,9 +917,9 @@ class ComposableFilterTests(APITestCase):
     def _seed(self):
         NotificationLog.objects.create(
             channel="sms",
-            purpose="otp",
+            purpose="transactional",
             recipient="+254*******78",
-            message="OTP",
+            message="Hello",
             status="sent",
             sent_by=self.staff,
         )
@@ -984,7 +942,7 @@ class ComposableFilterTests(APITestCase):
             LOG_LIST_URL, {"recipient": "+254712345678", "status": "sent"}
         )
         self.assertEqual(response.data["count"], 1)
-        self.assertEqual(response.data["results"][0]["purpose"], "otp")
+        self.assertEqual(response.data["results"][0]["purpose"], "transactional")
 
     def test_purpose_and_recipient_compose(self):
         """Purpose and recipient are both applied (not silently dropped)."""
@@ -994,7 +952,7 @@ class ComposableFilterTests(APITestCase):
         response = self.client.get(
             LOG_LIST_URL,
             {
-                "purpose": "otp",
+                "purpose": "transactional",
                 "recipient": "+254700000000",
             },
         )
@@ -1005,6 +963,6 @@ class ComposableFilterTests(APITestCase):
         self._seed()
         from apps.notifications.selectors import get_notification_logs
 
-        qs = get_notification_logs(recipient="+254712345678", purpose="otp")
-        self.assertEqual(list(qs.values_list("purpose", flat=True)), ["otp"])
+        qs = get_notification_logs(recipient="+254712345678", purpose="transactional")
+        self.assertEqual(list(qs.values_list("purpose", flat=True)), ["transactional"])
         self.assertEqual(qs.count(), 1)

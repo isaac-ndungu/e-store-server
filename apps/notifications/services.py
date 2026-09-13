@@ -15,9 +15,15 @@ logger = logging.getLogger(__name__)
 SMS_PROVIDER = config("SMS_PROVIDER", default="africastalking")
 SMS_SENDER_ID = config("SMS_SENDER_ID", default="")
 
-# Per-recipient outbound rate limit: max sends within the sliding window.
+# Per-recipient outbound rate limits, checked as three sliding windows so one
+# number cannot absorb SMS cost or guessing pressure at scale: a burst cap
+# per minute plus sustained caps per hour and per day.
 _SEND_RATE_LIMIT = 5
 _SEND_RATE_WINDOW = 60  # seconds
+_SEND_RATE_LIMIT_HOURLY = 20
+_SEND_RATE_WINDOW_HOURLY = 3600  # seconds
+_SEND_RATE_LIMIT_DAILY = 50
+_SEND_RATE_WINDOW_DAILY = 86400  # seconds
 
 
 def _provider_exceptions():
@@ -131,25 +137,36 @@ def _send_africastalking(recipient, message, sender_id=""):
 
 
 def _check_send_rate_limit(recipient):
-    """Reject the send if the per-recipient rate limit is exceeded.
+    """Reject the send if any per-recipient rate window is exceeded.
 
-    Uses a sliding-window counter in Django's cache backend so no DB
-    write is needed.  The limit is ``_SEND_RATE_LIMIT`` sends per
-    ``_SEND_RATE_WINDOW`` seconds per phone number.
+    Uses sliding-window counters in Django's cache backend so no DB
+    write is needed. Three windows apply per phone number: a burst cap
+    per minute plus sustained caps per hour and per day.
 
     Args:
         recipient (str): E.164 phone number.
 
     Raises:
-        serializers.ValidationError: if the rate limit is exceeded.
+        serializers.ValidationError: if any window is exceeded.
     """
-    cache_key = f"sms_rate:{recipient}"
-    count = cache.get(cache_key, 0)
-    if count >= _SEND_RATE_LIMIT:
-        raise serializers.ValidationError(
-            f"Too many SMS sends to {recipient}. " "Please wait a moment and try again."
-        )
-    cache.set(cache_key, count + 1, timeout=_SEND_RATE_WINDOW)
+    windows = (
+        (f"sms_rate:{recipient}", _SEND_RATE_LIMIT, _SEND_RATE_WINDOW),
+        (
+            f"sms_rate_hour:{recipient}",
+            _SEND_RATE_LIMIT_HOURLY,
+            _SEND_RATE_WINDOW_HOURLY,
+        ),
+        (f"sms_rate_day:{recipient}", _SEND_RATE_LIMIT_DAILY, _SEND_RATE_WINDOW_DAILY),
+    )
+    for cache_key, limit, timeout in windows:
+        count = cache.get(cache_key, 0)
+        if count >= limit:
+            raise serializers.ValidationError(
+                f"Too many SMS sends to {recipient}. "
+                "Please wait a moment and try again."
+            )
+    for cache_key, _, timeout in windows:
+        cache.set(cache_key, cache.get(cache_key, 0) + 1, timeout=timeout)
 
 
 def send_sms(
@@ -241,33 +258,6 @@ def send_sms(
             log.save(update_fields=["segments"])
 
     return log
-
-
-def send_otp_sms(recipient, otp_code, sent_by=None):
-    """Send a one-time password SMS.
-
-    Composes a standard OTP message and delegates to ``send_sms()``. The
-    provider receives the full text containing the OTP, but the value
-    persisted to ``NotificationLog.message`` is masked (``******``) so a
-    live OTP never lands in the database or the audit-log endpoints. The
-    masked placeholder is not a usable credential, so a DB read or a future
-    report over ``NotificationLog`` cannot leak the code.
-
-    Args:
-        recipient (str): E.164 phone number.
-        otp_code (str): the numeric OTP to embed in the message.
-        sent_by (User | None): staff user who triggered the send, if any.
-
-    Returns:
-        NotificationLog: the audit record for this OTP send.
-    """
-    from apps.notifications.notification_templates import render_message
-
-    message = render_message("sms", "otp", code=otp_code, expiry_minutes=10)
-    masked_message = message.replace(otp_code, "******")
-    return send_sms(
-        recipient, message, purpose="otp", sent_by=sent_by, log_message=masked_message
-    )
 
 
 def send_email(
@@ -419,51 +409,3 @@ def send_test_sms(recipient, message, sent_by=None, idempotency_key=None):
         sent_by=sent_by,
         idempotency_key=idempotency_key,
     )
-
-
-def notify_low_stock(variant, warehouse, quantity, threshold):
-    """Notify staff users when a variant's stock runs low.
-
-    Composes a message from the low-stock template and sends an SMS to
-    every staff user with a phone number.  Intended to be called by the
-    inventory layer whenever a stock move drops a variant below its
-    threshold; callers should usually route this through the Celery task
-    so no request blocks on the provider call.
-
-    Args:
-        variant (ProductVariant): the variant that is low on stock.
-        warehouse (Warehouse): the warehouse where stock is low.
-        quantity (int): the available quantity observed.
-        threshold (int): the configured low-stock threshold.
-
-    Returns:
-        list[NotificationLog]: the audit records for the staff sends.
-    """
-    from apps.accounts.models import User
-    from apps.notifications.notification_templates import render_message
-
-    message = render_message(
-        "sms",
-        "low_stock_alert",
-        product_name=variant.name,
-        sku=variant.sku,
-        quantity=quantity,
-        warehouse=warehouse.name,
-    )
-
-    staff_numbers = list(
-        User.objects.filter(is_staff=True)
-        .exclude(phone_number="")
-        .values_list("phone_number", flat=True)
-    )
-
-    logs = []
-    for phone in staff_numbers:
-        log = send_sms(
-            phone,
-            message,
-            purpose="transactional",
-        )
-        logs.append(log)
-
-    return logs
