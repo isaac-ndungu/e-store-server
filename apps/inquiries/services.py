@@ -9,6 +9,8 @@ without staff contact in between — except the direct new-to-abandoned spam
 path.
 """
 
+from decimal import Decimal, InvalidOperation
+
 from django.core.exceptions import ValidationError
 
 from apps.inquiries.models import Inquiry
@@ -60,3 +62,49 @@ def transition_inquiry(inquiry, to_status):
     inquiry.status = to_status
     inquiry.save(update_fields=["status", "updated_at"])
     return inquiry
+
+
+def build_handoff_message(*, cart_snapshot, reference):
+    """Build the canonical pre-filled WhatsApp/email message text.
+
+    The storefront URL-encodes this into the ``wa.me``/``mailto:`` link
+    instead of assembling the text itself, so the ``Ref`` line matching the
+    chat back to its queue row is always present and always formatted the
+    same way. Prices come from the display-time snapshot and are labelled
+    estimates — the intake view reprices everything server-side.
+
+    Args:
+        cart_snapshot (list): validated snapshot lines with ``sku``,
+            ``name``, ``quantity``, and optional ``price``.
+        reference (str): the inquiry reference code (``INQ-000123``).
+
+    Returns:
+        str: plain-text message (no markup or emoji, for safe encoding).
+    """
+    item_lines = []
+    total = Decimal("0")
+    total_known = True
+    for line in cart_snapshot or []:
+        sku = line.get("sku", "")
+        name = line.get("name", "")
+        try:
+            quantity = int(line.get("quantity", 1))
+        except TypeError, ValueError:
+            quantity = 1
+        try:
+            unit_price = Decimal(str(line.get("price", "")))
+            line_total = unit_price * quantity
+            total += line_total
+            price_part = f" — KES {line_total:,.2f}"
+        except InvalidOperation, ValueError, TypeError:
+            total_known = False
+            price_part = " — price to confirm"
+        item_lines.append(f"- {name} ({sku}) x{quantity}{price_part}")
+    parts = ["Hello! I would like to place an order:", ""]
+    parts.extend(item_lines)
+    parts.append("")
+    if total_known and item_lines:
+        parts.append(f"Estimated total: KES {total:,.2f} (shipping to be confirmed)")
+        parts.append("")
+    parts.append(f"Ref {reference}")
+    return "\n".join(parts)

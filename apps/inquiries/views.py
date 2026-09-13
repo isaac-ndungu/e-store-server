@@ -1,19 +1,23 @@
 """API views for the inquiries app.
 
 ``InquiryCreateView`` is the single write endpoint an anonymous visitor
-touches: public, throttled, no auth. Staff queue views require a fulfilment
-role and stay paginated.
+touches: public, throttled, no auth. The cart lines are read server-side
+from the visitor's cookie-linked cart — the client never submits them —
+with a validated client snapshot accepted only when no server cart exists.
+Staff queue views require a fulfilment role and stay paginated.
 """
 
 from django.http import Http404
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions
+from rest_framework import serializers as drf_serializers
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsManagerOrSupport
+from apps.cart.selectors import build_cart_snapshot, get_cart_from_cookie
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.inquiries.selectors import list_inquiries
 from apps.inquiries.serializers import (
@@ -45,8 +49,11 @@ class InquiryCreateView(APIView):
     def post(self, request):
         """Store the hand-off snapshot.
 
+        The lines come from the visitor's server-side cart; a
+        client-submitted snapshot is used only when no cart exists.
+
         Args:
-            request: the POST request with channel + cart snapshot.
+            request: the POST request with channel + optional snapshot.
 
         Returns:
             Response: ``201 Created`` with the stored inquiry.
@@ -54,9 +61,18 @@ class InquiryCreateView(APIView):
         input_serializer = InquiryCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         data = input_serializer.validated_data
+        cart = get_cart_from_cookie(request.COOKIES)
+        if cart is not None and cart.items.exists():
+            cart_snapshot = build_cart_snapshot(cart)
+        elif data.get("cart_snapshot"):
+            cart_snapshot = data["cart_snapshot"]
+        else:
+            raise drf_serializers.ValidationError(
+                {"cart_snapshot": "No items in the cart to inquire about."}
+            )
         inquiry = record_inquiry(
             channel=data["channel"],
-            cart_snapshot=data["cart_snapshot"],
+            cart_snapshot=cart_snapshot,
             contact_hint=data.get("contact_hint", ""),
         )
         return Response(InquiryDetailSerializer(inquiry).data, status=201)
@@ -78,7 +94,9 @@ class InquiryListView(APIView):
         """Return paginated inquiries, optionally filtered.
 
         Args:
-            request: the GET request with optional ``status``/``channel``.
+            request: the GET request with optional ``status``/``channel``
+                and a ``search`` string matching a reference code
+                (``INQ-000123``) or contact-hint substring.
 
         Returns:
             Response: the paginated queue.
@@ -86,6 +104,7 @@ class InquiryListView(APIView):
         queryset = list_inquiries(
             status=request.query_params.get("status") or None,
             channel=request.query_params.get("channel") or None,
+            search=request.query_params.get("search") or None,
         )
         paginator = PageNumberPagination()
         paginator.page_size = 20
