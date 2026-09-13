@@ -21,7 +21,6 @@ def _base_queryset():
             "order",
             "order_item",
             "order_item__product",
-            "order_item__fulfillment_warehouse",
         )
         .prefetch_related("status_history")
         .order_by("-created_at")

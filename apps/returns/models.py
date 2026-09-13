@@ -28,8 +28,10 @@ class ReturnRequest(models.Model):
 
     ``refund_amount`` is computed and stored by the service layer at approval
     time, never accepted from a client. ``restocking_fee_applied`` records the
-    fee actually deducted so the amount paid out always reconciles against the
-    line total.
+    fee actually deducted so the amount refunded always reconciles against the
+    line total. ``refund_method`` is a plain staff description of how the
+    money went back ("M-Pesa - sent manually", "Bank transfer") — no payout
+    integration stands behind it.
     """
 
     STATUS_CHOICES = (
@@ -44,11 +46,6 @@ class ReturnRequest(models.Model):
     RESOLUTION_CHOICES = (
         ("refund", "Refund"),
         ("replacement", "Replacement"),
-        ("store_credit", "Store Credit"),
-    )
-    REFUND_METHOD_CHOICES = (
-        ("mpesa_b2c", "M-Pesa B2C Payout"),
-        ("card_reversal", "Card Reversal"),
         ("store_credit", "Store Credit"),
     )
 
@@ -78,7 +75,10 @@ class ReturnRequest(models.Model):
         max_digits=12, decimal_places=2, null=True, blank=True
     )
     refund_method = models.CharField(
-        max_length=20, choices=REFUND_METHOD_CHOICES, blank=True
+        max_length=100,
+        blank=True,
+        help_text="How the refund was sent, in staff words — e.g. "
+        "'M-Pesa - sent manually'. Recorded, never executed.",
     )
     ticket = models.ForeignKey(
         "support.Ticket",

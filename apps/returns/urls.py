@@ -15,12 +15,12 @@ from apps.returns.views import (
 
 urlpatterns = [
     path(
-        "orders/<str:order_ref>/return-requests/",
+        "orders/<int:order_id>/return-requests/",
         OrderReturnRequestListCreateView.as_view(),
         name="order-return-requests",
     ),
     path(
-        "orders/<str:order_ref>/return-requests/<int:return_request_id>/",
+        "orders/<int:order_id>/return-requests/<int:return_request_id>/",
         OrderReturnRequestDetailView.as_view(),
         name="order-return-request-detail",
     ),

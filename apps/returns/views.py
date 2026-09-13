@@ -1,15 +1,12 @@
 """API views for the returns app.
 
-Return endpoints split by caller type:
+All return endpoints are staff-only (manager/support): return requests are
+filed by staff after a customer complaint, and the refund-recording and
+pre-shipment cancellation actions require an ``Idempotency-Key`` so a
+retried request cannot record the same refund twice.
 
-- Customer endpoints sit under an order's ``return-requests`` sub-resource
-  and reuse the orders app's shared resolver, so both an authenticated owner
-  and a guest holding the order's lookup token can only reach their own
-  orders' returns — a missing or foreign reference resolves to 404, never 403.
-- Staff endpoints under ``returns/`` are gated by the manager/support role and
-  operate across all orders. The money-moving staff actions (refund, and the
-  pre-shipment cancellation that refunds an order) require an
-  ``Idempotency-Key`` so a retried request cannot fire a duplicate transfer.
+Refunds are arranged by staff outside the system — these endpoints record
+what happened, they never move money.
 
 All mutations go through the returns service; no view writes a status or
 money field directly.
@@ -17,7 +14,7 @@ money field directly.
 
 from django.http import Http404
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions, status
+from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -27,8 +24,6 @@ from apps.accounts.permissions import IsManagerOrSupport
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.orders.selectors import get_order_for_staff
 from apps.orders.serializers import OrderDetailSerializer
-from apps.orders.views import _resolve_order
-from apps.payments.daraja import DarajaError
 from apps.returns.selectors import (
     get_return_request_for_order,
     get_return_request_for_staff,
@@ -38,9 +33,9 @@ from apps.returns.selectors import (
 from apps.returns.serializers import (
     PreShipmentCancelSerializer,
     ReturnApproveSerializer,
+    ReturnRefundSerializer,
     ReturnRejectSerializer,
     ReturnRequestCreateSerializer,
-    ReturnRequestCustomerDetailSerializer,
     ReturnRequestDetailSerializer,
     ReturnRequestListSerializer,
 )
@@ -73,29 +68,46 @@ def _staff_return_or_404(return_request_id):
     return return_request
 
 
-class OrderReturnRequestListCreateView(APIView):
-    """List or open return requests for a caller's delivered order."""
+def _staff_order_or_404(order_id):
+    """Return any order by id for a staff member, or raise HTTP 404.
 
-    permission_classes = [permissions.AllowAny]
+    Args:
+        order_id (int): the order primary key.
+
+    Returns:
+        Order: the matched order.
+
+    Raises:
+        Http404: when no order matches the id.
+    """
+    order = get_order_for_staff(order_id)
+    if order is None:
+        raise Http404
+    return order
+
+
+class OrderReturnRequestListCreateView(APIView):
+    """List or file return requests for an order (staff only)."""
+
+    permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_write"
+    throttle_scope = "admin"
 
     @extend_schema(
         operation_id="order_return_request_list",
         responses={200: ReturnRequestListSerializer(many=True)},
     )
-    def get(self, request, order_ref, *_args, **_kwargs):
+    def get(self, request, order_id, *_args, **_kwargs):
         """Return the order's return requests, newest first.
 
         Args:
             request: the GET request.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
+            order_id (int): the order primary key.
 
         Returns:
             Response: the paginated return-request list for the order.
         """
-        order = _resolve_order(request, order_ref)
+        order = _staff_order_or_404(order_id)
         requests = list_return_requests_for_order(order)
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(requests, request)
@@ -105,22 +117,20 @@ class OrderReturnRequestListCreateView(APIView):
     @extend_schema(
         operation_id="order_return_request_create",
         request=ReturnRequestCreateSerializer,
-        responses={201: ReturnRequestCustomerDetailSerializer},
+        responses={201: ReturnRequestDetailSerializer},
     )
-    def post(self, request, order_ref, *_args, **_kwargs):
-        """Open a return request against the caller's delivered order.
+    def post(self, request, order_id, *_args, **_kwargs):
+        """File a return request against a delivered order.
 
         Args:
             request: the POST request carrying the return payload.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
+            order_id (int): the order primary key.
 
         Returns:
-            Response: ``201 Created`` with the created request detail, ``400``
-                for a validation/business-rule failure, or ``404`` when the
-                order is not the caller's.
+            Response: ``201 Created`` with the created request detail, or
+                ``400`` for a validation/business-rule failure.
         """
-        order = _resolve_order(request, order_ref)
+        order = _staff_order_or_404(order_id)
         input_serializer = ReturnRequestCreateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
         data = input_serializer.validated_data
@@ -130,44 +140,42 @@ class OrderReturnRequestListCreateView(APIView):
             order_item_id=data.get("order_item_id"),
             reason=data["reason"],
             requested_resolution=data["requested_resolution"],
-            user=request.user if request.user.is_authenticated else None,
+            user=request.user,
         )
-        serializer = ReturnRequestCustomerDetailSerializer(return_request)
+        serializer = ReturnRequestDetailSerializer(return_request)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
 class OrderReturnRequestDetailView(APIView):
-    """Retrieve a single return request on a caller's order."""
+    """Retrieve a single return request on an order (staff only)."""
 
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsManagerOrSupport]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "order_read"
+    throttle_scope = "admin"
 
     @extend_schema(
         operation_id="order_return_request_detail",
-        responses={200: ReturnRequestCustomerDetailSerializer},
+        responses={200: ReturnRequestDetailSerializer},
     )
-    def get(self, request, order_ref, return_request_id):
+    def get(self, request, order_id, return_request_id):
         """Return the matching return request with full detail.
 
         Args:
             request: the GET request.
-            order_ref (str): the order id (authenticated) or lookup token
-                (guest).
+            order_id (int): the order primary key.
             return_request_id (int): the return request primary key.
 
         Returns:
             Response: the full return request detail.
 
         Raises:
-            Http404: when the order is not the caller's or the request does
-                not belong to it.
+            Http404: when the order or request does not exist.
         """
-        order = _resolve_order(request, order_ref)
+        order = _staff_order_or_404(order_id)
         return_request = get_return_request_for_order(order, return_request_id)
         if return_request is None:
             raise Http404
-        serializer = ReturnRequestCustomerDetailSerializer(return_request)
+        serializer = ReturnRequestDetailSerializer(return_request)
         return Response(serializer.data)
 
 
@@ -354,7 +362,7 @@ class ReturnReceiveItemView(APIView):
         responses={200: ReturnRequestDetailSerializer},
     )
     def post(self, request, return_request_id):
-        """Receive the returned goods and restock the line.
+        """Receive the returned goods.
 
         Args:
             request: the POST request.
@@ -374,12 +382,11 @@ class ReturnReceiveItemView(APIView):
 
 
 class ReturnRefundView(APIView):
-    """Initiate a refund for a received return as staff.
+    """Record a staff-sent refund for a received return as staff.
 
-    Money moves on this action, so it requires an ``Idempotency-Key`` and
-    replays the stored response on a repeated request with the same key. An
-    M-Pesa B2C payout completes only once Safaricom confirms it; the return
-    request then moves to ``refunded`` via the callback.
+    Staff send the money by hand first, then record it here with a note
+    saying how. Requires an ``Idempotency-Key`` and replays the stored
+    response on a repeated request with the same key.
     """
 
     permission_classes = [IsManagerOrSupport]
@@ -389,33 +396,40 @@ class ReturnRefundView(APIView):
 
     @extend_schema(
         operation_id="admin_return_refund",
+        request=ReturnRefundSerializer,
         responses={200: ReturnRequestDetailSerializer},
     )
     def post(self, request, return_request_id):
-        """Refund the return request.
+        """Record the refund for the return request.
 
         Args:
-            request: the POST request carrying an ``Idempotency-Key``.
+            request: the POST request carrying an ``Idempotency-Key`` and
+                the required ``refund_note``.
             return_request_id (int): the return request primary key.
 
         Returns:
-            Response: ``200 OK`` with the request (in ``refunded`` status for
-                a card reversal, or ``item_received`` awaiting the B2C
-                callback), ``400`` for a business-rule failure, ``404`` when
-                absent, or ``409`` when the idempotency key is in progress.
+            Response: ``200 OK`` with the request in ``refunded`` status,
+                ``400`` for a business-rule failure, ``404`` when absent, or
+                ``409`` when the idempotency key is in progress.
         """
         from apps.core.idempotency import (
             acquire_processing_lock,
+            conflicting_key_response,
+            payload_conflict,
             read_cached_result,
             release_processing_lock,
+            request_fingerprint,
             require_idempotency_key,
             store_result,
         )
 
         key = require_idempotency_key(request)
         user_pk = request.user.pk
+        fingerprint = request_fingerprint(request)
         cached = read_cached_result(user_pk, key)
         if cached is not None:
+            if payload_conflict(cached, fingerprint):
+                return conflicting_key_response()
             return Response(cached["data"], status=cached["status"])
         if not acquire_processing_lock(user_pk, key):
             return Response(
@@ -426,33 +440,27 @@ class ReturnRefundView(APIView):
             )
         try:
             return_request = _staff_return_or_404(return_request_id)
+            input_serializer = ReturnRefundSerializer(data=request.data)
+            input_serializer.is_valid(raise_exception=True)
             refunded = _service_error_to_400(refund_return_request)(
                 return_request=return_request,
+                refund_note=input_serializer.validated_data["refund_note"],
                 user=request.user,
             )
             serializer = ReturnRequestDetailSerializer(refunded)
-            store_result(user_pk, key, status.HTTP_200_OK, serializer.data)
+            store_result(user_pk, key, status.HTTP_200_OK, serializer.data, fingerprint)
             return Response(serializer.data)
-        except DarajaError:
-            return Response(
-                {
-                    "detail": (
-                        "The refund provider is unavailable right now; the "
-                        "request was not refunded. Please retry shortly."
-                    )
-                },
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
         finally:
             release_processing_lock(user_pk, key)
 
 
 class OrderPreShipmentCancelView(APIView):
-    """Cancel a confirmed-but-undelivered order and refund it as staff.
+    """Cancel a confirmed-but-undelivered order as staff.
 
-    Money moves on this action, so it requires an ``Idempotency-Key``. Stock
-    is restocked and whatever was collected pre-delivery is refunded (M-Pesa,
-    card), then the order moves to ``cancelled``.
+    No stock moves and no money moves automatically — the cancellation is a
+    status change plus the record of what happened. A staff note is required,
+    saying what happened and whether/how a refund was arranged manually.
+    Requires an ``Idempotency-Key``.
     """
 
     permission_classes = [IsManagerOrSupport]
@@ -468,8 +476,8 @@ class OrderPreShipmentCancelView(APIView):
         """Cancel the order pre-shipment.
 
         Args:
-            request: the POST request carrying an ``Idempotency-Key`` and an
-                optional ``note``.
+            request: the POST request carrying an ``Idempotency-Key``, the
+                required ``note``, and the optional refund record.
             order_id (int): the order primary key.
 
         Returns:
@@ -479,16 +487,22 @@ class OrderPreShipmentCancelView(APIView):
         """
         from apps.core.idempotency import (
             acquire_processing_lock,
+            conflicting_key_response,
+            payload_conflict,
             read_cached_result,
             release_processing_lock,
+            request_fingerprint,
             require_idempotency_key,
             store_result,
         )
 
         key = require_idempotency_key(request)
         user_pk = request.user.pk
+        fingerprint = request_fingerprint(request)
         cached = read_cached_result(user_pk, key)
         if cached is not None:
+            if payload_conflict(cached, fingerprint):
+                return conflicting_key_response()
             return Response(cached["data"], status=cached["status"])
         if not acquire_processing_lock(user_pk, key):
             return Response(
@@ -503,23 +517,16 @@ class OrderPreShipmentCancelView(APIView):
                 raise Http404
             input_serializer = PreShipmentCancelSerializer(data=request.data)
             input_serializer.is_valid(raise_exception=True)
+            data = input_serializer.validated_data
             cancelled = _service_error_to_400(cancel_confirmed_order)(
                 order=order,
                 user=request.user,
-                note=input_serializer.validated_data.get("note", ""),
+                note=data["note"],
+                refund_note=data.get("refund_note", ""),
+                refund_amount=data.get("refund_amount"),
             )
             serializer = OrderDetailSerializer(cancelled)
-            store_result(user_pk, key, status.HTTP_200_OK, serializer.data)
+            store_result(user_pk, key, status.HTTP_200_OK, serializer.data, fingerprint)
             return Response(serializer.data)
-        except DarajaError:
-            return Response(
-                {
-                    "detail": (
-                        "The refund provider is unavailable right now; the "
-                        "order was not cancelled. Please retry shortly."
-                    )
-                },
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
         finally:
             release_processing_lock(user_pk, key)

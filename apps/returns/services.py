@@ -6,14 +6,18 @@ workflows are implemented:
 
 - ``create_return_request`` — a customer opens a request against a delivered
   order within the cooling-off window.
-- ``approve_return_request`` — staff fixes the refund method and the
-  server-computed amounts for a refund-resolution request.
-- ``record_item_received`` — physical receipt restocks the line.
-- ``refund_return_request`` — the money actually moves; the request is marked
-  ``refunded`` only once it has.
-- ``resolve_return_refund`` — the B2C-callback counterpart of the above.
-- ``cancel_confirmed_order`` — the pre-shipment cancellation path: restocks,
-  refunds what was collected, and cancels the order.
+- ``approve_return_request`` — staff fixes how the money goes back (a plain
+  description, e.g. "M-Pesa - sent manually") and the server-computed
+  amounts for a refund-resolution request.
+- ``record_item_received`` — physical receipt of the returned goods.
+- ``refund_return_request`` — staff records the manual refund: the request is
+  marked ``refunded`` and the order carries the refund record.
+- ``cancel_confirmed_order`` — the pre-shipment cancellation path: a required
+  staff note plus the manual-refund record, then the order is cancelled.
+
+Refunds are arranged by staff outside the system, so money never moves here —
+these functions record what happened, with the amounts still computed and
+capped server-side from the order snapshots.
 
 Invariants upheld here:
 
@@ -22,20 +26,11 @@ Invariants upheld here:
   only through the orders ``transition_order`` helper, which writes the order
   audit trail.
 - Refund amounts are recomputed server-side from the order snapshots and
-  capped at what was actually collected; a client-supplied amount is never
-  charged, and a restocking fee can never exceed the line total.
-- A request is never approved into a resolution that cannot be paid out today
-  (store credit and replacement are rejected until their fulfilment ledgers
-  exist), so no approved request can strand a customer's money or leave
-  returned stock unaccounted for.
-- A refund is recorded complete only when the money has moved: M-Pesa B2C
-  requires Safaricom to confirm the payout (``resolve_return_refund``), a
-  card reversal is recorded as a refunded ``Payment`` row.
-- The refund and cancellation money paths lock their parent rows
+  capped at the order's grand total; a client-supplied amount is never
+  recorded as-is, and a restocking fee can never exceed the line total.
+- The refund and cancellation paths lock their parent rows
   (``select_for_update``) so a duplicated or concurrent staff action can
-  never fire two transfers.
-- Returned stock goes back through the inventory restock path, never a direct
-  ``Inventory`` edit, and serial-unit statuses move with the count ledger.
+  never record two refunds.
 """
 
 import logging
@@ -47,7 +42,6 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.core.models import SiteConfig
-from apps.inventory.services import restock_returned_item
 from apps.orders.models import Order
 from apps.orders.services import transition_order
 from apps.returns.models import ReturnRequest, ReturnRequestStatusHistory
@@ -70,6 +64,39 @@ _RETURN_STATUS_TRANSITIONS = {
 
 # Money-moving terminal states, set on ``resolved_at`` by the transition.
 _TERMINAL_STATUSES = {"rejected", "refunded", "replaced", "closed"}
+
+
+def _require_credit_note_if_transmitted(order):
+    """Enforce the credit-note rule for a reversal once invoicing exists.
+
+    When electronic invoicing lands, reversing a transmitted invoice requires
+    a credit note rather than only a status change. Until then there is no
+    invoice store, so this is a no-op — but every money-moving reversal
+    (post-delivery refund, pre-shipment cancellation) must call it first so
+    the check cannot be bypassed later by adding a new path that forgets it.
+
+    Args:
+        order (Order): the order being reversed.
+
+    Raises:
+        ValidationError: if the order has a transmitted invoice with no
+            credit note covering it.
+    """
+    from django.apps import apps
+
+    if not apps.is_installed("apps.tax_compliance"):
+        return
+    invoice_model = apps.get_model("tax_compliance", "ETIMSInvoice")
+    credit_model = apps.get_model("tax_compliance", "ETIMSCreditNote")
+    invoice = invoice_model.objects.filter(order=order).first()
+    if invoice is None or getattr(invoice, "status", "") != "transmitted":
+        return
+    covered = credit_model.objects.filter(original_invoice=invoice).exists()
+    if not covered:
+        raise ValidationError(
+            "A transmitted invoice requires a credit note before this "
+            "reversal can proceed."
+        )
 
 
 def _money(value):
@@ -297,17 +324,15 @@ def approve_return_request(
     For a refund resolution the restocking fee and refundable amount are
     computed here, server-side, from the order line snapshot and the product's
     configured fee percentage: the refund never exceeds the line total minus
-    the fee, nor what was actually collected for the order. An explicitly
-    supplied fee or amount is honored only after the same caps. Resolutions
-    that cannot be paid out from today's ledgers — store credit and
-    replacement — are rejected here, so a request can never be approved with a
-    refund that cannot be disbursed or a replacement whose shipment is
-    unaccounted.
+    the fee, nor the order's grand total. An explicitly supplied fee or amount
+    is honored only after the same caps. ``refund_method`` is a plain staff
+    description of how the money will go back — it is recorded, never
+    executed.
 
     Args:
         return_request (ReturnRequest): the requested request to approve.
-        refund_method (str | None): the refund method for a refund-resolution
-            request, from ``ReturnRequest.REFUND_METHOD_CHOICES``.
+        refund_method (str | None): how staff will send the money back, in
+            staff words (e.g. "M-Pesa - sent manually").
         refund_amount (Decimal | None): an explicit refund amount; when absent
             the full eligible amount is used.
         restocking_fee_amount (Decimal | None): an explicit restocking fee;
@@ -318,10 +343,9 @@ def approve_return_request(
         ReturnRequest: the approved request.
 
     Raises:
-        ValidationError: if the request is not requested, the resolution is
-            not refundable, the refund method is missing/invalid, the
-            restocking fee exceeds the line total, or an amount is negative
-            or leaves nothing to refund.
+        ValidationError: if the request is not requested, the refund method
+            is missing, the restocking fee exceeds the line total, or an
+            amount is negative or leaves nothing to refund.
     """
     if return_request.status != "requested":
         raise ValidationError("Only a requested return can be approved.")
@@ -332,14 +356,10 @@ def approve_return_request(
             "approve a refund resolution instead."
         )
 
+    refund_method = (refund_method or "").strip()[:100]
     if not refund_method:
-        raise ValidationError("A refund method is required for a refund resolution.")
-    if refund_method not in dict(ReturnRequest.REFUND_METHOD_CHOICES):
-        raise ValidationError(f"Unknown refund method '{refund_method}'.")
-    if refund_method == "store_credit":
         raise ValidationError(
-            "Store-credit refunds are not available yet; choose an M-Pesa B2C "
-            "payout or a card reversal instead."
+            "Describe how the refund will be sent (e.g. 'M-Pesa - sent manually')."
         )
 
     base = _line_refund_base(return_request.order_item)
@@ -359,9 +379,7 @@ def approve_return_request(
 
     max_line_refund = (base - fee).quantize(_PENNY)
 
-    from apps.payments.services import get_amount_collected_for_order
-
-    collected = get_amount_collected_for_order(return_request.order)
+    collected = _money(return_request.order.grand_total)
     eligible = min(max_line_refund, collected).quantize(_PENNY)
 
     if refund_amount is not None:
@@ -408,13 +426,11 @@ def approve_return_request(
 
 
 def record_item_received(*, return_request, user=None):
-    """Record physical receipt of the returned goods and restock the line.
+    """Record physical receipt of the returned goods.
 
-    Restocks the returned line through the inventory restock path in the same
-    transaction as the status change, so the count ledger never moves without
-    the request state moving with it. Serialized products have their sold
-    units moved to ``returned``; count-tracked products get the line quantity
-    added back to the fulfilment warehouse.
+    Moves the request to ``item_received`` in the same transaction as nothing
+    else — there is no stock ledger to update, so receipt is purely the staff
+    confirmation that the goods are back in hand.
 
     Args:
         return_request (ReturnRequest): the approved request.
@@ -424,9 +440,8 @@ def record_item_received(*, return_request, user=None):
         ReturnRequest: the request in ``item_received`` status.
 
     Raises:
-        ValidationError: if the request is not approved or the line cannot be
-            restocked (e.g. its product was deleted or the fulfilment
-            warehouse was dropped).
+        ValidationError: if the request is not approved or the line can no
+            longer be resolved.
     """
     if return_request.status != "approved":
         raise ValidationError(
@@ -439,189 +454,83 @@ def record_item_received(*, return_request, user=None):
         )
 
     with transaction.atomic():
-        restock_returned_item(order_item=return_request.order_item, user=user)
         return transition_return_status(
             return_request,
             "item_received",
             changed_by=user,
-            note="Goods received and restocked.",
+            note="Goods received.",
         )
 
 
-def _record_card_reversal(order, amount, note):
-    """Record a refunded card ``Payment`` row for a resolved refund.
+def refund_return_request(*, return_request, refund_note, user=None):
+    """Record the staff-sent refund for a received return.
 
-    The card gateway is not wired into this checkout yet, so a card reversal
-    is the ledger record of a manual gateway reversal performed by staff. The
-    ``Payment`` row keeps the order's payment history reconstructable and
-    lets the refunded amount be counted against the collected total.
-
-    Args:
-        order (Order): the order being refunded.
-        amount (Decimal): the amount reversed.
-        note (str): a free-text reference for the audit trail.
-    """
-    from apps.payments.models import Payment
-
-    Payment.objects.create(
-        order=order,
-        provider="card",
-        transaction_id="",
-        amount=amount,
-        status="refunded",
-        raw_response={"note": note},
-    )
-
-
-def refund_return_request(*, return_request, user=None):
-    """Resolve an item-received return by refunding the customer.
-
-    The money only moves once the goods are in hand (status must be
-    ``item_received``). For an M-Pesa B2C payout the payments service is
-    called and the request stays ``item_received`` until Safaricom confirms
-    the transfer, which drives ``resolve_return_refund``. A card reversal is
-    recorded as a refunded ``Payment`` row and the request completes
-    immediately. Store-credit resolution is rejected until the loyalty ledger
-    exists.
+    The money only moves by staff hand (status must be ``item_received``), so
+    this call records that it happened: the request is stamped ``refunded``
+    with the staff note, and the order carries the refund amount and note for
+    reporting. ``refund_note`` is required — an empty record of money going
+    back is worse than none.
 
     Idempotent-safe and race-safe: the parent ``ReturnRequest`` row is locked
-    with ``select_for_update`` at entry, so concurrent staff actions (which
-    may carry different ``Idempotency-Key`` values) serialize on the request
-    and a payout already pending or confirmed for this request causes a no-op
-    — a duplicate transfer can never be initiated.
+    with ``select_for_update`` at entry, and a request already ``refunded``
+    is a no-op, so a retried call (under any idempotency key) records the
+    refund exactly once.
 
     Args:
         return_request (ReturnRequest): the request whose goods were received.
+        refund_note (str): what staff did (e.g. "M-Pesa sent, txn ABC123").
         user (User | None): the acting staff user.
 
     Returns:
-        ReturnRequest: the request, ``refunded`` (card) or still
-            ``item_received`` awaiting the B2C callback.
+        ReturnRequest: the request in ``refunded`` status.
 
     Raises:
         ValidationError: if the request is not item-received, is not a refund
-            resolution, or carries no approved refund method.
+            resolution, carries no approved refund method, or the note is
+            blank.
     """
-    if return_request.status != "item_received":
+    from apps.orders.services import _sanitize_plain
+
+    note = _sanitize_plain(refund_note)
+    if not note:
         raise ValidationError(
-            "Received goods must be recorded before a refund is initiated."
+            "A refund note is required — record how the money went back."
         )
-    if return_request.requested_resolution != "refund":
-        raise ValidationError("Only a refund-resolution return can be refunded.")
 
     with transaction.atomic():
         locked = ReturnRequest.objects.select_for_update().get(pk=return_request.pk)
+        if locked.status == "refunded":
+            logger.info(
+                "Return %s is already refunded; skipping duplicate record.",
+                locked.pk,
+            )
+            return locked
         if locked.status != "item_received":
             raise ValidationError(
-                "Received goods must be recorded before a refund is initiated."
+                "Received goods must be recorded before a refund is recorded."
             )
+        if locked.requested_resolution != "refund":
+            raise ValidationError("Only a refund-resolution return can be refunded.")
 
-        refund_method = locked.refund_method
-        if not refund_method:
+        _require_credit_note_if_transmitted(locked.order)
+
+        if not locked.refund_method:
             raise ValidationError(
                 "No refund method was recorded when the return was approved."
             )
 
-        if refund_method == "store_credit":
-            raise ValidationError(
-                "Store-credit refunds are not available yet; choose an M-Pesa "
-                "B2C payout or a card reversal instead."
-            )
-
-        if refund_method == "mpesa_b2c":
-            from apps.payments.models import MpesaB2CPayout
-            from apps.payments.services import initiate_b2c_refund
-
-            existing = MpesaB2CPayout.objects.filter(
-                return_request=locked,
-                status__in=("pending", "success"),
-            ).exists()
-            if existing:
-                logger.info(
-                    "Return %s already has a B2C payout in flight; skipping.",
-                    locked.pk,
-                )
-                return locked
-
-            initiate_b2c_refund(
-                locked.order,
-                locked.refund_amount,
-                reason="return_refund",
-                return_request=locked,
-            )
-            return locked
-
-        if refund_method == "card_reversal":
-            _record_card_reversal(
-                locked.order,
-                locked.refund_amount,
-                note=(
-                    f"Card reversal for return request {locked.pk} "
-                    f"of {locked.refund_amount}."
-                ),
-            )
-            transition_return_status(
-                locked,
-                "refunded",
-                changed_by=user,
-                note=f"Refunded by card reversal of {locked.refund_amount}.",
-            )
-            _resolve_order_terminal_state(locked.order)
-            return locked
-
-    raise ValidationError(f"Unknown refund method '{refund_method}'.")
-
-
-def resolve_return_refund(payout):
-    """Mark a return request refunded once its B2C payout is confirmed.
-
-    Called from the payment layer when Safaricom confirms a B2C transfer
-    linked to a return. Idempotent-safe: a request already refunded (or a
-    payout that failed) is a no-op. On success the request is stamped
-    ``refunded`` and the order moves to ``refunded`` once every line is
-    covered.
-
-    Args:
-        payout (MpesaB2CPayout): the confirmed payout.
-    """
-    if payout.status != "success":
-        logger.warning(
-            "Refusing to resolve return from payout %s in status %s",
-            payout.pk,
-            payout.status,
-        )
-        return
-
-    return_request = payout.return_request
-    if return_request is None:
-        logger.warning(
-            "Payout %s has no linked return request; nothing to resolve.",
-            payout.pk,
-        )
-        return
-    if return_request.status == "refunded":
-        return
-
-    if return_request.status != "item_received":
-        logger.warning(
-            "Return %s is in status %s while its payout %s succeeded; "
-            "refusing to resolve out of order.",
-            return_request.pk,
-            return_request.status,
-            payout.pk,
-        )
-        return
-
-    with transaction.atomic():
         transition_return_status(
-            return_request,
+            locked,
             "refunded",
-            note=(
-                "Refund confirmed by M-Pesa B2C payout "
-                f"{payout.conversation_id[:12] or 'unknown'}."
-            ),
+            changed_by=user,
+            note=f"Refund sent ({locked.refund_method}): {note}",
         )
-    _resolve_order_terminal_state(return_request.order)
+        order = locked.order
+        order.refund_amount = locked.refund_amount or Decimal("0.00")
+        order.refund_note = note
+        order.save(update_fields=["refund_amount", "refund_note"])
+    _resolve_order_terminal_state(locked.order)
+    return locked
 
 
 def reject_return_request(*, return_request, note="", user=None):
@@ -728,88 +637,73 @@ def _resolve_order_terminal_state(order):
     )
 
 
-def cancel_confirmed_order(*, order, user=None, note=""):
-    """Cancel a confirmed-but-undelivered order and refund what was collected.
+def cancel_confirmed_order(
+    *, order, user=None, note="", refund_note="", refund_amount=None
+):
+    """Cancel a confirmed-but-undelivered order.
 
-    Restocks every line and issues the refund in one transaction. Money that
-    was actually collected pre-delivery is refunded — an M-Pesa order through
-    a B2C payout with reason ``order_cancellation``, a card order through a
-    recorded reversal — while a COD order has collected nothing pre-delivery
-    and gets no refund. The order then moves to ``cancelled``. A failed payout
-    aborts the whole cancellation, so stock is never restocked for an order
-    that is not actually cancelled.
+    There is no stock to restock and no automated refund to trigger — this is
+    a status change to ``cancelled`` plus the record of what happened. ``note``
+    is required: it must say what happened and whether/how a refund was
+    arranged manually. When money goes back to the customer, ``refund_note``
+    says how and ``refund_amount`` says how much, both stored on the order for
+    reporting.
 
     Idempotent-safe and race-safe: the ``Order`` row is locked with
     ``select_for_update`` and the status re-checked under the lock, so a
     second call — from a retry or a concurrent staff action carrying a
-    different ``Idempotency-Key`` — rejects or sees the existing pending/
-    success cancellation payout rather than firing a duplicate transfer.
+    different ``Idempotency-Key`` — rejects instead of recording twice.
 
     Args:
         order (Order): the confirmed or processing order.
         user (User | None): the acting staff user.
-        note (str): the reason recorded in the audit trail.
+        note (str): required reason recorded in the audit trail.
+        refund_note (str): how a manual refund was arranged, if any.
+        refund_amount (Decimal | None): how much went back, if any.
 
     Returns:
         Order: the cancelled order.
 
     Raises:
-        ValidationError: if the order is not confirmed/processing or uses an
-            unsupported payment method.
+        ValidationError: if the order is not confirmed/processing, the note
+            is blank, or the refund amount is negative.
     """
+    from apps.orders.services import _money, _sanitize_plain
+
+    note = _sanitize_plain(note)
+    if not note:
+        raise ValidationError(
+            "A cancellation note is required — record what happened and "
+            "whether/how a refund was arranged."
+        )
+    refund_note = _sanitize_plain(refund_note)
+    if refund_amount is None:
+        refund_amount = Decimal("0.00")
+    else:
+        refund_amount = _money(refund_amount).quantize(_PENNY)
+    if refund_amount < 0:
+        raise ValidationError("A refund amount cannot be negative.")
     if order.status not in ("confirmed", "processing"):
         raise ValidationError(
-            "Only a confirmed or processing order can be cancelled " "pre-shipment."
+            "Only a confirmed or processing order can be cancelled pre-shipment."
         )
-    if order.payment_method not in ("mpesa", "card", "cod"):
-        raise ValidationError(
-            "Orders using this payment method cannot be cancelled " "pre-shipment."
-        )
-
-    from apps.payments.models import MpesaB2CPayout
-    from apps.payments.services import (
-        get_amount_collected_for_order,
-        initiate_b2c_refund,
-    )
 
     with transaction.atomic():
         locked = Order.objects.select_for_update().get(pk=order.pk)
         if locked.status not in ("confirmed", "processing"):
             raise ValidationError(
-                "Only a confirmed or processing order can be cancelled " "pre-shipment."
-            )
-        if locked.payment_method not in ("mpesa", "card", "cod"):
-            raise ValidationError(
-                "Orders using this payment method cannot be cancelled " "pre-shipment."
+                "Only a confirmed or processing order can be cancelled pre-shipment."
             )
 
-        for order_item in locked.items.select_related("product"):
-            restock_returned_item(order_item=order_item, user=user)
+        _require_credit_note_if_transmitted(locked)
 
-        collected = get_amount_collected_for_order(locked)
-
-        if locked.payment_method == "mpesa" and collected > 0:
-            existing = MpesaB2CPayout.objects.filter(
-                order=locked,
-                reason="order_cancellation",
-                status__in=("pending", "success"),
-            ).exists()
-            if not existing:
-                initiate_b2c_refund(
-                    locked,
-                    collected,
-                    reason="order_cancellation",
-                )
-        elif locked.payment_method == "card" and collected > 0:
-            _record_card_reversal(
-                locked,
-                collected,
-                note="Manual card reversal recorded for pre-shipment cancellation.",
-            )
+        locked.refund_note = refund_note
+        locked.refund_amount = refund_amount
+        locked.save(update_fields=["refund_note", "refund_amount"])
 
         return transition_order(
             locked,
             "cancelled",
             changed_by=user,
-            note=note or "Cancelled before shipment.",
+            note=note,
         )

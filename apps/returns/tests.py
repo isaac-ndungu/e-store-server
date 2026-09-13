@@ -1,16 +1,15 @@
 """Tests for the returns app.
 
-Covers the full post-delivery return lifecycle per refund method (M-Pesa B2C
-and card reversal), the pre-shipment cancellation path, and the money/stock
-invariants the service layer upholds: server-side refund caps, restock
-correctness (count and serialized), audit-trail completeness, idempotent
-payout handling, and the object-level/role-level access control on every
-endpoint.
+Covers the post-delivery return lifecycle with manual refunds, the
+pre-shipment cancellation path, and the money invariants the service layer
+upholds: server-side refund caps, audit-trail completeness, idempotent
+refund recording, and the staff-only access control on every endpoint.
+Refunds are arranged by staff outside the system — these tests assert the
+record, never a payout integration.
 """
 
 from datetime import timedelta
 from decimal import Decimal
-from unittest import mock
 
 from django.core.cache import cache
 from django.db import IntegrityError
@@ -20,18 +19,9 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.cart.services import add_item, get_or_create_cart
 from apps.catalog.models import Category, Product, ProductVariant
-from apps.inventory.models import Inventory, SerialUnit
-from apps.inventory.services import receive_serial_units
 from apps.orders.models import Order, OrderStatusHistory
-from apps.orders.services import (
-    confirm_order_from_verification,
-    create_order_from_cart,
-    transition_order,
-)
-from apps.payments.daraja import DarajaError
-from apps.payments.models import MpesaB2CPayout, Payment
+from apps.orders.services import create_staff_order, transition_order
 from apps.returns.models import ReturnRequest, ReturnRequestStatusHistory
 from apps.returns.services import (
     approve_return_request,
@@ -43,43 +33,7 @@ from apps.returns.services import (
 
 _SEQ = [0]
 
-_B2C_HTTP_RESPONSE = {
-    "ConversationID": "conv-refund-001",
-    "OriginatorConversationID": "org-refund-001",
-    "ResponseCode": "0",
-    "ResponseDescription": "Accept the service request successfully.",
-}
-
-
-def _mock_b2c(success=True):
-    """Return a context manager stubbing the Daraja B2C endpoint."""
-    return mock.patch(
-        "apps.payments.daraja._http_post",
-        return_value=dict(_B2C_HTTP_RESPONSE) if success else {"ResponseCode": "1"},
-    )
-
-
-def _mock_oauth_token():
-    """Return a context manager stubbing the Daraja OAuth token endpoint."""
-    return mock.patch("apps.payments.daraja.get_access_token", return_value="token")
-
-
-def _mock_b2c_callback_allowlist():
-    """Return a context manager disabling the callback source-IP allowlist."""
-    return mock.patch("apps.payments.views._MPESA_CALLBACK_IPS", [])
-
-
-def _build_b2c_callback(conversation_id, result_code="0"):
-    """Build a realistic B2C callback body for a confirmed payout."""
-    return {
-        "Result": {
-            "ConversationID": conversation_id,
-            "OriginatorConversationID": "org-001",
-            "ResultCode": result_code,
-            "ResultDesc": "The service request has been accepted successfully.",
-            "TransactionID": "BLM3A7B1C2",
-        }
-    }
+REFUND_METHOD = "M-Pesa - sent manually"
 
 
 def _make_user(email="buyer@example.com", username="buyer", **kwargs):
@@ -137,51 +91,22 @@ def _make_product(price="5000.00", **kwargs):
     return product, variant
 
 
-def _stock_variant(variant, quantity=10):
-    """Ensure a count-tracked variant has stock in a test warehouse."""
-    from apps.inventory.models import Warehouse
-
-    warehouse, _ = Warehouse.objects.get_or_create(name="Main")
-    Inventory.objects.update_or_create(
-        variant=variant,
-        warehouse=warehouse,
-        defaults={"quantity": quantity, "reserved": 0},
+def _place_order(variant, payment_method="cod", phone="+254712345678", quantity=1):
+    """Create a confirmed intake order for a variant."""
+    _SEQ[0] += 1
+    staff = _make_staff(email=f"intake{_SEQ[0]}@example.com")
+    return create_staff_order(
+        staff_user=staff,
+        phone=phone,
+        lines=[{"variant_id": variant.pk, "quantity": quantity}],
+        order_source="whatsapp",
+        payment_method=payment_method,
     )
-    return warehouse
 
 
-def _active_zone():
-    """Return a reusable active delivery zone for physical orders."""
-    from apps.shipping.models import DeliveryZone
-
-    zone, _ = DeliveryZone.objects.get_or_create(
-        county="Nairobi",
-        area_name="Westlands",
-        defaults={"base_fee": "200.00", "per_kg_rate": "50.00"},
-    )
-    return zone
-
-
-def _place_cod_order(variant, user=None, quantity=1, session_key=None):
-    """Place a COD order for a stocked variant and confirm it."""
-    if session_key is None:
-        _SEQ[0] += 1
-        session_key = f"return-cart-{_SEQ[0]}"
-    cart = get_or_create_cart(session_key=session_key)
-    add_item(cart, variant_id=variant.pk, quantity=quantity)
-    order = create_order_from_cart(
-        cart=cart,
-        user=user,
-        phone=user.phone_number if user else "+254712345678",
-        payment_method="cod",
-        delivery_zone_id=_active_zone().pk,
-    )
-    return confirm_order_from_verification(order)
-
-
-def _delivered_cod_order(variant, user=None, session_key=None):
-    """Place, confirm, ship, and deliver a COD order."""
-    order = _place_cod_order(variant, user=user, session_key=session_key)
+def _delivered_order(variant, payment_method="cod", phone="+254712345678"):
+    """Create, ship, and deliver an intake order."""
+    order = _place_order(variant, payment_method=payment_method, phone=phone)
     transition_order(order, "shipped")
     transition_order(order, "delivered")
     return order
@@ -193,8 +118,7 @@ class ReturnRequestModelTests(APITestCase):
     def setUp(self):
         cache.clear()
         _, self.variant = _make_product()
-        _stock_variant(self.variant)
-        self.order = _delivered_cod_order(self.variant)
+        self.order = _delivered_order(self.variant)
 
     def test_money_constraint_rejects_negative_stored_amounts(self):
         """The DB constraint forbids negative fee or refund amounts."""
@@ -244,7 +168,7 @@ class ReturnRequestModelTests(APITestCase):
         )
         approve_return_request(
             return_request=return_request,
-            refund_method="card_reversal",
+            refund_method=REFUND_METHOD,
             user=None,
         )
         record_item_received(return_request=return_request)
@@ -257,15 +181,14 @@ class ReturnRequestModelTests(APITestCase):
 
 
 class ReturnRequestCreationTests(APITestCase):
-    """Exercises the customer-facing return-request creation rules."""
+    """Exercises staff filing of return requests and its validation rules."""
 
     def setUp(self):
         cache.clear()
         _, self.variant = _make_product()
-        _stock_variant(self.variant)
-        self.user = _make_user()
-        self.order = _delivered_cod_order(self.variant, user=self.user)
-        _login(self.client)
+        self.staff = _make_staff()
+        self.order = _delivered_order(self.variant)
+        _login(self.client, email="staff@example.com")
         self.url = reverse("api:returns:order-return-requests", args=[self.order.pk])
 
     def _create(self, **overrides):
@@ -277,8 +200,8 @@ class ReturnRequestCreationTests(APITestCase):
         payload.update(overrides)
         return self.client.post(self.url, payload, format="json")
 
-    def test_customer_opens_return_for_delivered_order(self):
-        """A delivered order's owner can open a return request."""
+    def test_staff_files_return_for_delivered_order(self):
+        """Staff can file a return request against a delivered order."""
         response = self._create()
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         data = response.data
@@ -286,9 +209,15 @@ class ReturnRequestCreationTests(APITestCase):
         self.assertEqual(data["requested_resolution"], "refund")
         self.assertEqual(ReturnRequest.objects.count(), 1)
 
+    def test_anonymous_filing_rejected(self):
+        """Unauthenticated callers cannot file returns."""
+        self.client.credentials()
+        response = self._create()
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
     def test_not_delivered_rejected(self):
         """A return cannot be opened against a non-delivered order."""
-        order = _place_cod_order(self.variant, user=self.user)
+        order = _place_order(self.variant)
         url = reverse("api:returns:order-return-requests", args=[order.pk])
         response = self.client.post(url, {"reason": "faulty"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -305,8 +234,7 @@ class ReturnRequestCreationTests(APITestCase):
     def test_non_returnable_product_rejected(self):
         """A product flagged non-returnable cannot be returned."""
         _, non_returnable = _make_product(is_returnable=False)
-        _stock_variant(non_returnable)
-        order = _delivered_cod_order(non_returnable, user=self.user)
+        order = _delivered_order(non_returnable)
         url = reverse("api:returns:order-return-requests", args=[order.pk])
         response = self.client.post(
             url,
@@ -324,18 +252,17 @@ class ReturnRequestCreationTests(APITestCase):
     def test_second_request_after_completed_refund_rejected(self):
         """A refunded line on a still-delivered order cannot be returned again."""
         _, variant_two = _make_product(price="3000.00")
-        _stock_variant(variant_two)
-        cart = get_or_create_cart(session_key="multi-line-return")
-        add_item(cart, variant_id=self.variant.pk, quantity=1)
-        add_item(cart, variant_id=variant_two.pk, quantity=1)
-        order = create_order_from_cart(
-            cart=cart,
-            user=self.user,
-            phone=self.user.phone_number,
+        _SEQ[0] += 1
+        order = create_staff_order(
+            staff_user=_make_staff(email=f"multi{_SEQ[0]}@example.com"),
+            phone="+254712345678",
+            lines=[
+                {"variant_id": self.variant.pk, "quantity": 1},
+                {"variant_id": variant_two.pk, "quantity": 1},
+            ],
+            order_source="whatsapp",
             payment_method="cod",
-            delivery_zone_id=_active_zone().pk,
         )
-        confirm_order_from_verification(order)
         transition_order(order, "shipped")
         transition_order(order, "delivered")
 
@@ -344,15 +271,17 @@ class ReturnRequestCreationTests(APITestCase):
             order=order,
             order_item_id=line_a.pk,
             reason="faulty",
-            user=self.user,
+            user=self.staff,
         )
         approve_return_request(
             return_request=first,
-            refund_method="card_reversal",
+            refund_method=REFUND_METHOD,
             user=None,
         )
         record_item_received(return_request=first, user=None)
-        refund_return_request(return_request=first, user=None)
+        refund_return_request(
+            return_request=first, refund_note="M-Pesa sent", user=None
+        )
         first.refresh_from_db()
         self.assertEqual(first.status, "refunded")
         # The second line is untouched, so the order is still returnable.
@@ -371,7 +300,7 @@ class ReturnRequestCreationTests(APITestCase):
         """A rejected request does not burn the right to return the line."""
         order_item = self.order.items.first()
         rejected = create_return_request(
-            order=self.order, reason="faulty", user=self.user
+            order=self.order, reason="faulty", user=self.staff
         )
         reject_return_request(return_request=rejected, user=None)
         response = self._create()
@@ -381,18 +310,17 @@ class ReturnRequestCreationTests(APITestCase):
     def test_whole_order_return_requires_single_line_order(self):
         """A whole-order return on a multi-line order is rejected."""
         _, variant_two = _make_product(price="3000.00")
-        _stock_variant(variant_two)
-        cart = get_or_create_cart(session_key="multi-line-cart")
-        add_item(cart, variant_id=self.variant.pk, quantity=1)
-        add_item(cart, variant_id=variant_two.pk, quantity=1)
-        order = create_order_from_cart(
-            cart=cart,
-            user=self.user,
-            phone=self.user.phone_number,
+        _SEQ[0] += 1
+        order = create_staff_order(
+            staff_user=_make_staff(email=f"whole{_SEQ[0]}@example.com"),
+            phone="+254712345678",
+            lines=[
+                {"variant_id": self.variant.pk, "quantity": 1},
+                {"variant_id": variant_two.pk, "quantity": 1},
+            ],
+            order_source="whatsapp",
             payment_method="cod",
-            delivery_zone_id=_active_zone().pk,
         )
-        confirm_order_from_verification(order)
         transition_order(order, "shipped")
         transition_order(order, "delivered")
         url = reverse("api:returns:order-return-requests", args=[order.pk])
@@ -402,29 +330,13 @@ class ReturnRequestCreationTests(APITestCase):
     def test_foreign_line_rejected(self):
         """A line that does not belong to the order is rejected."""
         _, other_variant = _make_product(price="1000.00")
-        _stock_variant(other_variant)
-        other_order = _delivered_cod_order(other_variant, user=self.user)
+        other_order = _delivered_order(other_variant)
         foreign_item = other_order.items.first()
         response = self._create(order_item_id=foreign_item.pk)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_guest_via_token_can_open_return(self):
-        """A guest holding the order token can open a return."""
-        self.client.credentials()
-        guest_order = _delivered_cod_order(self.variant, session_key="guest-return")
-        url = reverse(
-            "api:returns:order-return-requests", args=[str(guest_order.lookup_token)]
-        )
-        line = guest_order.items.first()
-        response = self.client.post(
-            url,
-            {"order_item_id": line.pk, "reason": "faulty"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-
     def test_customer_list_is_paginated(self):
-        """The customer-facing list returns a paginated envelope."""
+        """The staff list returns a paginated envelope."""
         self.assertEqual(self._create().status_code, status.HTTP_201_CREATED)
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -440,66 +352,43 @@ class ReturnRequestCreationTests(APITestCase):
 
 
 class ReturnAccessTests(APITestCase):
-    """Exercises ownership and role access control on return endpoints."""
+    """Exercises role access control on the staff-only return endpoints."""
 
     def setUp(self):
         cache.clear()
         _, self.variant = _make_product()
-        _stock_variant(self.variant)
-        self.owner = _make_user()
-        self.order = _delivered_cod_order(self.variant, user=self.owner)
-        self.return_request = create_return_request(
-            order=self.order, reason="faulty", user=self.owner
-        )
         self.staff = _make_staff()
-        _login(self.client)
+        self.order = _delivered_order(self.variant)
+        self.return_request = create_return_request(
+            order=self.order, reason="faulty", user=self.staff
+        )
+        _login(self.client, email="staff@example.com")
 
-    def test_other_user_create_rejected_with_404(self):
-        """A different logged-in user cannot open a return on the order."""
-        _make_user(email="other@example.com", username="other")
-        _login(self.client, email="other@example.com")
+    def test_anonymous_create_rejected(self):
+        """An unauthenticated caller cannot file a return."""
+        self.client.credentials()
         url = reverse("api:returns:order-return-requests", args=[self.order.pk])
         response = self.client.post(url, {"reason": "faulty"}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_other_user_detail_rejected_with_404(self):
-        """A different logged-in user cannot read a return on the order."""
+    def test_customer_credential_cannot_log_in(self):
+        """A customer credential gets no token to reach returns with."""
         _make_user(email="other@example.com", username="other")
-        _login(self.client, email="other@example.com")
-        url = reverse(
-            "api:returns:order-return-request-detail",
-            args=[self.order.pk, self.return_request.pk],
+        login = self.client.post(
+            reverse("api:accounts:login"),
+            {"email": "other@example.com", "password": "StrongPass123!"},
+            format="json",
         )
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_owner_can_read_detail(self):
-        """The order owner can read the return request detail."""
+    def test_staff_can_read_detail(self):
+        """Staff can read the return request detail with its audit trail."""
         url = reverse(
             "api:returns:order-return-request-detail",
             args=[self.order.pk, self.return_request.pk],
         )
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-    def test_customer_detail_hides_staff_fields(self):
-        """The order owner never sees staff identity or notes in the history."""
-        _login(self.client, email="staff@example.com")
-        approve_url = reverse(
-            "api:returns:return-request-approve", args=[self.return_request.pk]
-        )
-        self.client.post(approve_url, {"refund_method": "card_reversal"}, format="json")
-        _login(self.client)
-        url = reverse(
-            "api:returns:order-return-request-detail",
-            args=[self.order.pk, self.return_request.pk],
-        )
-        response = self.client.get(url)
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertTrue(response.data["status_history"])
-        for entry in response.data["status_history"]:
-            self.assertNotIn("changed_by", entry)
-            self.assertNotIn("note", entry)
 
     def test_anonymous_staff_listing_rejected(self):
         """An anonymous caller cannot list return requests as staff."""
@@ -507,27 +396,15 @@ class ReturnAccessTests(APITestCase):
         response = self.client.get(reverse("api:returns:return-request-staff-list"))
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_customer_rejected_from_staff_actions(self):
-        """A plain customer cannot reach staff return actions."""
-        response = self.client.post(
-            reverse(
-                "api:returns:return-request-approve",
-                args=[self.return_request.pk],
-            ),
-            {"refund_method": "card_reversal"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-
     def test_staff_without_role_rejected_from_staff_actions(self):
-        """An is_staff user without the manager/support role is denied."""
+        """An analyst without the manager/support role is denied."""
         _make_staff(email="analyst@example.com", role="analyst")
         _login(self.client, email="analyst@example.com")
         response = self.client.post(
             reverse(
                 "api:returns:return-request-approve", args=[self.return_request.pk]
             ),
-            {"refund_method": "card_reversal"},
+            {"refund_method": REFUND_METHOD},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -539,7 +416,7 @@ class ReturnAccessTests(APITestCase):
             reverse(
                 "api:returns:return-request-approve", args=[self.return_request.pk]
             ),
-            {"refund_method": "card_reversal"},
+            {"refund_method": REFUND_METHOD},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -549,21 +426,20 @@ class ReturnAccessTests(APITestCase):
         _login(self.client, email="staff@example.com")
         response = self.client.post(
             reverse("api:returns:return-request-approve", args=[99999]),
-            {"refund_method": "card_reversal"},
+            {"refund_method": REFUND_METHOD},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
 
 class ReturnRefundFlowTests(APITestCase):
-    """Exercises the full refund lifecycle via B2C and card reversal."""
+    """Exercises the manual refund lifecycle: approve, receive, record."""
 
     def setUp(self):
         cache.clear()
         _, self.variant = _make_product()
-        self.warehouse = _stock_variant(self.variant, quantity=10)
         self.customer = _make_user()
-        self.order = _delivered_cod_order(self.variant, user=self.customer)
+        self.order = _delivered_order(self.variant)
         self.return_request = create_return_request(
             order=self.order, reason="faulty", user=self.customer
         )
@@ -582,82 +458,50 @@ class ReturnRefundFlowTests(APITestCase):
             ),
         }
 
-    def test_full_b2c_return_flow_to_refunded(self):
-        """Approve, receive, initiate B2C; callback confirms and refunds."""
+    def _approve_and_receive(self):
+        """Approve with a manual method and record receipt of the goods."""
         approve = self.client.post(
-            self.approve_url, {"refund_method": "mpesa_b2c"}, format="json"
+            self.approve_url, {"refund_method": REFUND_METHOD}, format="json"
         )
         self.assertEqual(approve.status_code, status.HTTP_200_OK)
-        self.assertEqual(approve.data["status"], "approved")
-        refund_amount = Decimal(approve.data["refund_amount"])
-
-        inventory = Inventory.objects.get(
-            variant=self.variant, warehouse=self.warehouse
-        )
-        before = inventory.quantity
-
         receive = self.client.post(self.staff_urls["receive"], format="json")
         self.assertEqual(receive.status_code, status.HTTP_200_OK)
-        self.assertEqual(receive.data["status"], "item_received")
+        return Decimal(approve.data["refund_amount"])
 
-        inventory.refresh_from_db()
-        self.assertEqual(inventory.quantity, before + 1)
-
-        with _mock_b2c(), _mock_oauth_token():
-            refund = self.client.post(
-                self.staff_urls["refund"],
-                {},
-                format="json",
-                HTTP_IDEMPOTENCY_KEY="refund-b2c-1",
-            )
+    def test_full_manual_return_flow_to_refunded(self):
+        """Approve, receive, record the hand-sent refund; order follows."""
+        refund_amount = self._approve_and_receive()
+        refund = self.client.post(
+            self.staff_urls["refund"],
+            {"refund_note": "M-Pesa sent, txn ABC123"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="refund-manual-1",
+        )
         self.assertEqual(refund.status_code, status.HTTP_200_OK)
-        self.assertEqual(refund.data["status"], "item_received")
-
-        payout = MpesaB2CPayout.objects.get(return_request=self.return_request)
-        self.assertEqual(payout.status, "pending")
-        self.assertEqual(payout.amount, refund_amount)
-        self.assertEqual(payout.reason, "return_refund")
-
-        with _mock_b2c_callback_allowlist():
-            callback_url = reverse("api:payments:mpesa-b2c-callback")
-            callback = self.client.post(
-                callback_url,
-                _build_b2c_callback(payout.conversation_id),
-                format="json",
-                REMOTE_ADDR="127.0.0.1",
-            )
-        self.assertEqual(callback.status_code, status.HTTP_200_OK)
-
-        payout.refresh_from_db()
-        self.assertEqual(payout.status, "success")
+        self.assertEqual(refund.data["status"], "refunded")
+        self.assertIsNotNone(refund.data["resolved_at"])
         self.return_request.refresh_from_db()
         self.assertEqual(self.return_request.status, "refunded")
-        self.assertIsNotNone(self.return_request.resolved_at)
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, "refunded")
+        self.assertEqual(self.order.refund_amount, refund_amount)
+        self.assertEqual(self.order.refund_note, "M-Pesa sent, txn ABC123")
 
-    def test_callback_is_idempotent(self):
-        """A delivered callback does not double-mutate the return."""
-        approve = self.client.post(
-            self.approve_url, {"refund_method": "mpesa_b2c"}, format="json"
+    def test_refund_recording_is_idempotent(self):
+        """Recording the same refund twice keeps one audit row, not two."""
+        self._approve_and_receive()
+        payload = {"refund_note": "M-Pesa sent, txn ABC123"}
+        self.client.post(
+            self.staff_urls["refund"],
+            payload,
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="refund-manual-2",
         )
-        self.assertEqual(approve.status_code, status.HTTP_200_OK)
-        self.client.post(self.staff_urls["receive"], format="json")
-        with _mock_b2c(), _mock_oauth_token():
-            self.client.post(
-                self.staff_urls["refund"],
-                {},
-                format="json",
-                HTTP_IDEMPOTENCY_KEY="refund-b2c-2",
-            )
-        payout = MpesaB2CPayout.objects.get(return_request=self.return_request)
-
-        with _mock_b2c_callback_allowlist():
-            callback_url = reverse("api:payments:mpesa-b2c-callback")
-            body = _build_b2c_callback(payout.conversation_id)
-            self.client.post(callback_url, body, format="json", REMOTE_ADDR="127.0.0.1")
-            self.client.post(callback_url, body, format="json", REMOTE_ADDR="127.0.0.1")
-
+        refund_return_request(
+            return_request=self.return_request,
+            refund_note="M-Pesa sent, txn ABC123",
+            user=None,
+        )
         self.return_request.refresh_from_db()
         self.assertEqual(self.return_request.status, "refunded")
         self.assertEqual(
@@ -665,116 +509,67 @@ class ReturnRefundFlowTests(APITestCase):
             1,
         )
 
-    def test_card_reversal_refund_completes_immediately(self):
-        """A card-reversal refund records a Payment row and completes."""
-        approve = self.client.post(
-            self.approve_url, {"refund_method": "card_reversal"}, format="json"
-        )
-        self.assertEqual(approve.status_code, status.HTTP_200_OK)
-        refund_amount = Decimal(approve.data["refund_amount"])
-
-        self.client.post(self.staff_urls["receive"], format="json")
-        refund = self.client.post(
-            self.staff_urls["refund"],
-            {},
-            format="json",
-            HTTP_IDEMPOTENCY_KEY="refund-card-1",
-        )
-        self.assertEqual(refund.status_code, status.HTTP_200_OK)
-        self.assertEqual(refund.data["status"], "refunded")
-
-        self.return_request.refresh_from_db()
-        self.assertEqual(self.return_request.status, "refunded")
-        self.assertIsNotNone(self.return_request.resolved_at)
-
-        reversal = Payment.objects.get(
-            order=self.order, provider="card", status="refunded"
-        )
-        self.assertEqual(reversal.amount, refund_amount)
-        self.order.refresh_from_db()
-        self.assertEqual(self.order.status, "refunded")
-
     def test_refund_requires_idempotency_key(self):
         """The refund endpoint rejects a request without an Idempotency-Key."""
-        approve = self.client.post(
-            self.approve_url, {"refund_method": "card_reversal"}, format="json"
+        self._approve_and_receive()
+        response = self.client.post(
+            self.staff_urls["refund"],
+            {"refund_note": "M-Pesa sent"},
+            format="json",
         )
-        self.assertEqual(approve.status_code, status.HTTP_200_OK)
-        self.client.post(self.staff_urls["receive"], format="json")
-        response = self.client.post(self.staff_urls["refund"], {}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_refund_replays_stored_response_for_duplicate_key(self):
         """Reusing an Idempotency-Key replays the stored response."""
-        approve = self.client.post(
-            self.approve_url, {"refund_method": "card_reversal"}, format="json"
-        )
-        refund_amount = Decimal(approve.data["refund_amount"])
-        self.client.post(self.staff_urls["receive"], format="json")
+        self._approve_and_receive()
+        payload = {"refund_note": "M-Pesa sent, txn ABC123"}
         first = self.client.post(
             self.staff_urls["refund"],
-            {},
+            payload,
             format="json",
-            HTTP_IDEMPOTENCY_KEY="refund-card-dupe",
+            HTTP_IDEMPOTENCY_KEY="refund-manual-dupe",
         )
         second = self.client.post(
             self.staff_urls["refund"],
-            {},
+            payload,
             format="json",
-            HTTP_IDEMPOTENCY_KEY="refund-card-dupe",
+            HTTP_IDEMPOTENCY_KEY="refund-manual-dupe",
         )
         self.assertEqual(first.status_code, status.HTTP_200_OK)
         self.assertEqual(second.status_code, status.HTTP_200_OK)
         self.assertEqual(second.data["status"], "refunded")
-        refunded_rows = Payment.objects.filter(
-            order=self.order, provider="card", status="refunded"
-        )
-        self.assertEqual(refunded_rows.count(), 1)
-        self.assertEqual(refunded_rows.first().amount, refund_amount)
-
-    def test_refund_returns_503_when_provider_unavailable(self):
-        """A Daraja outage surfaces as 503 and moves no money."""
-        approve = self.client.post(
-            self.approve_url, {"refund_method": "mpesa_b2c"}, format="json"
-        )
-        self.assertEqual(approve.status_code, status.HTTP_200_OK)
-        self.client.post(self.staff_urls["receive"], format="json")
-
-        with mock.patch(
-            "apps.payments.services.initiate_b2c_refund",
-            side_effect=DarajaError("provider down"),
-        ):
-            response = self.client.post(
-                self.staff_urls["refund"],
-                {},
-                format="json",
-                HTTP_IDEMPOTENCY_KEY="refund-503",
-            )
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.return_request.refresh_from_db()
-        self.assertEqual(self.return_request.status, "item_received")
-        self.assertFalse(
-            MpesaB2CPayout.objects.filter(return_request=self.return_request).exists()
-        )
 
     def test_refund_before_receipt_rejected(self):
-        """Refund without receiving the goods is rejected."""
+        """Recording a refund without receiving the goods is rejected."""
         approve = self.client.post(
-            self.approve_url, {"refund_method": "card_reversal"}, format="json"
+            self.approve_url, {"refund_method": REFUND_METHOD}, format="json"
         )
         self.assertEqual(approve.status_code, status.HTTP_200_OK)
         response = self.client.post(
             self.staff_urls["refund"],
-            {},
+            {"refund_note": "M-Pesa sent"},
             format="json",
             HTTP_IDEMPOTENCY_KEY="refund-early",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_store_credit_approval_rejected(self):
-        """Store-credit resolution is rejected until a loyalty ledger exists."""
+    def test_refund_without_note_rejected(self):
+        """A refund record without a note says nothing and is rejected."""
+        self._approve_and_receive()
         response = self.client.post(
-            self.approve_url, {"refund_method": "store_credit"}, format="json"
+            self.staff_urls["refund"],
+            {"refund_note": "   "},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="refund-nonote",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.return_request.refresh_from_db()
+        self.assertEqual(self.return_request.status, "item_received")
+
+    def test_blank_refund_method_rejected_at_approval(self):
+        """Approval without naming how the money goes back is rejected."""
+        response = self.client.post(
+            self.approve_url, {"refund_method": ""}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -785,9 +580,8 @@ class ReturnApprovalMoneyTests(APITestCase):
     def setUp(self):
         cache.clear()
         _, self.variant = _make_product(price="5000.00")
-        _stock_variant(self.variant)
         self.customer = _make_user()
-        self.order = _delivered_cod_order(self.variant, user=self.customer)
+        self.order = _delivered_order(self.variant)
         self.return_request = create_return_request(
             order=self.order, reason="faulty", user=self.customer
         )
@@ -805,7 +599,7 @@ class ReturnApprovalMoneyTests(APITestCase):
             line.total_price + line.tax, collected
         )  # no restocking fee by default
         response = self.client.post(
-            self.url, {"refund_method": "card_reversal"}, format="json"
+            self.url, {"refund_method": REFUND_METHOD}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(Decimal(response.data["refund_amount"]), Decimal(eligible))
@@ -817,7 +611,7 @@ class ReturnApprovalMoneyTests(APITestCase):
         response = self.client.post(
             self.url,
             {
-                "refund_method": "card_reversal",
+                "refund_method": REFUND_METHOD,
                 "refund_amount": "999999.00",
             },
             format="json",
@@ -834,7 +628,7 @@ class ReturnApprovalMoneyTests(APITestCase):
         base = Decimal(line.total_price + line.tax)
         expected_fee = (base * Decimal("0.10")).quantize(Decimal("0.01"))
         response = self.client.post(
-            self.url, {"refund_method": "card_reversal"}, format="json"
+            self.url, {"refund_method": REFUND_METHOD}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(Decimal(response.data["refund_amount"]), base - expected_fee)
@@ -844,7 +638,7 @@ class ReturnApprovalMoneyTests(APITestCase):
         """A negative explicit amount is rejected at approval."""
         response = self.client.post(
             self.url,
-            {"refund_method": "card_reversal", "refund_amount": "-5.00"},
+            {"refund_method": REFUND_METHOD, "refund_amount": "-5.00"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -852,8 +646,7 @@ class ReturnApprovalMoneyTests(APITestCase):
     def test_replacement_resolution_rejected_at_approval(self):
         """A replacement resolution is rejected until fulfillment accounting exists."""
         _, variant_two = _make_product(price="3000.00")
-        _stock_variant(variant_two)
-        replacement_order = _delivered_cod_order(variant_two, user=self.customer)
+        replacement_order = _delivered_order(variant_two)
         replacement = create_return_request(
             order=replacement_order,
             requested_resolution="replacement",
@@ -873,7 +666,7 @@ class ReturnApprovalMoneyTests(APITestCase):
         response = self.client.post(
             self.url,
             {
-                "refund_method": "card_reversal",
+                "refund_method": REFUND_METHOD,
                 "restocking_fee": str(Decimal(base) + Decimal("100.00")),
             },
             format="json",
@@ -890,7 +683,7 @@ class ReturnApprovalMoneyTests(APITestCase):
         response = self.client.post(
             self.url,
             {
-                "refund_method": "card_reversal",
+                "refund_method": REFUND_METHOD,
                 "restocking_fee": str(base),
             },
             format="json",
@@ -906,9 +699,8 @@ class ReturnRejectAndCloseTests(APITestCase):
     def setUp(self):
         cache.clear()
         _, self.variant = _make_product()
-        _stock_variant(self.variant)
         self.customer = _make_user()
-        self.order = _delivered_cod_order(self.variant, user=self.customer)
+        self.order = _delivered_order(self.variant)
         self.return_request = create_return_request(
             order=self.order, reason="changed mind", user=self.customer
         )
@@ -930,7 +722,7 @@ class ReturnRejectAndCloseTests(APITestCase):
         approve_url = reverse(
             "api:returns:return-request-approve", args=[self.return_request.pk]
         )
-        self.client.post(approve_url, {"refund_method": "card_reversal"}, format="json")
+        self.client.post(approve_url, {"refund_method": REFUND_METHOD}, format="json")
         receive_url = reverse(
             "api:returns:return-request-receive-item", args=[self.return_request.pk]
         )
@@ -946,7 +738,7 @@ class ReturnRejectAndCloseTests(APITestCase):
         approve_url = reverse(
             "api:returns:return-request-approve", args=[self.return_request.pk]
         )
-        self.client.post(approve_url, {"refund_method": "card_reversal"}, format="json")
+        self.client.post(approve_url, {"refund_method": REFUND_METHOD}, format="json")
         receive_url = reverse(
             "api:returns:return-request-receive-item", args=[self.return_request.pk]
         )
@@ -955,7 +747,10 @@ class ReturnRejectAndCloseTests(APITestCase):
             "api:returns:return-request-refund", args=[self.return_request.pk]
         )
         self.client.post(
-            refund_url, {}, format="json", HTTP_IDEMPOTENCY_KEY="close-key"
+            refund_url,
+            {"refund_note": "M-Pesa sent"},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="close-key",
         )
         close_url = reverse(
             "api:returns:return-request-close", args=[self.return_request.pk]
@@ -971,163 +766,94 @@ class PreShipmentCancellationTests(APITestCase):
     def setUp(self):
         cache.clear()
         _, self.variant = _make_product()
-        self.warehouse = _stock_variant(self.variant, quantity=10)
         self.customer = _make_user()
-        self.order = _place_cod_order(self.variant, user=self.customer)
+        self.order = _place_order(self.variant)
         self.staff = _make_staff()
         _login(self.client, email="staff@example.com")
         self.url = reverse(
             "api:returns:order-pre-shipment-cancel", args=[self.order.pk]
         )
 
-        Payment.objects.create(
-            order=self.order,
-            provider="mpesa",
-            transaction_id="stk-ref-1",
-            amount=self.order.grand_total,
-            status="completed",
+    def _cancel(self, payload, key):
+        """POST a cancellation with an idempotency key."""
+        return self.client.post(
+            self.url, payload, format="json", HTTP_IDEMPOTENCY_KEY=key
         )
 
-    def test_mpesa_cancellation_refunds_collected_and_cancels(self):
-        """A confirmed M-Pesa order is restocked, refunded, and cancelled."""
-        Order.objects.filter(pk=self.order.pk).update(payment_method="mpesa")
-        inventory = Inventory.objects.get(
-            variant=self.variant, warehouse=self.warehouse
+    def test_cancel_with_note_cancels_and_records_history(self):
+        """A confirmed order cancels with a required note and audit row."""
+        response = self._cancel(
+            {"note": "Customer asked to cancel; refunded via M-Pesa by hand."},
+            key="cancel-m1",
         )
-        before = inventory.quantity
-
-        with _mock_b2c(), _mock_oauth_token():
-            response = self.client.post(
-                self.url, {}, format="json", HTTP_IDEMPOTENCY_KEY="cancel-m1"
-            )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, "cancelled")
-
-        inventory.refresh_from_db()
-        self.assertEqual(inventory.quantity, before + 1)
-
-        payout = MpesaB2CPayout.objects.get(
-            order=self.order, reason="order_cancellation"
-        )
-        self.assertEqual(payout.status, "pending")
-        self.assertEqual(payout.amount, self.order.grand_total)
-
         self.assertTrue(
             OrderStatusHistory.objects.filter(
                 order=self.order, to_status="cancelled"
             ).exists()
         )
 
-    def test_cod_cancellation_collects_nothing(self):
-        """A COD order cancelled pre-shipment restocks without any refund."""
-        inventory = Inventory.objects.get(
-            variant=self.variant, warehouse=self.warehouse
-        )
-        before = inventory.quantity
-
-        response = self.client.post(
-            self.url, {}, format="json", HTTP_IDEMPOTENCY_KEY="cancel-c1"
+    def test_cancel_records_manual_refund(self):
+        """Refund details land on the order for reporting."""
+        response = self._cancel(
+            {
+                "note": "Customer asked to cancel.",
+                "refund_note": "M-Pesa sent, txn XYZ789",
+                "refund_amount": "5800.00",
+            },
+            key="cancel-refund-1",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.order.refresh_from_db()
         self.assertEqual(self.order.status, "cancelled")
-        inventory.refresh_from_db()
-        self.assertEqual(inventory.quantity, before + 1)
-        self.assertFalse(MpesaB2CPayout.objects.filter(order=self.order).exists())
-        self.assertFalse(
-            Payment.objects.filter(order=self.order, status="refunded").exists()
+        self.assertEqual(self.order.refund_amount, Decimal("5800.00"))
+        self.assertEqual(self.order.refund_note, "M-Pesa sent, txn XYZ789")
+
+    def test_cancel_requires_note(self):
+        """Cancelling without saying what happened is rejected."""
+        response = self._cancel({}, key="cancel-nonote")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, "confirmed")
+
+    def test_cancel_rejects_negative_refund_amount(self):
+        """A negative refund amount is rejected and cancels nothing."""
+        response = self._cancel(
+            {"note": "Customer asked to cancel.", "refund_amount": "-5.00"},
+            key="cancel-neg",
         )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.order.refresh_from_db()
+        self.assertEqual(self.order.status, "confirmed")
 
     def test_shipped_order_rejected(self):
         """Orders already shipped cannot take the pre-shipment cancel path."""
-        rejected = _delivered_cod_order(self.variant, user=self.customer)
+        rejected = _delivered_order(self.variant)
         url = reverse("api:returns:order-pre-shipment-cancel", args=[rejected.pk])
         response = self.client.post(
-            url, {}, format="json", HTTP_IDEMPOTENCY_KEY="cancel-s1"
+            url,
+            {"note": "Too late to cancel."},
+            format="json",
+            HTTP_IDEMPOTENCY_KEY="cancel-s1",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_cancellation_requires_idempotency_key(self):
         """The cancellation endpoint rejects a request without a key."""
-        Order.objects.filter(pk=self.order.pk).update(payment_method="mpesa")
-        response = self.client.post(self.url, {}, format="json")
+        response = self.client.post(
+            self.url, {"note": "Customer asked to cancel."}, format="json"
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_non_staff_rejected(self):
-        """A customer cannot cancel an order pre-shipment."""
+        """A customer credential gets no token to cancel with."""
         self.client.credentials()
         _make_user(email="other@example.com", username="other")
-        _login(self.client, email="other@example.com")
-        response = self.client.post(
-            self.url, {}, format="json", HTTP_IDEMPOTENCY_KEY="cancel-x1"
+        login = self.client.post(
+            reverse("api:accounts:login"),
+            {"email": "other@example.com", "password": "StrongPass123!"},
+            format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-
-    def test_cancel_returns_503_when_provider_unavailable(self):
-        """A Daraja outage leaves the order confirmed and fully restocked."""
-        Order.objects.filter(pk=self.order.pk).update(payment_method="mpesa")
-        inventory = Inventory.objects.get(
-            variant=self.variant, warehouse=self.warehouse
-        )
-        before = inventory.quantity
-        with mock.patch(
-            "apps.payments.services.initiate_b2c_refund",
-            side_effect=DarajaError("provider down"),
-        ):
-            response = self.client.post(
-                self.url, {}, format="json", HTTP_IDEMPOTENCY_KEY="cancel-503"
-            )
-        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
-        self.order.refresh_from_db()
-        self.assertEqual(self.order.status, "confirmed")
-        inventory.refresh_from_db()
-        self.assertEqual(inventory.quantity, before)
-        self.assertFalse(MpesaB2CPayout.objects.filter(order=self.order).exists())
-
-
-class SerializedReturnRestockTests(APITestCase):
-    """Exercises serialized-unit restocking through the return lifecycle."""
-
-    def setUp(self):
-        cache.clear()
-        _, self.variant = _make_product(tracks_serial_numbers=True)
-        from apps.inventory.models import Warehouse
-
-        self.warehouse, _ = Warehouse.objects.get_or_create(name="Main")
-        receive_serial_units(
-            variant=self.variant,
-            warehouse=self.warehouse,
-            serial_numbers=["SER-1", "SER-2", "SER-3"],
-        )
-        self.customer = _make_user()
-        self.order = _delivered_cod_order(self.variant, user=self.customer)
-
-    def test_receive_moves_sold_units_to_returned_and_keeps_ledger_in_step(self):
-        """Serialized units restock to ``returned`` without count drift."""
-        sold_units = SerialUnit.objects.filter(variant=self.variant, status="sold")
-        self.assertEqual(sold_units.count(), 1)
-        self.assertTrue(all(u.order_item_id is not None for u in sold_units))
-
-        return_request = create_return_request(
-            order=self.order, reason="faulty", user=self.customer
-        )
-        approve_return_request(
-            return_request=return_request,
-            refund_method="card_reversal",
-            user=None,
-        )
-        record_item_received(return_request=return_request, user=None)
-
-        self.assertEqual(
-            SerialUnit.objects.filter(variant=self.variant, status="returned").count(),
-            1,
-        )
-        inventory = Inventory.objects.get(
-            variant=self.variant, warehouse=self.warehouse
-        )
-        self.assertEqual(SerialUnit.objects.filter(status="sold").count(), 0)
-        # The sold unit already left the sellable count on fulfilment; moving it
-        # to ``returned`` leaves the count untouched (restored only when the
-        # unit is inspected and set back to ``in_stock``).
-        self.assertEqual(inventory.quantity, 2)
+        self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
