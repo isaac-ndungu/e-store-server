@@ -6,8 +6,9 @@ governed by one rule that decides which products belong to it:
 - ``new_arrivals`` — products created within the rule window, newest first.
 - ``restocked`` — products with a restock recorded within the window.
 - ``on_sale`` — products with a currently active automatic discount.
-- ``low_stock`` (almost gone) — products whose available stock across all
-  warehouses is at or below ``rule_threshold``.
+- ``low_stock`` (almost gone) — products with an active variant staff have
+  flagged ``low_stock``. The flag is set by hand; no quantity stands behind
+  it.
 
 Each refresh deletes the collection's previous smart membership rows and
 recreates them from the freshly computed product set inside one transaction,
@@ -24,12 +25,10 @@ feature lands.
 import logging
 
 from django.db import transaction
-from django.db.models import Sum
 from django.utils import timezone
 
 from apps.collections import cache
 from apps.collections.models import Collection, CollectionMembership
-from apps.core.models import SiteConfig
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +115,11 @@ def _restocked(collection):
 
 
 def _low_stock(collection):
-    """Return products with a variant running low on stock.
+    """Return products with a variant flagged low on stock.
 
-    Available stock is summed across all warehouses for each variant; a
-    product qualifies when any of its active variants has at most
-    ``rule_threshold`` units available — i.e. the product is almost gone.
-    The default threshold is the configured low-stock level.
+    Availability is a staff-set flag, not a counted quantity: a product
+    qualifies when any of its active variants carries ``stock_status``
+    ``low_stock``. ``rule_threshold`` is ignored.
 
     Args:
         collection (Collection): the smart collection.
@@ -130,29 +128,14 @@ def _low_stock(collection):
         list[int]: product primary keys.
     """
     from apps.catalog.models import Product, ProductVariant
-    from apps.inventory.models import Inventory
 
-    threshold = collection.rule_threshold
-    if threshold is None:
-        threshold = SiteConfig.load().settings.get("low_stock_threshold", 5)
-
-    available_by_variant = dict(
-        Inventory.objects.filter(warehouse__is_active=True)
-        .values("variant_id")
-        .annotate(available=Sum("quantity") - Sum("reserved"))
-        .values_list("variant_id", "available")
-    )
-    low_pks = [
-        variant_id
-        for variant_id, available in available_by_variant.items()
-        if int(available) <= threshold
-    ]
-    if not low_pks:
-        return []
+    low_variant_ids = ProductVariant.objects.filter(
+        is_active=True, stock_status="low_stock"
+    ).values("pk")
     return list(
         Product.objects.filter(
             is_active=True,
-            variants__in=ProductVariant.objects.filter(pk__in=low_pks),
+            variants__in=low_variant_ids,
         )
         .distinct()
         .values_list("pk", flat=True)

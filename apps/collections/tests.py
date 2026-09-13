@@ -29,8 +29,6 @@ from apps.collections.services import (
     refresh_all_smart_collections,
     refresh_smart_collection,
 )
-from apps.inventory.models import Warehouse
-from apps.inventory.services import receive_stock
 
 URLS = {
     "collections": reverse("api:collections:collection-list"),
@@ -173,47 +171,27 @@ class SmartMembershipServiceTests(CollectionsAPITestCase):
         self.assertNotIn(stale_restock.pk, pks)
         self.assertNotIn(never.pk, pks)
 
-    def test_low_stock_matches_variants_at_or_below_threshold(self):
-        """A variant with available stock at/below the threshold matches."""
+    def test_low_stock_matches_flagged_variants(self):
+        """A variant staff flagged low matches; others do not."""
         low, low_var = _make_product(name="Low", slug="low")
         healthy, healthy_var = _make_product(name="Healthy", slug="healthy")
-        warehouse = Warehouse.objects.create(name="Main")
-        receive_stock(variant=low_var, warehouse=warehouse, quantity=2)
-        receive_stock(variant=healthy_var, warehouse=warehouse, quantity=50)
+        low_var.stock_status = "low_stock"
+        low_var.save(update_fields=["stock_status"])
         collection = _make_collection(
             collection_type="smart",
             smart_rule="low_stock",
-            rule_threshold=5,
         )
         pks = compute_membership(collection)
         self.assertIn(low.pk, pks)
         self.assertNotIn(healthy.pk, pks)
 
-    def test_low_stock_aggregates_available_across_warehouses(self):
-        """Available stock is summed over all warehouses for the threshold."""
+    def test_low_stock_ignores_other_statuses(self):
+        """In-stock and out-of-stock variants never match the low rule."""
         product, variant = _make_product(name="Split", slug="split")
-        warehouse_a = Warehouse.objects.create(name="A")
-        warehouse_b = Warehouse.objects.create(name="B")
-        receive_stock(variant=variant, warehouse=warehouse_a, quantity=3)
-        receive_stock(variant=variant, warehouse=warehouse_b, quantity=3)
-        collection = _make_collection(
-            collection_type="smart", smart_rule="low_stock", rule_threshold=5
-        )
-        # 3 + 3 = 6 available, above the threshold -> not low.
+        collection = _make_collection(collection_type="smart", smart_rule="low_stock")
         self.assertNotIn(product.pk, compute_membership(collection))
-
-    def test_low_stock_excludes_stock_trapped_in_inactive_warehouse(self):
-        """Stock in a decommissioned warehouse is not sellable and so a
-        product whose only stock sits there is not ``almost gone`` — it has
-        nothing left to almost run out of."""
-        product, variant = _make_product(name="Mothballed", slug="mothballed")
-        closed = Warehouse.objects.create(name="Closed")
-        receive_stock(variant=variant, warehouse=closed, quantity=2)
-        closed.is_active = False
-        closed.save()
-        collection = _make_collection(
-            collection_type="smart", smart_rule="low_stock", rule_threshold=5
-        )
+        variant.stock_status = "out_of_stock"
+        variant.save(update_fields=["stock_status"])
         self.assertNotIn(product.pk, compute_membership(collection))
 
     def test_unavailable_and_pending_rules_return_empty(self):
@@ -508,7 +486,7 @@ class AdminCollectionAPITests(CollectionsAPITestCase):
     def test_customer_cannot_manage_collections(self):
         """A plain customer token cannot create a collection."""
         _make_user()
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
             URLS["admin_collections"],
             {"name": "Home", "slug": "home", "collection_type": "manual"},
@@ -618,7 +596,7 @@ class AdminMembershipAPITests(CollectionsAPITestCase):
     def test_customer_cannot_manage_memberships(self):
         """A plain customer token cannot create a membership row."""
         _make_user()
-        _login(self.client, email="buyer@example.com", password="StrongPass123!")
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
             URLS["admin_memberships"], self._membership_payload(), format="json"
         )
