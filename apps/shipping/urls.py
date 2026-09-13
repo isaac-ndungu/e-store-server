@@ -3,40 +3,26 @@
 from django.urls import path
 
 from apps.shipping.views import (
-    AdminDeliveryZoneDetailView,
-    AdminDeliveryZoneListCreateView,
-    AdminZonePriorityDetailView,
-    AdminZonePriorityListCreateView,
-    DeliveryZoneListView,
-    ShippingQuoteView,
+    AdminDeliveryAreaDetailView,
+    AdminDeliveryAreaListCreateView,
+    DeliveryAreaListView,
 )
 
 urlpatterns = [
     path(
-        "shipping/delivery-zones/",
-        DeliveryZoneListView.as_view(),
-        name="delivery-zones",
+        "shipping/delivery-areas/",
+        DeliveryAreaListView.as_view(),
+        name="delivery-areas",
     ),
-    path("shipping/quote/", ShippingQuoteView.as_view(), name="quote"),
     # Admin CRUD
     path(
-        "shipping/admin/delivery-zones/",
-        AdminDeliveryZoneListCreateView.as_view(),
-        name="admin-delivery-zone-list-create",
+        "shipping/admin/delivery-areas/",
+        AdminDeliveryAreaListCreateView.as_view(),
+        name="admin-delivery-area-list-create",
     ),
     path(
-        "shipping/admin/delivery-zones/<int:pk>/",
-        AdminDeliveryZoneDetailView.as_view(),
-        name="admin-delivery-zone-detail",
-    ),
-    path(
-        "shipping/admin/zone-priorities/",
-        AdminZonePriorityListCreateView.as_view(),
-        name="admin-zone-priority-list-create",
-    ),
-    path(
-        "shipping/admin/zone-priorities/<int:pk>/",
-        AdminZonePriorityDetailView.as_view(),
-        name="admin-zone-priority-detail",
+        "shipping/admin/delivery-areas/<int:pk>/",
+        AdminDeliveryAreaDetailView.as_view(),
+        name="admin-delivery-area-detail",
     ),
 ]
