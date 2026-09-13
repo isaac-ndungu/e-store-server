@@ -53,14 +53,12 @@ LOCAL_APPS = [
     "apps.accounts",
     "apps.notifications",
     "apps.catalog",
-    "apps.inventory",
     "apps.shipping",
     "apps.collections",
     "apps.bundles",
-    "apps.promotions",
     "apps.cart",
+    "apps.promotions",
     "apps.orders",
-    "apps.payments",
     "apps.returns",
     "apps.social_proof",
     "apps.reviews",
@@ -183,12 +181,8 @@ REST_FRAMEWORK = {
         "public_catalog": "100/min",
         "coupon_validate": "5/min",
         "admin": "300/min",
-        "inventory_write": "30/min",
         "order_write": "5/min",
         "order_read": "30/min",
-        "order_verify": "10/min",
-        "order_otp_resend": "5/min",
-        "mpesa_callback": "500/min",
         "notifications_callback": "500/min",
         "social_proof_view": "30/min",
         "review_read": "60/min",
@@ -201,6 +195,8 @@ REST_FRAMEWORK = {
         "dashboard_read": "60/min",
         "inquiry_write": "20/min",
         "inquiry_read": "60/min",
+        "cart_read": "100/min",
+        "cart_write": "60/min",
         "order_intake": "30/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
@@ -224,20 +220,15 @@ SPECTACULAR_SETTINGS = {
             "name": "catalog",
             "description": "Brands, categories, products, and variants",
         },
-        {
-            "name": "inventory",
-            "description": "Warehouses, stock levels, and serial units",
-        },
-        {"name": "shipping", "description": "Delivery zones and shipping quotes"},
+        {"name": "shipping", "description": "Delivery areas"},
         {
             "name": "collections",
             "description": "Product collections and smart collections",
         },
         {"name": "bundles", "description": "Product bundles"},
+        {"name": "cart", "description": "Anonymous guest cart"},
         {"name": "promotions", "description": "Discounts and coupons"},
-        {"name": "cart", "description": "Shopping cart"},
-        {"name": "orders", "description": "Order placement, status, and verification"},
-        {"name": "payments", "description": "M-Pesa payments and transactions"},
+        {"name": "orders", "description": "Staff order intake and status"},
         {
             "name": "returns",
             "description": "Post-delivery returns and pre-shipment cancellations",
@@ -256,7 +247,7 @@ SPECTACULAR_SETTINGS = {
         },
         {
             "name": "support",
-            "description": "Support tickets and live-chat sessions",
+            "description": "Staff-only support tickets",
         },
         {
             "name": "analytics",
@@ -313,14 +304,10 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_TASK_ALWAYS_EAGER = TESTING
 CELERY_TASK_EAGER_PROPAGATES = TESTING
 
-# Stock reserved at checkout expires after the configured grace period so
-# abandoned, unpaid orders cannot hold inventory indefinitely. The sweep
-# runs frequently enough that released stock returns to availability quickly.
+# Celery Beat runs only idempotent maintenance tasks. Stock moves
+# synchronously inside the staff order-intake transaction, so no sweep is
+# needed to release held stock.
 CELERY_BEAT_SCHEDULE = {
-    "release-expired-stock-reservations": {
-        "task": "apps.inventory.tasks.expire_stale_reservations",
-        "schedule": 120.0,
-    },
     "refresh-smart-collections": {
         "task": "apps.collections.tasks.refresh_smart_collections",
         "schedule": 900.0,

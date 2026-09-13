@@ -59,10 +59,6 @@ need no external services.
 | `EMAIL_HOST` / `EMAIL_PORT` / `EMAIL_USE_TLS` / `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `EMAIL_BACKEND` / `DEFAULT_FROM_EMAIL` | SMTP delivery + from-address |
 | `SMS_PROVIDER` / `AT_USERNAME` / `AT_API_KEY` / `SMS_SENDER_ID` | Africa's Talking SMS sending |
 | `NOTIFICATIONS_CALLBACK_IPS` / `NOTIFICATIONS_CALLBACK_SECRET` | SMS delivery-report callback trust |
-| `MPESA_CONSUMER_KEY` / `MPESA_CONSUMER_SECRET` / `MPESA_SHORTCODE` / `MPESA_PASSKEY` | Daraja auth + STK Push signing |
-| `MPESA_INITIATOR_NAME` / `MPESA_SECURITY_CREDENTIAL` | B2C payouts + status queries |
-| `MPESA_CALLBACK_URL` / `MPESA_B2C_CALLBACK_URL` / `MPESA_TIMEOUT_URL` / `MPESA_RESULT_URL` | Public Safaricom callback targets |
-| `MPESA_CALLBACK_IPS` / `MPESA_CALLBACK_SECRET` / `DARAJA_BASE_URL` | Callback trust + sandbox/prod switch |
 | `SENTRY_DSN` / `SENTRY_TRACES_SAMPLE_RATE` | Error tracking (empty = disabled) |
 | `CDN_DOMAIN`, `AWS_*` | CDN/object-storage placeholders (later)     |
 
