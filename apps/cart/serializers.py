@@ -1,109 +1,80 @@
 """Serializers for the cart app.
 
-Read serializers surface computed totals and line-item pricing alongside the
-stored model fields.  Write serializers accept only the fields a client
-may submit — ``variant_id``, ``bundle_id``, and ``quantity`` — and never
-trust a client-supplied price, total, or discount amount.
+Write serializers whitelist exactly what a visitor may send (variant,
+quantity, optional bundle); prices are never an input. Read serializers
+carry the server-computed unit and line totals alongside the line identity.
 """
 
 from rest_framework import serializers
 
-
-class CartItemWriteSerializer(serializers.Serializer):
-    """Input serializer for adding/updating a cart item.
-
-    Accepts ``variant_id`` or ``bundle_id`` (mutually exclusive) and
-    ``quantity``.  Price is never accepted from the client.
-    """
-
-    variant_id = serializers.IntegerField(required=False, allow_null=True)
-    bundle_id = serializers.IntegerField(required=False, allow_null=True)
-    quantity = serializers.IntegerField(min_value=1, default=1)
-
-    def validate(self, attrs):
-        """Require exactly one of variant_id or bundle_id.
-
-        Args:
-            attrs (dict): the validated data.
-
-        Returns:
-            dict: the validated data.
-
-        Raises:
-            ValidationError: if both or neither target is set.
-        """
-        variant_id = attrs.get("variant_id")
-        bundle_id = attrs.get("bundle_id")
-        if variant_id and bundle_id:
-            raise serializers.ValidationError(
-                "Provide either variant_id or bundle_id, not both."
-            )
-        if not variant_id and not bundle_id:
-            raise serializers.ValidationError(
-                "Either variant_id or bundle_id is required."
-            )
-        return attrs
+from apps.cart.selectors import MAX_LINE_QUANTITY
 
 
-class CartItemQuantitySerializer(serializers.Serializer):
-    """Input serializer for updating a cart item's quantity."""
+class CartItemAddSerializer(serializers.Serializer):
+    """Input for adding a line to the visitor's cart."""
 
-    quantity = serializers.IntegerField(min_value=1)
-
-
-class CouponApplySerializer(serializers.Serializer):
-    """Input serializer for applying a coupon code to the cart."""
-
-    code = serializers.CharField(max_length=50)
-
-
-class CouponResultSerializer(serializers.Serializer):
-    """Output serializer for a coupon validation result."""
-
-    valid = serializers.BooleanField()
-    code = serializers.CharField()
-    discount_type = serializers.CharField(allow_null=True)
-    value = serializers.CharField(allow_null=True)
-    min_order_value = serializers.CharField(allow_null=True)
-    reason = serializers.CharField(allow_null=True)
+    variant_id = serializers.IntegerField(min_value=1)
+    quantity = serializers.IntegerField(
+        min_value=1, max_value=MAX_LINE_QUANTITY, default=1
+    )
+    bundle_id = serializers.IntegerField(
+        min_value=1, required=False, allow_null=True, default=None
+    )
 
 
-class CartLineItemSerializer(serializers.Serializer):
-    """Read serializer for a priced cart line item."""
+class CartItemUpdateSerializer(serializers.Serializer):
+    """Input for changing a cart line's quantity."""
 
-    item_id = serializers.IntegerField()
-    type = serializers.ChoiceField(choices=["variant", "bundle"])
-    variant_id = serializers.IntegerField(allow_null=True)
-    bundle_id = serializers.IntegerField(allow_null=True)
-    product_name = serializers.CharField(allow_null=True)
-    bundle_name = serializers.CharField(allow_null=True)
-    variant_attributes = serializers.JSONField()
-    sku = serializers.CharField(allow_null=True)
-    unit_price = serializers.CharField()
-    base_price = serializers.CharField()
-    quantity = serializers.IntegerField()
-    line_subtotal = serializers.CharField()
-    line_discount = serializers.CharField()
-    stock_available = serializers.IntegerField(allow_null=True)
-    in_stock = serializers.BooleanField()
-    tax_class = serializers.CharField()
-    tax_rate = serializers.CharField()
-    tax = serializers.CharField()
+    quantity = serializers.IntegerField(min_value=1, max_value=MAX_LINE_QUANTITY)
 
 
-class CartSummarySerializer(serializers.Serializer):
-    """Read serializer for the full cart response including computed totals."""
+class CartLineSerializer(serializers.Serializer):
+    """Read shape for one priced cart line."""
 
     id = serializers.IntegerField()
-    user = serializers.IntegerField(allow_null=True)
-    coupon_code = serializers.CharField(allow_null=True)
-    items = CartLineItemSerializer(many=True)
+    variant_id = serializers.IntegerField(source="variant.id")
+    sku = serializers.CharField(source="variant.sku")
+    product_name = serializers.SerializerMethodField()
+    attributes = serializers.DictField(source="variant.attributes")
+    bundle_id = serializers.IntegerField(source="bundle.id", allow_null=True)
+    bundle_name = serializers.SerializerMethodField()
+    quantity = serializers.IntegerField()
+    unit_price = serializers.DecimalField(max_digits=12, decimal_places=2)
+    line_total = serializers.DecimalField(max_digits=12, decimal_places=2)
+    added_at = serializers.DateTimeField(source="item.added_at")
+
+    def get_product_name(self, obj):
+        """Return the line's product name, falling back to the sku.
+
+        Args:
+            obj (dict): the priced line entry.
+
+        Returns:
+            str: the product name or variant sku.
+        """
+        product = getattr(obj["variant"], "product", None)
+        if product is not None:
+            return product.name
+        return obj["variant"].sku
+
+    def get_bundle_name(self, obj):
+        """Return the bundle name, or None for a standalone line.
+
+        Args:
+            obj (dict): the priced line entry.
+
+        Returns:
+            str | None: the bundle name.
+        """
+        bundle = obj.get("bundle")
+        return bundle.name if bundle is not None else None
+
+
+class CartSerializer(serializers.Serializer):
+    """Read shape for the visitor's cart."""
+
+    id = serializers.IntegerField()
     item_count = serializers.IntegerField()
-    subtotal = serializers.CharField()
-    discount_total = serializers.CharField()
-    coupon_discount = serializers.CharField()
-    vat_breakdown = serializers.JSONField()
-    vat_total = serializers.CharField()
-    total = serializers.CharField()
-    created_at = serializers.DateTimeField()
+    subtotal = serializers.DecimalField(max_digits=12, decimal_places=2)
     updated_at = serializers.DateTimeField()
+    items = CartLineSerializer(many=True)

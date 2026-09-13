@@ -1,93 +1,58 @@
 """Data models for the cart app.
 
-A ``Cart`` groups ``CartItem`` rows and an optional ``Coupon`` reference.  A
-cart belongs either to an authenticated ``User`` (via ``user`` FK) or to an
-anonymous browser session (via ``session_key``), never both at the same time —
-a ``CHECK`` constraint enforces this at the database level.
+A ``Cart`` is an anonymous, server-persisted shopping cart identified by a
+long-lived ``HttpOnly`` cookie carrying its ``anonymous_id`` — no login is
+involved anywhere. The cookie survives page reloads, browser restarts, and
+client-side storage wipes; it does not survive a device or browser switch,
+since there is no account to tie it to.
 
-Each ``CartItem`` holds either a product-variant reference or a bundle
-reference (enforced by a ``CHECK`` constraint), a quantity, and the
-server-computed unit price snapshot.  The price is always recomputed from the
-promotions service at read time — the stored snapshot is for order-history
-reconstruction when the item becomes an ``OrderItem``, not for charging.
+Prices are never stored on cart lines. Every read reprices each line
+server-side from the current catalogue/promotion state, so the cart always
+shows what the customer would actually be charged at intake time.
 """
 
-from django.conf import settings
+import uuid
+
 from django.core.validators import MinValueValidator
 from django.db import models
 
 
 class Cart(models.Model):
-    """A shopping cart belonging to a user or an anonymous session.
+    """An anonymous visitor's server-side cart.
 
-    Exactly one of ``user`` or ``session_key`` must be set.  A logged-in
-    user's cart is looked up by ``user``; a guest cart is identified by the
-    session key issued by Django's session middleware.  The ``coupon``
-    relation is optional and resolved at checkout for final pricing — the
-    cart stores the reference so the coupon can be validated and the discount
-    previewed before the order is placed.
+    ``anonymous_id`` is the value stored in the visitor's cookie and is the
+    only lookup key — carts are never tied to a user account. ``created_at``
+    supports future abandonment analysis; ``updated_at`` refreshes on every
+    line change.
     """
 
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.CASCADE,
-        related_name="carts",
-    )
-    session_key = models.CharField(max_length=100, blank=True, db_index=True)
-    coupon = models.ForeignKey(
-        "promotions.Coupon",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="carts",
-    )
+    anonymous_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    abandoned_reminder_sent_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-updated_at"]
         indexes = [
-            models.Index(fields=["user"], name="cart_user_idx"),
-            models.Index(fields=["session_key"], name="cart_session_idx"),
-        ]
-        constraints = [
-            models.CheckConstraint(
-                condition=(models.Q(user__isnull=False) | models.Q(session_key__gt="")),
-                name="cart_user_or_session_required",
-            ),
-            models.CheckConstraint(
-                condition=(models.Q(user__isnull=True) | models.Q(session_key="")),
-                name="cart_not_both_user_and_session",
-            ),
+            models.Index(fields=["anonymous_id"], name="cart_anon_id_idx"),
         ]
 
     def __str__(self):
-        """Return a short label identifying the cart owner."""
-        if self.user_id:
-            return f"Cart(user={self.user_id})"
-        return f"Cart(session={self.session_key})"
+        """Return a compact label identifying the cart."""
+        return f"Cart {self.anonymous_id}"
 
 
 class CartItem(models.Model):
-    """A single line in a shopping cart.
+    """One line in an anonymous cart.
 
-    Exactly one of ``variant`` or ``bundle`` must be set — a cart line is
-    either a product variant or a bundle, never both and never neither.
-
-    ``quantity`` is always at least 1; removing an item deletes the row
-    entirely rather than setting quantity to 0.
+    ``variant`` is the purchasable configuration and is always set.
+    ``bundle`` is set only when the line was added as part of a bundle offer,
+    so intake can expand bundle pricing; it never changes what the line
+    points at. ``quantity`` is capped at 999 to match the intake limit.
     """
 
     cart = models.ForeignKey(Cart, related_name="items", on_delete=models.CASCADE)
     variant = models.ForeignKey(
-        "catalog.ProductVariant",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="cart_items",
+        "catalog.ProductVariant", on_delete=models.CASCADE, related_name="cart_items"
     )
     bundle = models.ForeignKey(
         "bundles.Bundle",
@@ -96,10 +61,7 @@ class CartItem(models.Model):
         on_delete=models.SET_NULL,
         related_name="cart_items",
     )
-    quantity = models.PositiveIntegerField(
-        default=1,
-        validators=[MinValueValidator(1)],
-    )
+    quantity = models.PositiveIntegerField(default=1, validators=[MinValueValidator(1)])
     added_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -107,16 +69,8 @@ class CartItem(models.Model):
         indexes = [
             models.Index(fields=["cart"], name="cartitem_cart_idx"),
             models.Index(fields=["variant"], name="cartitem_variant_idx"),
-            models.Index(fields=["bundle"], name="cartitem_bundle_idx"),
         ]
         constraints = [
-            models.CheckConstraint(
-                condition=(
-                    (models.Q(variant__isnull=False) & models.Q(bundle__isnull=True))
-                    | (models.Q(variant__isnull=True) & models.Q(bundle__isnull=False))
-                ),
-                name="cartitem_exactly_one_target",
-            ),
             models.CheckConstraint(
                 condition=models.Q(quantity__gte=1),
                 name="cartitem_quantity_gte_1",
@@ -124,10 +78,5 @@ class CartItem(models.Model):
         ]
 
     def __str__(self):
-        """Return a compact label identifying the cart line."""
-        target = (
-            f"variant={self.variant_id}"
-            if self.variant_id
-            else f"bundle={self.bundle_id}"
-        )
-        return f"CartItem({target}, qty={self.quantity})"
+        """Return a compact label identifying the line."""
+        return f"Cart {self.cart_id}: variant {self.variant_id} x{self.quantity}"

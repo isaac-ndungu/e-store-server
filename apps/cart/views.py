@@ -1,317 +1,194 @@
 """API views for the cart app.
 
-The cart is always addressed as a single-object resource: ``GET /cart/``
-returns the current user's (or guest's) active cart with computed totals.
-Cart mutations are ``POST`` to sub-endpoints (``/cart/items/``,
-``/cart/apply-coupon/``, etc.) to keep the URL scheme clean.
-
-Permission model:
-- Cart endpoints are reachable by authenticated users (JWT) and by anonymous
-  guests.  Guest carts are keyed by Django's own server-issued session
-  (``request.session.session_key``) carried in the ``HttpOnly`` session
-  cookie — never by a client-invented header value, which would be weak and
-  forgeable.  A caller can only ever address their own cart.
-- Ownership is enforced at the service/view layer: a caller can only address
-  their own cart.
+The cart is deliberately public (``AllowAny``): there are no customer
+accounts, so possession of the ``estore_cart`` cookie is the cart's identity.
+Every response refreshes the cookie expiry. Views stay thin — line mutations
+live in the services layer and pricing in the selectors.
 """
 
-from django.http import Http404
+from django.conf import settings
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions, status
+from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.cart.models import CartItem
-from apps.cart.selectors import get_cart_for_session
-from apps.cart.serializers import (
-    CartItemQuantitySerializer,
-    CartItemWriteSerializer,
-    CartSummarySerializer,
-    CouponApplySerializer,
-    CouponResultSerializer,
-)
-from apps.cart.services import (
-    add_item,
-    apply_coupon,
-    compute_cart_totals,
+from apps.cart import services
+from apps.cart.selectors import (
+    CART_COOKIE_MAX_AGE,
+    CART_COOKIE_NAME,
     get_or_create_cart,
-    remove_coupon,
-    remove_item,
-    update_item_quantity,
+    price_cart_lines,
+)
+from apps.cart.serializers import (
+    CartItemAddSerializer,
+    CartItemUpdateSerializer,
+    CartSerializer,
 )
 from apps.core.api import service_error_to_400 as _service_error_to_400
 
 
-def _ensure_guest_session(request):
-    """Return the request's Django session key, creating a session if needed.
-
-    The session key identifies the guest cart.  Django generates a
-    server-random key and stores the session server-side, so the guest cart
-    cannot be reached by guessing a client-supplied value.
+def _set_cart_cookie(response, request, cart):
+    """Stamp the visitor's cart cookie onto a response.
 
     Args:
-        request: the incoming HTTP request.
+        response (Response): the outgoing response.
+        request: the incoming request.
+        cart (Cart): the visitor's cart.
 
     Returns:
-        str: the session key.
+        Response: the same response with the cookie set.
     """
-    if request.session.session_key is None:
-        request.session.create()
-    return request.session.session_key
+    response.set_cookie(
+        CART_COOKIE_NAME,
+        str(cart.anonymous_id),
+        max_age=CART_COOKIE_MAX_AGE,
+        httponly=True,
+        secure=request.is_secure() or not settings.DEBUG,
+        samesite="Lax",
+    )
+    return response
 
 
-def _resolve_cart(request):
-    """Resolve the active cart for the request's user or guest.
-
-    For authenticated users the cart is user-scoped.  For guests the cart is
-    keyed by the request's Django session.  A session (and therefore a cart)
-    is always created for the caller, so this never returns ``None``.
+def _cart_payload(cart):
+    """Build the serialized cart body with server-computed prices.
 
     Args:
-        request: the incoming HTTP request.
+        cart (Cart): the visitor's cart with items prefetched.
 
     Returns:
-        Cart: the caller's active cart.
+        dict: the validated cart read shape.
     """
-    if request.user.is_authenticated:
-        return get_or_create_cart(user=request.user)
-    session_key = _ensure_guest_session(request)
-    cart = get_cart_for_session(session_key)
-    if cart is None:
-        cart = get_or_create_cart(session_key=session_key)
-    return cart
+    priced_lines, subtotal = price_cart_lines(cart)
+    flat_lines = [
+        {
+            "id": entry["item"].pk,
+            "variant": entry["variant"],
+            "bundle": entry["bundle"],
+            "quantity": entry["quantity"],
+            "unit_price": entry["unit_price"],
+            "line_total": entry["line_total"],
+            "item": entry["item"],
+        }
+        for entry in priced_lines
+    ]
+    payload = {
+        "id": cart.pk,
+        "item_count": sum(entry["quantity"] for entry in priced_lines),
+        "subtotal": subtotal,
+        "updated_at": cart.updated_at,
+        "items": flat_lines,
+    }
+    return CartSerializer(payload).data
 
 
-# Cart endpoints
-
-
-class CartView(APIView):
-    """Return the active cart with computed totals.
-
-    Supports both authenticated users and anonymous guests (keyed by Django's
-    server-side session).  The response includes server-computed effective
-    prices, discount breakdowns, and VAT — all money values are strings for
-    exact representation.
-
-    GET returns the current cart (creating one if needed).
-    DELETE empties the cart by removing all items and clearing the coupon.
-    """
+class CartDetailView(APIView):
+    """Read the visitor's cart (public guest cart)."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public"
+    throttle_scope = "cart_read"
 
     @extend_schema(
         operation_id="cart_retrieve",
-        responses={200: CartSummarySerializer},
+        responses={200: CartSerializer},
+        tags=["cart"],
     )
     def get(self, request):
-        """Return the active cart with priced line items and totals.
+        """Return the cart lines with server-computed prices.
 
         Args:
-            request: the GET request.
+            request: the GET request carrying the cart cookie.
 
         Returns:
-            Response: the full cart summary.
+            Response: ``200 OK`` with the cart body.
         """
-        cart = _resolve_cart(request)
-        totals = compute_cart_totals(cart)
-        serializer = CartSummarySerializer(
-            {
-                "id": cart.pk,
-                "user": cart.user_id,
-                "coupon_code": cart.coupon.code if cart.coupon_id else None,
-                "created_at": cart.created_at,
-                "updated_at": cart.updated_at,
-                **totals,
-            }
-        )
-        return Response(serializer.data)
-
-    @extend_schema(
-        operation_id="cart_clear",
-        responses={204: None},
-    )
-    def delete(self, request):
-        """Empty the cart by removing all items and clearing the coupon.
-
-        Args:
-            request: the DELETE request.
-
-        Returns:
-            Response: ``204 No Content`` on success.
-        """
-        cart = _resolve_cart(request)
-        cart.items.all().delete()
-        if cart.coupon_id is not None:
-            cart.coupon = None
-            cart.save(update_fields=["coupon", "updated_at"])
-        else:
-            cart.save(update_fields=["updated_at"])
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        cart, _ = get_or_create_cart(request.COOKIES)
+        return _set_cart_cookie(Response(_cart_payload(cart)), request, cart)
 
 
-class CartItemsView(APIView):
-    """Add items to the cart.
-
-    POST with ``variant_id`` or ``bundle_id`` and ``quantity``.  Duplicate
-    lines are merged by summing the quantity.  Validates stock availability
-    for variants and bundle/variant active status.
-    """
+class CartItemCreateView(APIView):
+    """Add a line to the visitor's cart (public guest cart)."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public"
+    throttle_scope = "cart_write"
 
     @extend_schema(
         operation_id="cart_item_add",
-        request=CartItemWriteSerializer,
-        responses={201: dict},
+        request=CartItemAddSerializer,
+        responses={201: CartSerializer},
+        tags=["cart"],
     )
     def post(self, request):
-        """Add an item to the active cart.
+        """Add a variant line, merging with an identical line if present.
 
         Args:
-            request: the POST request carrying ``variant_id`` or
-                ``bundle_id`` and optionally ``quantity``.
+            request: the POST request with ``variant_id`` + quantity.
 
         Returns:
-            Response: ``201 Created`` with the cart item id, or ``400``
-                for invalid input / stock errors.
+            Response: ``201 Created`` with the updated cart body.
         """
-        cart = _resolve_cart(request)
-        input_serializer = CartItemWriteSerializer(data=request.data)
+        input_serializer = CartItemAddSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
-        data = input_serializer.validated_data
-        item = _service_error_to_400(add_item)(
-            cart,
-            variant_id=data.get("variant_id"),
-            bundle_id=data.get("bundle_id"),
-            quantity=data["quantity"],
+        cart, _ = get_or_create_cart(request.COOKIES)
+        _service_error_to_400(services.add_item)(
+            cart, **input_serializer.validated_data
         )
-        return Response({"item_id": item.pk}, status=status.HTTP_201_CREATED)
+        cart.refresh_from_db()
+        return _set_cart_cookie(
+            Response(_cart_payload(cart), status=201), request, cart
+        )
 
 
 class CartItemDetailView(APIView):
-    """Update the quantity or remove a specific cart item.
-
-    PATCH with ``quantity`` to change the quantity.
-    DELETE to remove the item entirely.
-    """
+    """Change or remove one line of the visitor's cart (public guest cart)."""
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public"
+    throttle_scope = "cart_write"
 
     @extend_schema(
         operation_id="cart_item_update",
-        request=CartItemQuantitySerializer,
-        responses={200: dict},
+        request=CartItemUpdateSerializer,
+        responses={200: CartSerializer},
+        tags=["cart"],
     )
     def patch(self, request, item_id):
-        """Update the quantity of a cart item.
+        """Set a cart line's quantity.
 
         Args:
-            request: the PATCH request carrying ``quantity``.
-            item_id (int): the cart-item id.
+            request: the PATCH request with the new quantity.
+            item_id (int): the cart line pk.
 
         Returns:
-            Response: ``200 OK`` with the updated item id, or ``204`` if
-                the item was removed (quantity <= 0).
-
-        Raises:
-            Http404: if the item does not belong to the caller's cart.
+            Response: ``200 OK`` with the updated cart body.
         """
-        cart = _resolve_cart(request)
-        if not CartItem.objects.filter(pk=item_id, cart=cart).exists():
-            raise Http404
-        input_serializer = CartItemQuantitySerializer(data=request.data)
+        input_serializer = CartItemUpdateSerializer(data=request.data)
         input_serializer.is_valid(raise_exception=True)
-        updated = _service_error_to_400(update_item_quantity)(
-            cart, item_id, input_serializer.validated_data["quantity"]
+        cart, _ = get_or_create_cart(request.COOKIES)
+        _service_error_to_400(services.update_item)(
+            cart, item_id, **input_serializer.validated_data
         )
-        if updated is None:
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        return Response({"item_id": updated.pk})
+        cart.refresh_from_db()
+        return _set_cart_cookie(Response(_cart_payload(cart)), request, cart)
 
     @extend_schema(
         operation_id="cart_item_remove",
-        responses={204: None},
+        responses={200: CartSerializer},
+        tags=["cart"],
     )
     def delete(self, request, item_id):
-        """Remove a cart item.
+        """Remove a line from the cart.
 
         Args:
             request: the DELETE request.
-            item_id (int): the cart-item id.
+            item_id (int): the cart line pk.
 
         Returns:
-            Response: ``204 No Content`` on success.
-
-        Raises:
-            Http404: if the item does not belong to the caller's cart.
+            Response: ``200 OK`` with the updated cart body.
         """
-        cart = _resolve_cart(request)
-        if not CartItem.objects.filter(pk=item_id, cart=cart).exists():
-            raise Http404
-        _service_error_to_400(remove_item)(cart, item_id)
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class CartApplyCouponView(APIView):
-    """Apply a coupon code to the active cart."""
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "coupon_validate"
-
-    @extend_schema(
-        operation_id="cart_coupon_apply",
-        request=CouponApplySerializer,
-        responses={200: CouponResultSerializer},
-    )
-    def post(self, request):
-        """Apply a coupon code to the active cart.
-
-        Args:
-            request: the POST request carrying ``code``.
-
-        Returns:
-            Response: ``200 OK`` with the validation result, or ``400``
-                if the coupon is invalid.
-        """
-        cart = _resolve_cart(request)
-        input_serializer = CouponApplySerializer(data=request.data)
-        input_serializer.is_valid(raise_exception=True)
-        user = request.user if request.user.is_authenticated else None
-        result = _service_error_to_400(apply_coupon)(
-            cart, input_serializer.validated_data["code"], user=user
-        )
-        output_serializer = CouponResultSerializer(result)
-        return Response(output_serializer.data)
-
-
-class CartRemoveCouponView(APIView):
-    """Remove the coupon from the active cart."""
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "coupon_validate"
-
-    @extend_schema(
-        operation_id="cart_coupon_remove",
-        responses={204: None},
-    )
-    def delete(self, request):
-        """Remove the coupon from the active cart.
-
-        Args:
-            request: the DELETE request.
-
-        Returns:
-            Response: ``204 No Content`` on success.
-        """
-        cart = _resolve_cart(request)
-        remove_coupon(cart)
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        cart, _ = get_or_create_cart(request.COOKIES)
+        _service_error_to_400(services.remove_item)(cart, item_id)
+        cart.refresh_from_db()
+        return _set_cart_cookie(Response(_cart_payload(cart)), request, cart)

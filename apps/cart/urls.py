@@ -1,24 +1,15 @@
+"""URL routes for the cart app."""
+
 from django.urls import path
 
-from apps.cart.views import (
-    CartApplyCouponView,
-    CartItemDetailView,
-    CartItemsView,
-    CartRemoveCouponView,
-    CartView,
-)
+from apps.cart.views import CartDetailView, CartItemCreateView, CartItemDetailView
 
 urlpatterns = [
-    # Cart
-    path("cart/", CartView.as_view(), name="cart"),
-    path("cart/items/", CartItemsView.as_view(), name="cart-items"),
+    path("cart/", CartDetailView.as_view(), name="cart-detail"),
+    path("cart/items/", CartItemCreateView.as_view(), name="cart-item-add"),
     path(
         "cart/items/<int:item_id>/",
         CartItemDetailView.as_view(),
         name="cart-item-detail",
-    ),
-    path("cart/apply-coupon/", CartApplyCouponView.as_view(), name="cart-apply-coupon"),
-    path(
-        "cart/remove-coupon/", CartRemoveCouponView.as_view(), name="cart-remove-coupon"
     ),
 ]
