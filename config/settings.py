@@ -60,7 +60,7 @@ DEBUG = config("DEBUG", default=True, cast=bool)
 if not DEBUG and not SECRET_KEY:
     raise ImproperlyConfigured("SECRET_KEY must be set when DEBUG is False")
 
-ALLOWED_HOSTS = ["*"] if DEBUG else config("ALLOWED_HOSTS", default=[], cast=Csv())
+ALLOWED_HOSTS = ["*"] if DEBUG else config("ALLOWED_HOSTS", default="", cast=Csv())
 
 # Managed hosts (e.g. Render) expose the public hostname in a dedicated env
 # var. Trust it alongside ALLOWED_HOSTS so the app serves traffic without a
@@ -401,9 +401,9 @@ STORAGES = {
 # CDN domain placeholder (e.g. a Cloudflare distribution fronting S3/R2).
 CDN_DOMAIN = config("CDN_DOMAIN", default="")
 
-CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default=[], cast=Csv())
+CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default="", cast=Csv())
 CORS_ALLOW_CREDENTIALS = config("CORS_ALLOW_CREDENTIALS", default=False, cast=bool)
-CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default=[], cast=Csv())
+CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="", cast=Csv())
 
 AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="")
 AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="")
