@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 TESTING = "test" in sys.argv
 
 
-def _database_from_url(url):
+def _database_from_url(url, conn_max_age, conn_health_checks):
     """Convert a ``DATABASE_URL`` into a Django ``DATABASES`` entry.
 
     Handles the ``postgres://`` / ``postgresql://`` URLs issued by managed
@@ -32,6 +32,9 @@ def _database_from_url(url):
 
     Args:
         url: database URL string.
+        conn_max_age: seconds to keep a database connection open for reuse
+            across requests instead of reconnecting every time.
+        conn_health_checks: whether to check a reused connection before use.
 
     Returns:
         dict: database configuration suitable for ``DATABASES["default"]``.
@@ -45,12 +48,19 @@ def _database_from_url(url):
         "PASSWORD": parsed.password or "",
         "HOST": parsed.hostname or "",
         "PORT": str(parsed.port) if parsed.port else "",
+        "CONN_MAX_AGE": conn_max_age,
+        "CONN_HEALTH_CHECKS": conn_health_checks,
     }
     sslmode = options.pop("sslmode", "")
     if sslmode:
         settings_dict.setdefault("OPTIONS", {})["sslmode"] = sslmode
     if options:
         settings_dict.setdefault("OPTIONS", {}).update(options)
+    settings_dict.setdefault("OPTIONS", {}).setdefault("connect_timeout", 10)
+    settings_dict["OPTIONS"].setdefault("keepalives", 1)
+    settings_dict["OPTIONS"].setdefault("keepalives_idle", 30)
+    settings_dict["OPTIONS"].setdefault("keepalives_interval", 10)
+    settings_dict["OPTIONS"].setdefault("keepalives_count", 5)
     return settings_dict
 
 
@@ -148,11 +158,29 @@ ASGI_APPLICATION = "config.asgi.application"
 
 # PostgreSQL is the sole database for dev/prod. A single DATABASE_URL (as
 # issued by managed providers such as Neon) takes precedence when set; the
-# discrete DB_* variables remain for local dev and Compose. Tests run
+# discrete DB_* variables remain for local dev and Compose. When the pooler
+# URL is set it takes precedence over DATABASE_URL because the pooler reuses
+# backend connections, so each new client connection skips the full Postgres
+# startup/auth handshake. Tests run
 # in-memory SQLite for speed and
+#
+# Connections are kept open for reuse across requests (CONN_MAX_AGE). With the
+# default of zero Django opens a fresh TCP+TLS+auth connection on every
+# request, which dominates response time when the database is in another
+# region (several seconds per connect versus a few hundred milliseconds per
+# query). Health checks guard reused connections against stale pooler/server
+# closes.
+DB_CONN_MAX_AGE = config("DB_CONN_MAX_AGE", default=600, cast=int)
+DB_CONN_HEALTH_CHECKS = config("DB_CONN_HEALTH_CHECKS", default=True, cast=bool)
 DATABASE_URL = config("DATABASE_URL", default="")
-if DATABASE_URL:
-    DATABASES = {"default": _database_from_url(DATABASE_URL)}
+DATABASE_URL_POOLED = config("DATABASE_URL_POOLED", default="")
+EFFECTIVE_DATABASE_URL = DATABASE_URL_POOLED or DATABASE_URL
+if EFFECTIVE_DATABASE_URL:
+    DATABASES = {
+        "default": _database_from_url(
+            EFFECTIVE_DATABASE_URL, DB_CONN_MAX_AGE, DB_CONN_HEALTH_CHECKS
+        )
+    }
 else:
     DATABASES = {
         "default": {
@@ -162,6 +190,15 @@ else:
             "PASSWORD": config("DB_PASSWORD", default=""),
             "HOST": config("DB_HOST", default=""),
             "PORT": config("DB_PORT", default=""),
+            "CONN_MAX_AGE": DB_CONN_MAX_AGE,
+            "CONN_HEALTH_CHECKS": DB_CONN_HEALTH_CHECKS,
+            "OPTIONS": {
+                "connect_timeout": 10,
+                "keepalives": 1,
+                "keepalives_idle": 30,
+                "keepalives_interval": 10,
+                "keepalives_count": 5,
+            },
         }
     }
 if TESTING and not config("TEST_USE_POSTGRES", default=False, cast=bool):
