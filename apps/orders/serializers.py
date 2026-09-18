@@ -136,12 +136,18 @@ class OrderListSerializer(serializers.ModelSerializer):
     def get_item_count(self, obj):
         """Return the number of physical line items on the order.
 
+        Prefers the ``item_count`` annotation from the staff list selector so
+        the list never issues a query per row; falls back to a count query.
+
         Args:
             obj (Order): the order.
 
         Returns:
             int: the count of order items.
         """
+        annotated = obj.__dict__.get("item_count")
+        if isinstance(annotated, int):
+            return annotated
         return obj.items.count()
 
 
@@ -155,7 +161,6 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             "id",
-            "lookup_token",
             "status",
             "payment_method",
             "order_source",

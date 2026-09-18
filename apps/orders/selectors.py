@@ -6,6 +6,8 @@ raw querysets directly. They are pure reads with no side effects and use
 N+1 query against the order's related rows.
 """
 
+from django.db.models import Count
+
 from apps.orders.models import Order
 
 
@@ -57,6 +59,37 @@ def get_order_for_staff(order_id):
         .select_related("delivery_area", "shipping_address")
         .first()
     )
+
+
+def list_staff_orders(status=None, phone=None, order_source=None,
+                      placed_from=None, placed_to=None):
+    """Return the staff order queue newest-first with per-row item counts.
+
+    All filters are optional and combine with AND. The item count is annotated
+    so the list serializer never issues a query per row.
+
+    Args:
+        status (str | None): exact order status to keep.
+        phone (str | None): case-insensitive substring of the order phone.
+        order_source (str | None): exact order source to keep.
+        placed_from: keep orders placed at or after this datetime.
+        placed_to: keep orders placed at or before this datetime.
+
+    Returns:
+        QuerySet: annotated orders ordered newest-first.
+    """
+    queryset = Order.objects.all().order_by("-placed_at", "-pk")
+    if status:
+        queryset = queryset.filter(status=status)
+    if phone:
+        queryset = queryset.filter(phone__icontains=phone)
+    if order_source:
+        queryset = queryset.filter(order_source=order_source)
+    if placed_from is not None:
+        queryset = queryset.filter(placed_at__gte=placed_from)
+    if placed_to is not None:
+        queryset = queryset.filter(placed_at__lte=placed_to)
+    return queryset.annotate(item_count=Count("items"))
 
 
 def get_order_items(order):

@@ -295,3 +295,89 @@ class PaymentMethodChoicesTests(APITestCase):
                 apply_staff_status(order, target, changed_by=staff)
         order.refresh_from_db()
         self.assertEqual(order.status, "confirmed")
+
+
+class StaffOrderReadTests(APITestCase):
+    """Exercises the staff order list and detail endpoints."""
+
+    def setUp(self):
+        cache.clear()
+        self.staff = _make_staff()
+        _, self.variant = _make_product()
+        self.order = _place_intake_order(self.variant, staff=self.staff)
+        self.list_url = reverse("api:orders:order-staff-list")
+        self.detail_url = reverse(
+            "api:orders:order-staff-detail", kwargs={"order_id": self.order.pk}
+        )
+
+    def test_staff_list_returns_order_with_item_count(self):
+        """Support staff see the queue with per-row counts, no token."""
+        _login(self.client)
+        response = self.client.get(self.list_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [row["id"] for row in response.data["results"]]
+        self.assertIn(self.order.pk, ids)
+        row = next(r for r in response.data["results"] if r["id"] == self.order.pk)
+        self.assertEqual(row["item_count"], 1)
+        self.assertNotIn("lookup_token", row)
+
+    def test_staff_detail_returns_items_and_history_without_token(self):
+        """Detail carries lines and the audit trail, never the lookup token."""
+        _login(self.client)
+        response = self.client.get(self.detail_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["id"], self.order.pk)
+        self.assertNotIn("lookup_token", response.data)
+        self.assertEqual(len(response.data["items"]), 1)
+        self.assertEqual(len(response.data["status_history"]), 1)
+
+    def test_customer_list_and_detail_rejected(self):
+        """Customers cannot obtain a token for the staff queue."""
+        User.objects.create_user(
+            email="cust@example.com",
+            username="cust",
+            password="StrongPass123!",
+            phone_number="+254700000002",
+            role="customer",
+        )
+        url = reverse("api:accounts:login")
+        login = self.client.post(
+            url,
+            {"email": "cust@example.com", "password": "StrongPass123!"},
+            format="json",
+        )
+        self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_list_and_detail_rejected(self):
+        """Unauthenticated reads are rejected."""
+        self.assertEqual(
+            self.client.get(self.list_url).status_code, status.HTTP_401_UNAUTHORIZED
+        )
+        self.assertEqual(
+            self.client.get(self.detail_url).status_code, status.HTTP_401_UNAUTHORIZED
+        )
+
+    def test_missing_order_detail_is_404(self):
+        """An unknown order id is a 404."""
+        _login(self.client)
+        url = reverse(
+            "api:orders:order-staff-detail", kwargs={"order_id": 999999}
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_list_filters_by_status(self):
+        """The status filter keeps matching orders only."""
+        _login(self.client)
+        response = self.client.get(self.list_url, {"status": "confirmed"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(self.order.pk, [r["id"] for r in response.data["results"]])
+        response = self.client.get(self.list_url, {"status": "delivered"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn(self.order.pk, [r["id"] for r in response.data["results"]])
+
+    def test_list_rejects_unknown_status(self):
+        """An unknown status value is a 400, not a silent empty page."""
+        _login(self.client)
+        response = self.client.get(self.list_url, {"status": "teleported"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

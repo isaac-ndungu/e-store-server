@@ -1,26 +1,38 @@
 """API views for the orders app.
 
-Two staff-only endpoints (manager/support):
+Staff-only endpoints (manager/support):
 
 - ``StaffOrderIntakeView`` — create a confirmed order from an assisted
   WhatsApp/email sale, with idempotency protection.
+- ``StaffOrderListView`` — paginated order queue with status/phone/source and
+  placed-date filtering.
+- ``StaffOrderDetailView`` — one order with items and status history.
 - ``OrderStatusUpdateView`` — advance an order's fulfilment status.
 
 All order mutations go through the order service; the status field is never
 written directly in a view.
 """
 
+from django.utils.dateparse import parse_date, parse_datetime
+from django.utils.timezone import is_naive, make_aware
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.permissions import IsManagerOrSupport
 from apps.core.api import service_error_to_400 as _service_error_to_400
-from apps.orders.selectors import find_orders_by_payment_reference, get_order_for_staff
+from apps.orders.models import Order
+from apps.orders.selectors import (
+    find_orders_by_payment_reference,
+    get_order_for_staff,
+    list_staff_orders,
+)
 from apps.orders.serializers import (
     OrderDetailSerializer,
+    OrderListSerializer,
     OrderStatusUpdateSerializer,
     StaffOrderIntakeSerializer,
 )
@@ -129,6 +141,136 @@ class StaffOrderIntakeView(APIView):
             return Response(response_data, status=status.HTTP_201_CREATED)
         finally:
             release_processing_lock(scope, key)
+
+
+class StaffOrderListView(APIView):
+    """List orders for staff, newest-first with optional filters.
+
+    Staff-only (manager/support). Supported query params: ``status`` (exact,
+    must be a known order status), ``phone`` (case-insensitive substring),
+    ``order_source`` (exact, must be a known source), ``from`` / ``to``
+    (ISO date or datetime bounding ``placed_at``). Invalid values are
+    answered with 400; unknown params are ignored.
+    """
+
+    permission_classes = [IsManagerOrSupport]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "order_read"
+
+    @extend_schema(
+        operation_id="order_staff_list",
+        responses={200: OrderListSerializer(many=True)},
+        tags=["order_intake"],
+    )
+    def get(self, request):
+        """Return the paginated, optionally filtered order queue.
+
+        Args:
+            request: the GET request with optional filter params.
+
+        Returns:
+            Response: the paginated order list, or ``400`` for an invalid
+                filter value.
+        """
+        params = request.query_params
+        status_value = params.get("status") or None
+        if status_value and status_value not in dict(Order.STATUS_CHOICES):
+            return Response(
+                {"status": "Unknown order status."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        source_value = params.get("order_source") or None
+        if source_value and source_value not in dict(Order.ORDER_SOURCE_CHOICES):
+            return Response(
+                {"order_source": "Unknown order source."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            placed_from = _parse_placed_bound(params.get("from"))
+            placed_to = _parse_placed_bound(params.get("to"), end_of_day=True)
+        except ValueError:
+            return Response(
+                {"detail": "from/to must be an ISO date or datetime."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        queryset = list_staff_orders(
+            status=status_value,
+            phone=params.get("phone") or None,
+            order_source=source_value,
+            placed_from=placed_from,
+            placed_to=placed_to,
+        )
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(queryset, request)
+        serializer = OrderListSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class StaffOrderDetailView(APIView):
+    """Retrieve one order for staff with items and status history."""
+
+    permission_classes = [IsManagerOrSupport]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "order_read"
+
+    @extend_schema(
+        operation_id="order_staff_detail",
+        responses={200: OrderDetailSerializer},
+        tags=["order_intake"],
+    )
+    def get(self, request, order_id):
+        """Return the matching order.
+
+        Args:
+            request: the GET request.
+            order_id (int): the order id.
+
+        Returns:
+            Response: the order detail, or ``404`` when no order matches.
+
+        Raises:
+            Http404: when no order matches the id.
+        """
+        from django.http import Http404
+
+        order = get_order_for_staff(order_id)
+        if order is None:
+            raise Http404
+        return Response(OrderDetailSerializer(order).data)
+
+
+def _parse_placed_bound(value, end_of_day=False):
+    """Parse a ``from``/``to`` filter into an aware datetime.
+
+    Accepts a full ISO datetime or a plain ISO date (midnight, or
+    end-of-day when ``end_of_day`` is set so a ``to`` date stays
+    inclusive). Returns None for a missing value.
+
+    Args:
+        value (str | None): the raw query param.
+        end_of_day (bool): snap plain dates to 23:59:59.999999.
+
+    Returns:
+        datetime | None: the aware bound, or None when unset.
+
+    Raises:
+        ValueError: when the value parses as neither.
+    """
+    from datetime import datetime, time
+
+    if not value:
+        return None
+    parsed = parse_datetime(value)
+    if parsed is None:
+        day = parse_date(value)
+        if day is None:
+            raise ValueError(f"Unparseable date bound: {value!r}")
+        parsed = datetime.combine(
+            day, time.max if end_of_day else time.min
+        )
+    if is_naive(parsed):
+        parsed = make_aware(parsed)
+    return parsed
 
 
 class OrderStatusUpdateView(APIView):
