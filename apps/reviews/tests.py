@@ -60,15 +60,14 @@ def _make_user(email="buyer@example.com", username="buyer", **kwargs):
     )
 
 
-def _make_staff(email="staff@example.com", role="manager"):
-    """Create a staff user holding the given role."""
+def _make_staff(email="staff@example.com", is_staff=True):
+    """Create a staff user for tests."""
     return User.objects.create_user(
         email=email,
         username=email.split("@")[0],
         password="StrongPass123!",
         phone_number="+254700000001",
-        is_staff=True,
-        role=role,
+        is_staff=is_staff,
     )
 
 
@@ -104,7 +103,7 @@ def _place_cod_order(product, phone="+254712345678", quantity=1):
         username=f"reviewstaff{_SEQ[0]}",
         password="StrongPass123!",
         phone_number="+254700000001",
-        role="support",
+        is_staff=True,
     )
     return create_staff_order(
         staff_user=staff,
@@ -470,14 +469,14 @@ class QuestionEndpointTests(APITestCase):
 
 
 class ModerationEndpointTests(APITestCase):
-    """Exercises role-gated moderation over HTTP."""
+    """Exercises staff-only moderation over HTTP."""
 
     def setUp(self):
         cache.clear()
         self.customer = _make_user()
-        self.manager = _make_staff(email="manager@example.com", role="manager")
-        self.support = _make_staff(email="support@example.com", role="support")
-        self.analyst = _make_staff(email="analyst@example.com", role="analyst")
+        self.manager = _make_staff(email="manager@example.com", is_staff=True)
+        self.support = _make_staff(email="support@example.com", is_staff=True)
+        self.analyst = _make_staff(email="analyst@example.com", is_staff=True)
         self.product = _make_product()
         self.review = create_review(product=self.product, rating=2, **SUBMITTER)
         self.question = create_product_question(
@@ -485,11 +484,12 @@ class ModerationEndpointTests(APITestCase):
         )
 
     def _login_as(self, email, password="StrongPass123!"):
+        self.client.force_authenticate(user=None)
         self.client.credentials()
         _login(self.client, email=email, password=password)
 
     def test_moderation_list_requires_staff_role(self):
-        """Customers and analysts cannot reach the moderation inbox."""
+        """Non-staff callers cannot reach the moderation inbox; staff can."""
         self.client.force_authenticate(user=self.customer)
         response = self.client.get(reverse("api:reviews:review-moderation-list"))
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -498,9 +498,9 @@ class ModerationEndpointTests(APITestCase):
         self.client.credentials()
         self._login_as("analyst@example.com")
         response = self.client.get(reverse("api:reviews:review-moderation-list"))
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
         response = self.client.get(reverse("api:reviews:question-moderation-list"))
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_anonymous_cannot_reach_moderation(self):
         """An unauthenticated caller is rejected outright, not filtered."""
@@ -646,7 +646,7 @@ class ReviewPhotoUploadTests(APITestCase):
         user = _make_user(
             email="staffup@example.com",
             username="staffup",
-            role="support",
+            is_staff=True,
         )
         _login(self.client, email="staffup@example.com")
         with (
@@ -794,8 +794,8 @@ class ReviewPhotoDeleteTests(APITestCase):
     def test_authenticated_owner_can_delete_unattached_photo(self):
         """A logged-in owner deletes their own upload."""
         owned = _make_unattached_photo("owned.png", user=self.owner)
-        self.owner.role = "support"
-        self.owner.save(update_fields=["role"])
+        self.owner.is_staff = True
+        self.owner.save(update_fields=["is_staff"])
         _login(self.client, email=self.owner.email)
         with mock.patch("apps.reviews.signals.delete_image_files") as deleter:
             response = self.client.delete(self._url(owned.pk))

@@ -22,14 +22,14 @@ SNAPSHOT = [
 ]
 
 
-def _make_user(email, role="customer"):
-    """Create a user with the given role."""
+def _make_user(email, is_staff=False):
+    """Create a user for tests."""
     return User.objects.create_user(
         email=email,
         username=email.split("@")[0],
         password="StrongPass123!",
         phone_number="+254712345678",
-        role=role,
+        is_staff=is_staff,
     )
 
 
@@ -158,8 +158,8 @@ class InquiryQueueTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_queue_rejects_customer_role(self):
-        """A customer credential gets no token for the staff queue."""
-        _make_user("buyer@example.com", role="customer")
+        """A non-staff credential gets no token for the staff queue."""
+        _make_user("buyer@example.com", is_staff=False)
         login = self.client.post(
             reverse("api:accounts:login"),
             {"email": "buyer@example.com", "password": "StrongPass123!"},
@@ -168,8 +168,8 @@ class InquiryQueueTests(APITestCase):
         self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_queue_allows_support_role(self):
-        """Support staff can read the queue."""
-        _make_user("staff@example.com", role="support")
+        """Staff can read the queue."""
+        _make_user("staff@example.com", is_staff=True)
         _login(self.client, "staff@example.com")
         response = self.client.get(QUEUE_URL)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -177,7 +177,7 @@ class InquiryQueueTests(APITestCase):
 
     def test_status_transition_new_to_contacted(self):
         """Staff can move a new inquiry to contacted."""
-        _make_user("staff@example.com", role="support")
+        _make_user("staff@example.com", is_staff=True)
         _login(self.client, "staff@example.com")
         url = reverse(
             "api:inquiries:inquiry-status-update",
@@ -190,7 +190,7 @@ class InquiryQueueTests(APITestCase):
 
     def test_status_transition_new_to_converted_rejected(self):
         """New inquiries cannot skip straight to converted via the queue."""
-        _make_user("staff@example.com", role="support")
+        _make_user("staff@example.com", is_staff=True)
         _login(self.client, "staff@example.com")
         url = reverse(
             "api:inquiries:inquiry-status-update",
@@ -205,7 +205,7 @@ class InquiryReferenceTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _make_user("staff@example.com", role="support")
+        _make_user("staff@example.com", is_staff=True)
         _login(self.client, "staff@example.com")
         self.inquiry = Inquiry.objects.create(
             channel="whatsapp",

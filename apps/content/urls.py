@@ -2,7 +2,7 @@
 
 Mounted at ``/api/v1/`` from ``config/api_urls.py``. Public storefront reads
 use slug-based resolution for pages and placement-based queries for banners;
-admin CRUD paths use pk-based resolution. Only manager-role tokens may reach
+admin CRUD paths use pk-based resolution. Only staff tokens may reach
 the admin endpoints.
 """
 

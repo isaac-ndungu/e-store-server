@@ -2,7 +2,7 @@
 
 Storefront paths deliver published content pages and active banners to
 unauthenticated visitors  -  content browsing is public by design. Admin
-paths manage CRUD for both models and are gated behind the manager role.
+paths manage CRUD for both models and are gated behind staff access.
 
 All mutations go through the content services layer; no view writes a model
 field directly. Free-form text is sanitised at the service boundary, not in
@@ -17,7 +17,6 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.accounts.permissions import IsManager
 from apps.content import cache as content_cache
 from apps.content.selectors import (
     get_banner_for_staff,
@@ -182,7 +181,7 @@ class BannerStorefrontView(APIView):
 class ContentPageAdminListView(APIView):
     """List all content pages for staff management."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -210,7 +209,7 @@ class ContentPageAdminListView(APIView):
 class ContentPageAdminCreateView(APIView):
     """Create a content page as a manager."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -247,7 +246,7 @@ class ContentPageAdminCreateView(APIView):
 class ContentPageAdminDetailView(APIView):
     """Retrieve a content page for staff management by id."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -273,7 +272,7 @@ class ContentPageAdminDetailView(APIView):
 class ContentPageAdminUpdateView(APIView):
     """Update a content page as a manager."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -306,7 +305,7 @@ class ContentPageAdminUpdateView(APIView):
 class ContentPageAdminDeleteView(APIView):
     """Delete a content page as a manager."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -332,7 +331,7 @@ class ContentPageAdminDeleteView(APIView):
 class BannerAdminListView(APIView):
     """List all banners for staff management."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -361,7 +360,7 @@ class BannerAdminListView(APIView):
 class BannerAdminCreateView(APIView):
     """Create a banner as a manager."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -404,7 +403,7 @@ class BannerAdminCreateView(APIView):
 class BannerAdminDetailView(APIView):
     """Retrieve a banner for staff management by id."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -430,7 +429,7 @@ class BannerAdminDetailView(APIView):
 class BannerAdminUpdateView(APIView):
     """Update a banner as a manager."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -463,7 +462,7 @@ class BannerAdminUpdateView(APIView):
 class BannerAdminDeleteView(APIView):
     """Delete a banner as a manager."""
 
-    permission_classes = [IsManager]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 

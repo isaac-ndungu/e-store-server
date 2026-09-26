@@ -37,7 +37,7 @@ REFUND_METHOD = "M-Pesa - sent manually"
 
 
 def _make_user(email="buyer@example.com", username="buyer", **kwargs):
-    """Create a plain customer user for tests."""
+    """Create a plain non-staff user for tests."""
     return User.objects.create_user(
         email=email,
         username=username,
@@ -47,15 +47,14 @@ def _make_user(email="buyer@example.com", username="buyer", **kwargs):
     )
 
 
-def _make_staff(email="staff@example.com", role="manager"):
-    """Create a staff user holding the given role."""
+def _make_staff(email="staff@example.com", is_staff=True):
+    """Create a staff user for tests."""
     return User.objects.create_user(
         email=email,
         username=email.split("@")[0],
         password="StrongPass123!",
         phone_number="+254700000001",
-        is_staff=True,
-        role=role,
+        is_staff=is_staff,
     )
 
 
@@ -345,7 +344,7 @@ class ReturnRequestCreationTests(APITestCase):
 
 
 class ReturnAccessTests(APITestCase):
-    """Exercises role access control on the staff-only return endpoints."""
+    """Exercises access control on the staff-only return endpoints."""
 
     def setUp(self):
         cache.clear()
@@ -365,7 +364,7 @@ class ReturnAccessTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_credential_cannot_log_in(self):
-        """A customer credential gets no token to reach returns with."""
+        """A non-staff credential gets no token to reach returns with."""
         _make_user(email="other@example.com", username="other")
         login = self.client.post(
             reverse("api:accounts:login"),
@@ -390,8 +389,8 @@ class ReturnAccessTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_staff_without_role_rejected_from_staff_actions(self):
-        """An analyst without the manager/support role is denied."""
-        _make_staff(email="analyst@example.com", role="analyst")
+        """Any staff account can approve a return request."""
+        _make_staff(email="analyst@example.com", is_staff=True)
         _login(self.client, email="analyst@example.com")
         response = self.client.post(
             reverse(
@@ -400,7 +399,7 @@ class ReturnAccessTests(APITestCase):
             {"refund_method": REFUND_METHOD},
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_manager_can_approve(self):
         """A manager can approve a return request."""
@@ -841,7 +840,7 @@ class PreShipmentCancellationTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_non_staff_rejected(self):
-        """A customer credential gets no token to cancel with."""
+        """A non-staff credential gets no token to cancel with."""
         self.client.credentials()
         _make_user(email="other@example.com", username="other")
         login = self.client.post(

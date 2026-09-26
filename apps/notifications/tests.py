@@ -40,12 +40,11 @@ def _make_staff(password="StaffPass123!"):
         password=password,
         phone_number="+254712345678",
         is_staff=True,
-        role="manager",
     )
 
 
 def _make_customer(password="CustomerPass123!"):
-    """Create and return a plain customer user."""
+    """Create and return a plain non-staff user."""
     return User.objects.create_user(
         email="buyer@example.com",
         username="buyer",
@@ -256,7 +255,7 @@ class SendTestSMSEndpointTests(APITestCase):
         self.assertEqual(NotificationLog.objects.count(), 0)
 
     def test_non_staff_cannot_send_test_sms(self):
-        """A plain customer token is rejected (403) and no SMS is sent."""
+        """A plain non-staff token is rejected (403) and no SMS is sent."""
         self.client.force_authenticate(user=self.customer)
         with mock.patch(
             "apps.notifications.services._send_via_provider"
@@ -394,7 +393,7 @@ class NotificationLogEndpointTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_non_staff_cannot_list_logs(self):
-        """A plain customer token is rejected (403)."""
+        """A plain non-staff token is rejected (403)."""
         self.client.force_authenticate(user=self.customer)
         response = self.client.get(LOG_LIST_URL)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -893,7 +892,7 @@ class NotificationLogDetailTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_non_staff_cannot_get_log_detail(self):
-        """A plain customer token is rejected (403)."""
+        """A plain non-staff token is rejected (403)."""
         self.client.force_authenticate(user=self.customer)
         response = self.client.get(self.detail_url)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

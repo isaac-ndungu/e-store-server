@@ -1,7 +1,7 @@
 """URL routing for the analytics endpoints.
 
 Mounted at ``/api/v1/`` from ``config/api_urls.py``. Every route is gated by
-the manager/analyst role at the view level; the summary and report routes live
+staff access at the view level; the summary and report routes live
 under ``analytics/`` per the public API list.
 """
 

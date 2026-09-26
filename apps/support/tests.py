@@ -25,7 +25,7 @@ from apps.support.models import Ticket, TicketMessage
 
 
 def _make_user(email="buyer@example.com", username="buyer", **kwargs):
-    """Create a plain customer user for tests."""
+    """Create a plain non-staff user for tests."""
     return User.objects.create_user(
         email=email,
         username=username,
@@ -35,15 +35,14 @@ def _make_user(email="buyer@example.com", username="buyer", **kwargs):
     )
 
 
-def _make_staff(email="staff@example.com", username=None, role="support"):
-    """Create a staff user holding the given role."""
+def _make_staff(email="staff@example.com", username=None, is_staff=True):
+    """Create a staff user for tests."""
     return User.objects.create_user(
         email=email,
         username=username or email.split("@")[0],
         password="StrongPass123!",
         phone_number="+254700000001",
-        is_staff=True,
-        role=role,
+        is_staff=is_staff,
     )
 
 
@@ -104,7 +103,7 @@ class TicketAccessControlTests(APITestCase):
         )
 
     def test_customer_credential_cannot_log_in(self):
-        """A customer credential gets no token to reach tickets with."""
+        """A non-staff credential gets no token to reach tickets with."""
         _make_user()
         login = self.client.post(
             reverse("api:accounts:login"),
@@ -115,7 +114,7 @@ class TicketAccessControlTests(APITestCase):
 
     def test_staff_list_returns_every_ticket(self):
         """The staff list is shared, not scoped to the filer."""
-        other = _make_staff(email="otherstaff@example.com", role="support")
+        other = _make_staff(email="otherstaff@example.com", is_staff=True)
         Ticket.objects.create(user=other, category="other", subject="Other")
         _login(self.client, email="staff@example.com")
         url = reverse("api:support:ticket-list-create")
@@ -250,21 +249,21 @@ class ReturnLinkedTicketTests(APITestCase):
 
 
 class StaffTicketTests(APITestCase):
-    """Staff reply, assign, status, and role gating on ticket endpoints."""
+    """Staff reply, assign, status, and access gating on ticket endpoints."""
 
     def setUp(self):
-        """Create a customer ticket plus staff of various roles."""
+        """Create a non-staff ticket plus staff accounts."""
         cache.clear()
         self.customer = _make_user()
-        self.support = _make_staff(email="support@example.com", role="support")
-        self.manager = _make_staff(email="manager@example.com", role="manager")
-        self.analyst = _make_staff(email="analyst@example.com", role="analyst")
+        self.support = _make_staff(email="support@example.com", is_staff=True)
+        self.manager = _make_staff(email="manager@example.com", is_staff=True)
+        self.analyst = _make_staff(email="analyst@example.com", is_staff=True)
         self.ticket = Ticket.objects.create(
             user=self.customer, category="order_issue", subject="Where is my order"
         )
 
     def test_customer_cannot_reach_staff_queue(self):
-        """A customer credential gets no token for the staff ticket queue."""
+        """A non-staff credential gets no token for the staff ticket queue."""
         login = self.client.post(
             reverse("api:accounts:login"),
             {"email": "buyer@example.com", "password": "StrongPass123!"},
@@ -273,10 +272,10 @@ class StaffTicketTests(APITestCase):
         self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_analyst_cannot_reach_staff_queue(self):
-        """An analyst role does not grant support-queue access."""
+        """Any staff account can reach the staff ticket queue."""
         _login(self.client, email="analyst@example.com")
         url = reverse("api:support:staff-ticket-list")
-        self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
 
     def test_staff_reply_marks_pending_and_assigns(self):
         """A staff reply moves an open ticket to pending_customer and claims it."""
@@ -292,7 +291,7 @@ class StaffTicketTests(APITestCase):
         self.assertEqual(self.ticket.assigned_to_id, self.support.pk)
 
     def test_assign_requires_support_role_target(self):
-        """A ticket cannot be assigned to a non-support user."""
+        """A ticket cannot be assigned to a non-staff user."""
         _login(self.client, email="manager@example.com")
         url = reverse("api:support:staff-ticket-assign", args=[self.ticket.pk])
         response = self.client.post(url, {"agent_id": self.customer.pk}, format="json")
@@ -324,7 +323,7 @@ class StaffTicketQueueFilterTests(APITestCase):
         """Create a ticket and log in as support staff."""
         cache.clear()
         customer = _make_user()
-        _make_staff(email="support@example.com", role="support")
+        _make_staff(email="support@example.com", is_staff=True)
         Ticket.objects.create(user=customer, category="other", subject="Noise")
         _login(self.client, email="support@example.com")
 
@@ -342,7 +341,7 @@ class StaffTicketQueueFilterTests(APITestCase):
 
     def test_valid_assignee_filter_returns_matching_ticket(self):
         """A numeric assigned_to filter restricts the queue correctly."""
-        support = _make_staff(email="assignee@example.com", role="support")
+        support = _make_staff(email="assignee@example.com", is_staff=True)
         assigned = Ticket.objects.first()
         assigned.assigned_to = support
         assigned.save(update_fields=["assigned_to"])
@@ -359,9 +358,9 @@ class TicketAttachmentTests(APITestCase):
     def setUp(self):
         """Create staff of two roles and a ticket with a photo."""
         cache.clear()
-        self.staff = _make_staff(email="filer@example.com", role="support")
-        self.support = _make_staff(email="support@example.com", role="support")
-        self.analyst = _make_staff(email="analyst@example.com", role="analyst")
+        self.staff = _make_staff(email="filer@example.com", is_staff=True)
+        self.support = _make_staff(email="support@example.com", is_staff=True)
+        self.analyst = _make_staff(email="analyst@example.com", is_staff=True)
         self.ticket = Ticket.objects.create(
             user=self.staff, category="other", subject="Broken fan"
         )
@@ -381,7 +380,7 @@ class TicketAttachmentTests(APITestCase):
         self.assertNotIn("receipt.png", stored)
 
     def test_customer_token_cannot_download_attachment(self):
-        """A customer token is refused from the download route."""
+        """A non-staff token is refused from the download route."""
         _make_user()
         self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         url = reverse("api:support:ticket-attachment-download", args=[self.message.pk])
@@ -402,10 +401,10 @@ class TicketAttachmentTests(APITestCase):
         self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
 
     def test_non_support_role_cannot_download_attachment(self):
-        """An analyst role resolves to 403 on the download route."""
+        """Any staff account can use the download route."""
         _login(self.client, email="analyst@example.com")
         url = reverse("api:support:ticket-attachment-download", args=[self.message.pk])
-        self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
 
     def test_message_without_attachment_resolves_to_404(self):
         """A message carrying no file yields 404, never an empty download."""

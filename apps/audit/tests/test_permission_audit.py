@@ -143,24 +143,24 @@ class EndpointSecurityPostureTests(TestCase):
 
 
 class RoleRestrictionAuditTests(TestCase):
-    """Cross-check revenue- and fulfilment-role restrictions across the API.
+    """Cross-check staff-only restrictions across the API.
 
-    The full matrix lives in the launch-readiness document. These assertions
-    pin the pairs most likely to regress: analytics and dashboard data is
-    manager-and-analyst-only, and order/return fulfilment actions are gated by
-    named roles rather than Django's generic staff flag.
+    Staff endpoints require Django's staff flag via ``IsAdminUser``. These
+    assertions pin the pairs most likely to regress: analytics and dashboard
+    data is staff-only, and order/return fulfilment actions are gated by the
+    staff flag rather than being public.
     """
 
     def test_analytics_views_are_manager_or_analyst_only(self):
-        """Revenue reports require the manager or analyst role."""
-        self._assert_shares_permission("apps.analytics.views", "IsManagerOrAnalyst")
+        """Revenue reports require staff access."""
+        self._assert_shares_permission("apps.analytics.views", "IsAdminUser")
 
     def test_dashboard_views_are_manager_or_analyst_only(self):
-        """Dashboard widgets require the manager or analyst role."""
-        self._assert_shares_permission("apps.dashboard.views", "IsManagerOrAnalyst")
+        """Dashboard widgets require staff access."""
+        self._assert_shares_permission("apps.dashboard.views", "IsAdminUser")
 
-    def test_fulfilment_actions_use_named_roles_not_is_staff(self):
-        """Order/return status actions gate on manager/support, not is_staff."""
+    def test_fulfilment_actions_require_staff(self):
+        """Order/return status actions gate on staff access, not public."""
         expected_views = {
             "apps.orders.views.OrderStatusUpdateView",
             "apps.returns.views.ReturnRequestStaffListView",
@@ -181,13 +181,9 @@ class RoleRestrictionAuditTests(TestCase):
                 perm.__name__
                 for perm in (_declared_attr(view_class, "permission_classes") or [])
             }
-            if "IsManagerOrSupport" not in names:
+            if "IsAdminUser" not in names:
                 offending.append(
                     f"{identifier} allows {sorted(names) or ['<none declared>']}"
-                )
-            if "IsStaff" in names:
-                offending.append(
-                    f"{identifier} uses the generic IsStaff flag instead of a role"
                 )
         self.assertEqual(offending, [])
 

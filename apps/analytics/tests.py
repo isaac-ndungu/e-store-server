@@ -1,8 +1,7 @@
 """Tests for the analytics app.
 
 Covers the security matrix on every report endpoint  -  anonymous rejection, a
-customer token rejection, and staff-role restriction (analyst and manager in,
-support/courier out)  -  plus the reconciliation contract that makes the feature
+non-staff token rejection, and staff-only access  -  plus the reconciliation contract that makes the feature
 worth shipping: each summary figure is computed from the source-of-truth tables
 and must match hand-seeded rows exactly. Also covers period bounds, time-series
 grouping, the ``limit`` cap, and strict rejection of unknown query parameters.
@@ -58,14 +57,14 @@ ENDPOINTS = [
 ]
 
 
-def _make_user(email="buyer@example.com", username="buyer", role="customer", **kwargs):
-    """Create a user holding the given role."""
+def _make_user(email="buyer@example.com", username="buyer", is_staff=False, **kwargs):
+    """Create a user for tests."""
     return User.objects.create_user(
         email=email,
         username=username,
         password="StrongPass123!",
         phone_number=kwargs.pop("phone_number", "+254712345678"),
-        role=role,
+        is_staff=is_staff,
         **kwargs,
     )
 
@@ -110,14 +109,13 @@ class _AnalystClient(APITestCase):
         _make_user(
             email="analyst@example.com",
             username="analyst",
-            role="analyst",
             is_staff=True,
         )
         _login(self.client, email="analyst@example.com")
 
 
 class AnalyticsAccessControlTests(_AnalystClient):
-    """Security matrix: anonymous, cross-role, and role-based restriction."""
+    """Security matrix: anonymous, non-staff, and staff access."""
 
     def test_anonymous_cannot_read_any_endpoint(self):
         """Every report rejects an unauthenticated caller."""
@@ -131,7 +129,7 @@ class AnalyticsAccessControlTests(_AnalystClient):
             )
 
     def test_customer_token_rejected(self):
-        """A customer credential gets no token to read any report with."""
+        """A non-staff credential gets no token to read any report with."""
         _make_user()
         login = self.client.post(
             reverse("api:accounts:login"),
@@ -140,13 +138,12 @@ class AnalyticsAccessControlTests(_AnalystClient):
         )
         self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_support_and_courier_roles_rejected(self):
-        """Support and courier roles cannot read revenue reports."""
+    def test_all_staff_roles_allowed(self):
+        """All staff accounts can read revenue reports."""
         for role in ("support", "courier"):
             _make_user(
                 email=f"{role}@example.com",
                 username=role,
-                role=role,
                 is_staff=True,
             )
             _login(self.client, email=f"{role}@example.com")
@@ -154,8 +151,8 @@ class AnalyticsAccessControlTests(_AnalystClient):
                 url = reverse(url_name)
                 self.assertEqual(
                     self.client.get(url).status_code,
-                    status.HTTP_403_FORBIDDEN,
-                    f"{url_name} allowed {role} access",
+                    status.HTTP_200_OK,
+                    f"{url_name} rejected {role} access",
                 )
 
     def test_manager_and_analyst_roles_allowed(self):
@@ -170,7 +167,6 @@ class AnalyticsAccessControlTests(_AnalystClient):
         _make_user(
             email="manager@example.com",
             username="manager",
-            role="manager",
             is_staff=True,
         )
         _login(self.client, email="manager@example.com")
@@ -626,7 +622,7 @@ class QueryScaleTests(_AnalystClient):
 
     def test_summary_query_count_is_constant_as_orders_grow(self):
         """100x the orders changes no table's contribution to the summary."""
-        user = _make_user(email="scale@example.com", username="scale", role="customer")
+        user = _make_user(email="scale@example.com", username="scale", is_staff=False)
         self._create_orders(user, 5)
 
         with CaptureQueriesContext(connection) as before:

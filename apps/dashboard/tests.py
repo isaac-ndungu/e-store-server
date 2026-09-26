@@ -1,8 +1,7 @@
 """Tests for the dashboard app.
 
 Covers the security matrix on every widget endpoint  -  anonymous rejection, a
-customer token rejection, and staff-role restriction (analyst and manager in,
-support/courier out)  -  plus per-module reconciliation against hand-seeded
+non-staff token rejection, and staff-only access  -  plus per-module reconciliation against hand-seeded
 rows: conversion-rate math, COD status splits, reservation-expiry boundaries,
 orphaned-discontinued detection, collection refresh staleness, bundle attach
 rate and discount cost, promotions expiring-soon boundaries, return
@@ -62,14 +61,14 @@ ENDPOINTS = [
 ]
 
 
-def _make_user(email="buyer@example.com", username="buyer", role="customer", **kwargs):
-    """Create a user holding the given role."""
+def _make_user(email="buyer@example.com", username="buyer", is_staff=False, **kwargs):
+    """Create a user for tests."""
     return User.objects.create_user(
         email=email,
         username=username,
         password="StrongPass123!",
         phone_number=kwargs.pop("phone_number", "+254712345678"),
-        role=role,
+        is_staff=is_staff,
         **kwargs,
     )
 
@@ -151,14 +150,13 @@ class _AnalystClient(APITestCase):
         _make_user(
             email="analyst@example.com",
             username="analyst",
-            role="analyst",
             is_staff=True,
         )
         _login(self.client, email="analyst@example.com")
 
 
 class DashboardAccessControlTests(_AnalystClient):
-    """Security matrix: anonymous, cross-role, and role-based restriction."""
+    """Security matrix: anonymous, non-staff, and staff access."""
 
     def test_anonymous_cannot_read_any_endpoint(self):
         """Every widget rejects an unauthenticated caller."""
@@ -172,7 +170,7 @@ class DashboardAccessControlTests(_AnalystClient):
             )
 
     def test_customer_token_rejected(self):
-        """A customer credential gets no token to read any widget with."""
+        """A non-staff credential gets no token to read any widget with."""
         _make_user()
         login = self.client.post(
             reverse("api:accounts:login"),
@@ -181,13 +179,12 @@ class DashboardAccessControlTests(_AnalystClient):
         )
         self.assertEqual(login.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_support_and_courier_roles_rejected(self):
-        """Support and courier roles cannot read revenue widgets."""
+    def test_all_staff_roles_allowed(self):
+        """All staff accounts can read revenue widgets."""
         for role in ("support", "courier"):
             _make_user(
                 email=f"{role}@example.com",
                 username=role,
-                role=role,
                 is_staff=True,
             )
             _login(self.client, email=f"{role}@example.com")
@@ -195,8 +192,8 @@ class DashboardAccessControlTests(_AnalystClient):
                 url = reverse(url_name)
                 self.assertEqual(
                     self.client.get(url).status_code,
-                    status.HTTP_403_FORBIDDEN,
-                    f"{url_name} allowed {role} access",
+                    status.HTTP_200_OK,
+                    f"{url_name} rejected {role} access",
                 )
 
     def test_manager_and_analyst_roles_allowed(self):
@@ -211,7 +208,6 @@ class DashboardAccessControlTests(_AnalystClient):
         _make_user(
             email="manager@example.com",
             username="manager",
-            role="manager",
             is_staff=True,
         )
         _login(self.client, email="manager@example.com")

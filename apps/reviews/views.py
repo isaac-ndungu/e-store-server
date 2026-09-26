@@ -3,8 +3,8 @@
 Storefront paths are fully public: listing reviews/Q&A and submitting a
 review, a question, or a photo needs no account  -  the submitter's name and
 contact travel in the body, and uploads are bound to the server-issued guest
-session. Moderation  -  approving/rejecting content and answering questions  - 
-is gated behind the manager/support role.
+session. Moderation  -  approving/rejecting content and answering questions  -
+is staff-only.
 
 Ownership: the only caller-supplied references to other resources are a
 review's ``order_item_id`` and ``photo_ids``. The service resolves the order
@@ -32,7 +32,6 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.accounts.permissions import IsManagerOrSupport
 from apps.catalog.images import (
     delete_image_files,
     generate_variants,
@@ -584,7 +583,7 @@ class ReviewPhotoDeleteView(APIView):
 class ReviewModerationListView(APIView):
     """List every review for moderation by managers and support staff."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -612,7 +611,7 @@ class ReviewModerationListView(APIView):
 class ReviewApproveView(APIView):
     """Approve a review as staff, refreshing the product rating."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None
@@ -641,7 +640,7 @@ class ReviewApproveView(APIView):
 class ReviewRejectView(APIView):
     """Hide a review from the storefront as staff, refreshing the rating."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None
@@ -669,7 +668,7 @@ class ReviewRejectView(APIView):
 class QuestionModerationListView(APIView):
     """List every question for moderation by managers and support staff."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -697,7 +696,7 @@ class QuestionModerationListView(APIView):
 class QuestionAnswerCreateView(APIView):
     """Answer a product question as staff."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -733,7 +732,7 @@ class QuestionAnswerCreateView(APIView):
 class QuestionApproveView(APIView):
     """Approve a question as staff."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None
@@ -761,7 +760,7 @@ class QuestionApproveView(APIView):
 class QuestionRejectView(APIView):
     """Hide a question and its answers from the storefront as staff."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None

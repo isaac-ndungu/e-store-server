@@ -25,14 +25,14 @@ INTAKE_URL = reverse("api:orders:order-intake")
 _SEQ = [0]
 
 
-def _make_user(email, role="customer"):
-    """Create a user with the given role."""
+def _make_user(email, is_staff=False):
+    """Create a user for tests."""
     return User.objects.create_user(
         email=email,
         username=email.split("@")[0],
         password="StrongPass123!",
         phone_number="+254712345678",
-        role=role,
+        is_staff=is_staff,
     )
 
 
@@ -102,8 +102,8 @@ class StaffIntakeAccessTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_intake_rejects_customer_role(self):
-        """A customer credential cannot log in, so no token ever reaches intake."""
-        _make_user("buyer@example.com", role="customer")
+        """A non-staff credential cannot log in, so no token ever reaches intake."""
+        _make_user("buyer@example.com", is_staff=False)
         login = self.client.post(
             reverse("api:accounts:login"),
             {"email": "buyer@example.com", "password": "StrongPass123!"},
@@ -117,7 +117,7 @@ class StaffIntakeTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _make_user("staff@example.com", role="support")
+        _make_user("staff@example.com", is_staff=True)
         _login(self.client, "staff@example.com")
 
     def _post(self, payload, key="intake-1"):

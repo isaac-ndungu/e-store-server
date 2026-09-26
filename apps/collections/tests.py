@@ -44,7 +44,7 @@ _DEFAULT_DESCRIPTION = "A test appliance."
 
 
 def _make_user(email="buyer@example.com", username="buyer", **kwargs):
-    """Create a plain customer user for permission tests."""
+    """Create a plain non-staff user for permission tests."""
     return User.objects.create_user(
         email=email,
         username=username,
@@ -483,7 +483,7 @@ class AdminCollectionAPITests(CollectionsAPITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_cannot_manage_collections(self):
-        """A plain customer token cannot create a collection."""
+        """A plain non-staff token cannot create a collection."""
         _make_user()
         self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
@@ -593,7 +593,7 @@ class AdminMembershipAPITests(CollectionsAPITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_cannot_manage_memberships(self):
-        """A plain customer token cannot create a membership row."""
+        """A plain non-staff token cannot create a membership row."""
         _make_user()
         self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(

@@ -1,6 +1,6 @@
 """API views for the support app.
 
-Ticket endpoints are staff-only (manager/support): tickets are internal
+Ticket endpoints are staff-only: tickets are internal
 issue tracking filed by staff after a customer complaint, so any staff
 member reads and writes every ticket.
 
@@ -12,14 +12,13 @@ and attachments are validated by content and size here before storage.
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import FileResponse, Http404
 from drf_spectacular.utils import extend_schema
-from rest_framework import serializers, status
+from rest_framework import permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.models import User
-from apps.accounts.permissions import IsManagerOrSupport
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.core.idempotency import (
     acquire_processing_lock,
@@ -89,7 +88,7 @@ def _resolve_agent(agent_id):
         agent_id (int): the candidate agent's user id.
 
     Returns:
-        User: the resolved user (role is validated by the service).
+        User: the resolved user (staff status is validated by the service).
 
     Raises:
         serializers.ValidationError: when no user matches the id.
@@ -103,7 +102,7 @@ def _resolve_agent(agent_id):
 class TicketListCreateView(APIView):
     """List every ticket or file a new one (staff only)."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
 
     @property
@@ -217,7 +216,7 @@ class TicketAttachmentDownloadView(APIView):
     resolves to 404.
     """
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "support_read"
 
@@ -247,7 +246,7 @@ class TicketAttachmentDownloadView(APIView):
 class StaffTicketListView(APIView):
     """List every ticket for the support queue, with optional filters."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -300,7 +299,7 @@ def _staff_ticket_or_404(ticket_id):
 class StaffTicketDetailView(APIView):
     """Retrieve any ticket with its message thread for support staff."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -326,7 +325,7 @@ class StaffTicketDetailView(APIView):
 class StaffTicketReplyView(APIView):
     """Post a staff reply to a ticket."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -364,7 +363,7 @@ class StaffTicketReplyView(APIView):
 class StaffTicketAssignView(APIView):
     """Assign a ticket to a support agent."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -396,7 +395,7 @@ class StaffTicketAssignView(APIView):
 class StaffTicketStatusView(APIView):
     """Change a ticket's status as staff."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 

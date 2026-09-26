@@ -1,7 +1,7 @@
 """URL routing for the dashboard endpoints.
 
 Mounted at ``/api/v1/`` from ``config/api_urls.py``. Every route is gated by
-the manager/analyst role at the view level; the widgets live under
+staff access at the view level; the widgets live under
 ``dashboard/`` per the public API list.
 """
 

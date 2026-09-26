@@ -751,7 +751,7 @@ class CategoryAdminTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_cannot_create_category(self):
-        """A plain customer token is rejected from category creation."""
+        """A plain non-staff token is rejected from category creation."""
         _make_user()
         self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
@@ -850,7 +850,7 @@ class ProductAdminTests(APITestCase):
         self.assertEqual(Product.objects.count(), 0)
 
     def test_customer_cannot_manage_products(self):
-        """A plain customer cannot manage products."""
+        """A plain non-staff user cannot manage products."""
         _make_user()
         self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(
@@ -1036,7 +1036,7 @@ class FacetDefinitionCRUDTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_cannot_manage_facets(self):
-        """A plain customer cannot manage facet definitions."""
+        """A plain non-staff user cannot manage facet definitions."""
         _make_user()
         self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.get(URLS["admin_facets"])

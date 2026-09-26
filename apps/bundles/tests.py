@@ -469,7 +469,7 @@ class BundleAdminTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_cannot_manage_bundles(self):
-        """A plain customer token is rejected from bundle creation."""
+        """A plain non-staff token is rejected from bundle creation."""
         _make_user()
         self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(

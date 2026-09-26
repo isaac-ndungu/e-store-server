@@ -23,14 +23,14 @@ from apps.orders.services import apply_staff_status, create_staff_order
 _SEQ = [0]
 
 
-def _make_staff(email="staff@example.com", role="support"):
+def _make_staff(email="staff@example.com", is_staff=True):
     """Create a staff user for intake tests."""
     return User.objects.create_user(
         email=email,
         username=email.split("@")[0],
         password="StrongPass123!",
         phone_number="+254700000001",
-        role=role,
+        is_staff=is_staff,
     )
 
 
@@ -197,13 +197,13 @@ class StaffOrderStatusTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_status_update_rejected(self):
-        """A customer token cannot reach the staff endpoint."""
+        """A non-staff token cannot reach the staff endpoint."""
         User.objects.create_user(
             email="buyer@example.com",
             username="buyer",
             password="StrongPass123!",
             phone_number="+254712345678",
-            role="customer",
+            is_staff=False,
         )
         url = reverse("api:accounts:login")
         login = self.client.post(
@@ -331,7 +331,7 @@ class StaffOrderReadTests(APITestCase):
             username="cust",
             password="StrongPass123!",
             phone_number="+254700000002",
-            role="customer",
+            is_staff=False,
         )
         url = reverse("api:accounts:login")
         login = self.client.post(

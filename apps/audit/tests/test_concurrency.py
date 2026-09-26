@@ -49,7 +49,7 @@ def _make_staff(suffix="race"):
         username=f"user-{suffix}",
         password="StrongPass123!",
         phone_number="+254700000001",
-        role="support",
+        is_staff=True,
     )
 
 

@@ -18,15 +18,14 @@ LIST_URL = reverse("api:shipping:delivery-areas")
 ADMIN_LIST_URL = reverse("api:shipping:admin-delivery-area-list-create")
 
 
-def _make_user(email, role="manager"):
-    """Create a staff user with the given role."""
+def _make_user(email, is_staff=True):
+    """Create a staff user for tests."""
     return User.objects.create_user(
         email=email,
         username=email.split("@")[0],
         password="StrongPass123!",
         phone_number="+254712345678",
-        is_staff=True,
-        role=role,
+        is_staff=is_staff,
     )
 
 

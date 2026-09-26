@@ -1,7 +1,7 @@
 """API views for the dashboard app.
 
-Every endpoint is a staff widget gated by the manager/analyst role  -  the only
-roles that may see revenue and internal aggregates. Like the analytics app
+Every endpoint is a staff widget gated by admin access  -  only staff
+may see revenue and internal aggregates. Like the analytics app
 these are pure read views: no create/update exists, every payload is a
 computed dict (never a writable model row), and each view resolves its query
 string through an explicit serializer before touching the database. The
@@ -10,12 +10,11 @@ accept no query parameters at all.
 """
 
 from drf_spectacular.utils import extend_schema
-from rest_framework import serializers
+from rest_framework import permissions, serializers
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.accounts.permissions import IsManagerOrAnalyst
 from apps.dashboard.selectors import (
     alerts,
     bundles_dashboard,
@@ -47,12 +46,12 @@ class NoParamsSerializer(serializers.Serializer):
 class DashboardAPIView(APIView):
     """Base view for all dashboard widgets.
 
-    Grants manager/analyst-only access, throttles dashboard traffic under the
+    Grants staff-only access, throttles dashboard traffic under the
     ``dashboard_read`` scope, and exposes ``validated_params`` so a subclass
     can resolve its query string through a declared serializer.
     """
 
-    permission_classes = [IsManagerOrAnalyst]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "dashboard_read"
     query_serializer_class = DashboardQuerySerializer

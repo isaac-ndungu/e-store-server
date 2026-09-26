@@ -34,7 +34,7 @@ _SEQ = [0]
 
 
 def _make_user(email="buyer@example.com", username="buyer", **kwargs):
-    """Create a plain customer user for permission tests."""
+    """Create a plain non-staff user for permission tests."""
     return User.objects.create_user(
         email=email,
         username=username,
@@ -766,7 +766,7 @@ class PromotionAdminApiTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_cannot_manage_discounts(self):
-        """A plain customer is rejected from creating a discount."""
+        """A plain non-staff user is rejected from creating a discount."""
         _make_user()
         self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
         response = self.client.post(

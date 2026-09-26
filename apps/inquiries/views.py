@@ -2,9 +2,9 @@
 
 ``InquiryCreateView`` is the single write endpoint an anonymous visitor
 touches: public, throttled, no auth. The cart lines are read server-side
-from the visitor's cookie-linked cart  -  the client never submits them  - 
+from the visitor's cookie-linked cart  -  the client never submits them  -
 with a validated client snapshot accepted only when no server cart exists.
-Staff queue views require a fulfilment role and stay paginated.
+Staff queue views require staff access and stay paginated.
 """
 
 from django.http import Http404
@@ -16,7 +16,6 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.accounts.permissions import IsManagerOrSupport
 from apps.cart.selectors import build_cart_snapshot, get_cart_from_cookie
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.inquiries.selectors import list_inquiries
@@ -32,7 +31,7 @@ class InquiryCreateView(APIView):
     """Capture an anonymous WhatsApp/email hand-off (public).
 
     Fire-and-forget from the storefront: the visitor's WhatsApp/mail link
-    opens regardless of this call's outcome, so the view does the minimum  - 
+    opens regardless of this call's outcome, so the view does the minimum  -
     validate, store, acknowledge  -  and never blocks on external work.
     """
 
@@ -81,7 +80,7 @@ class InquiryCreateView(APIView):
 class InquiryListView(APIView):
     """List the staff follow-up queue, newest first (staff only)."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "inquiry_read"
 
@@ -123,7 +122,7 @@ class InquiryListView(APIView):
 class InquiryStatusUpdateView(APIView):
     """Move an inquiry through the staff queue (staff only)."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "inquiry_read"
 

@@ -1,21 +1,20 @@
 """API views for the analytics app.
 
-Every endpoint is a staff report gated by the manager/analyst role  -  the only
-roles that may see revenue and internal aggregates. Reports are read-only;
+Every endpoint is a staff report gated by admin access  -  only staff
+may see revenue and internal aggregates. Reports are read-only;
 there is no create/update, so no idempotency or ownership machinery applies
-(the caller either has the role or does not, and there is no per-resource
+(the caller either is staff or is not, and there is no per-resource
 object to own). Each view validates its query string through an explicit
 serializer before touching the database, rejects unknown parameters, and
 computes aggregates from the source tables via ``apps.analytics.selectors``.
 """
 
 from drf_spectacular.utils import extend_schema
-from rest_framework import serializers
+from rest_framework import permissions, serializers
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.accounts.permissions import IsManagerOrAnalyst
 from apps.analytics.selectors import (
     inquiries_summary,
     notifications_summary,
@@ -42,12 +41,12 @@ from apps.analytics.serializers import (
 class AnalyticsAPIView(APIView):
     """Base view for all analytics reports.
 
-    Grants manager/analyst-only access, throttles dashboard traffic under the
+    Grants staff-only access, throttles dashboard traffic under the
     ``analytics_read`` scope, and exposes ``validated_params`` so a subclass can
     resolve its query string through the shared serializer.
     """
 
-    permission_classes = [IsManagerOrAnalyst]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "analytics_read"
     query_serializer_class = AnalyticsQuerySerializer
@@ -55,7 +54,7 @@ class AnalyticsAPIView(APIView):
     def validated_params(self):
         """Return the validated query parameters for this request.
 
-        The wire parameters are mapped onto the serializer's field names  - 
+        The wire parameters are mapped onto the serializer's field names  -
         ``from``/``to`` onto ``start``/``end`` (``from`` is a reserved word),
         and any extra filter the subclass serializer declares (``group_by``,
         ``limit``) straight through. Unknown parameters are rejected by the

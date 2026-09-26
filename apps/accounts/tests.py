@@ -3,7 +3,7 @@
 Covers staff JWT login/refresh/rotation/logout, password reset (request +
 confirm), password change, the ``/me/`` retrieve/update endpoint, the shared
 staff Address directory (any manager/support staff reads every entry;
-customer-role tokens are rejected), and the ``auth_login`` / ``auth_write``
+non-staff tokens are rejected), and the ``auth_login`` / ``auth_write``
 throttle scopes. Public registration is gone  -  posting to the retired path
 returns 404 and creates nothing.
 """
@@ -64,7 +64,7 @@ class LoginTests(APITestCase):
             username="staff",
             password="StrongPass123!",
             phone_number="+254700000001",
-            role="support",
+            is_staff=True,
         )
         self.login_payload = {
             "email": "staff@example.com",
@@ -79,13 +79,13 @@ class LoginTests(APITestCase):
         self.assertIn("refresh", response.data)
 
     def test_login_rejects_customer_role(self):
-        """A valid customer credential is refused without a token."""
+        """A valid non-staff credential is refused without a token."""
         User.objects.create_user(
             email="buyer@example.com",
             username="buyer",
             password="StrongPass123!",
             phone_number="+254712345678",
-            role="customer",
+            is_staff=False,
         )
         response = self.client.post(
             LOGIN_URL,
@@ -157,7 +157,7 @@ class MeUpdateTests(APITestCase):
             username="staff",
             password="StrongPass123!",
             phone_number="+254700000001",
-            role="support",
+            is_staff=True,
         )
         login = self.client.post(
             LOGIN_URL,
@@ -238,7 +238,7 @@ class MeUpdateTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.user.refresh_from_db()
-        self.assertFalse(self.user.is_staff)
+        self.assertTrue(self.user.is_staff)
         self.assertFalse(self.user.is_superuser)
 
 
@@ -252,7 +252,7 @@ class RefreshRotationAndLogoutTests(APITestCase):
             username="staff",
             password="StrongPass123!",
             phone_number="+254700000001",
-            role="support",
+            is_staff=True,
         )
         self.login_payload = {
             "email": "staff@example.com",
@@ -319,7 +319,7 @@ class AddressTests(APITestCase):
             username="staff",
             password="StrongPass123!",
             phone_number="+254712345678",
-            role="support",
+            is_staff=True,
         )
         login = self.client.post(
             LOGIN_URL,
@@ -445,7 +445,7 @@ class AddressTests(APITestCase):
             username="manager",
             password="StrongPass123!",
             phone_number="+254700000000",
-            role="manager",
+            is_staff=True,
         )
         other_login = self.client.post(
             LOGIN_URL,
@@ -460,13 +460,13 @@ class AddressTests(APITestCase):
         self.assertEqual(listing.data["count"], 1)
 
     def test_customer_role_cannot_access_directory(self):
-        """A customer credential gets no token, and its token would be refused."""
+        """A non-staff credential gets no token, and its token would be refused."""
         customer = User.objects.create_user(
             email="buyer@example.com",
             username="buyer",
             password="StrongPass123!",
             phone_number="+254700000001",
-            role="customer",
+            is_staff=False,
         )
         customer_login = self.client.post(
             LOGIN_URL,
@@ -569,7 +569,7 @@ class AddressDefaultTests(APITestCase):
             username="staff",
             password="StrongPass123!",
             phone_number="+254712345678",
-            role="support",
+            is_staff=True,
         )
         login = self.client.post(
             LOGIN_URL,
@@ -659,7 +659,7 @@ class PasswordResetTests(APITestCase):
             username="staff",
             password="OldPass123!",
             phone_number="+254700000001",
-            role="support",
+            is_staff=True,
         )
 
     def _uid_token(self):
@@ -754,7 +754,7 @@ class ChangePasswordTests(APITestCase):
             username="staff",
             password="StrongPass123!",
             phone_number="+254700000001",
-            role="support",
+            is_staff=True,
         )
         login = self.client.post(
             LOGIN_URL,

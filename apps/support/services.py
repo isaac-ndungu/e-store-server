@@ -38,10 +38,6 @@ _TICKET_STATUS_TRANSITIONS = {
     "closed": set(),
 }
 
-# Roles allowed to act on a ticket as staff (reply, assign, change status) and
-# to be assigned tickets.
-_SUPPORT_ROLES = ("manager", "support")
-
 
 def _sanitize(value):
     """Strip all markup from free-form support text before it is stored.
@@ -187,10 +183,10 @@ def assign_ticket(*, ticket, agent):
         Ticket: the updated ticket.
 
     Raises:
-        ValidationError: when the target user does not hold a support role.
+        ValidationError: when the target user is not staff.
     """
-    if not agent.has_role(*_SUPPORT_ROLES):
-        raise ValidationError("Tickets can only be assigned to support staff.")
+    if not (agent.is_staff or agent.is_superuser):
+        raise ValidationError("Tickets can only be assigned to staff.")
     ticket.assigned_to = agent
     ticket.save(update_fields=["assigned_to", "updated_at"])
     return ticket

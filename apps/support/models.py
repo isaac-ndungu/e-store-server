@@ -119,7 +119,7 @@ class Ticket(models.Model):
 class TicketMessage(models.Model):
     """A single message in a ticket thread, from the customer or a staff member.
 
-    ``is_staff_reply`` is set by the service from the caller's role, never from
+    ``is_staff_reply`` is set by the service from the caller being staff, never from
     the request body, so a customer cannot mark their own message as an official
     staff reply. ``sender`` is ``SET_NULL`` so a message stays in the thread even
     if its author's account is later removed. ``attachment`` is validated by

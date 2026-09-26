@@ -1,6 +1,6 @@
 """API views for the orders app.
 
-Staff-only endpoints (manager/support):
+Staff-only endpoints:
 
 - ``StaffOrderIntakeView``  -  create a confirmed order from an assisted
   WhatsApp/email sale, with idempotency protection.
@@ -16,13 +16,12 @@ written directly in a view.
 from django.utils.dateparse import parse_date, parse_datetime
 from django.utils.timezone import is_naive, make_aware
 from drf_spectacular.utils import extend_schema
-from rest_framework import status
+from rest_framework import permissions, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from apps.accounts.permissions import IsManagerOrSupport
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.orders.models import Order
 from apps.orders.selectors import (
@@ -50,7 +49,7 @@ class StaffOrderIntakeView(APIView):
     replaying the first order.
     """
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_intake"
 
@@ -153,7 +152,7 @@ class StaffOrderListView(APIView):
     answered with 400; unknown params are ignored.
     """
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
@@ -209,7 +208,7 @@ class StaffOrderListView(APIView):
 class StaffOrderDetailView(APIView):
     """Retrieve one order for staff with items and status history."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
@@ -265,9 +264,7 @@ def _parse_placed_bound(value, end_of_day=False):
         day = parse_date(value)
         if day is None:
             raise ValueError(f"Unparseable date bound: {value!r}")
-        parsed = datetime.combine(
-            day, time.max if end_of_day else time.min
-        )
+        parsed = datetime.combine(day, time.max if end_of_day else time.min)
     if is_naive(parsed):
         parsed = make_aware(parsed)
     return parsed
@@ -276,13 +273,13 @@ def _parse_placed_bound(value, end_of_day=False):
 class OrderStatusUpdateView(APIView):
     """Advance an order's fulfilment status as a staff user.
 
-    Staff-only, restricted to fulfilment roles (manager/support). The acting
+    Staff-only. The acting
     staff member names a target status and optional note; the shared service
     validates the transition against the allowed graph and writes a
     status-history row alongside it.
     """
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_write"
 

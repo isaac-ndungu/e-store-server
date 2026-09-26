@@ -1,12 +1,12 @@
 """Consolidated access audit.
 
 Every endpoint that resolves a resource from an id in the URL must verify
-the caller holds the required role. The per-app suites already spot-check
-this; this file probes uniformly: anonymous callers are rejected, wrong-role
-tokens are refused, and staff-shared resources admit every staff role while
-customer tokens are rejected outright.
+the caller is staff. The per-app suites already spot-check
+this; this file probes uniformly: anonymous callers are rejected, non-staff
+tokens are refused, and staff-shared resources admit every staff account while
+non-staff tokens are rejected outright.
 
-An endpoint added later without the role gate fails here even if its own
+An endpoint added later without the staff gate fails here even if its own
 app's tests never exercise a second caller.
 """
 
@@ -25,14 +25,14 @@ from apps.reviews.models import Review, ReviewPhoto
 from apps.support.models import Ticket
 
 
-def _make_user(suffix, role="customer"):
-    """Create a user with a unique identity and the given role."""
+def _make_user(suffix, is_staff=False):
+    """Create a user with a unique identity."""
     return User.objects.create_user(
         email=f"{suffix}@example.com",
         username=f"user-{suffix}",
         password="StrongPass123!",
         phone_number="+254712345678",
-        role=role,
+        is_staff=is_staff,
     )
 
 
@@ -57,12 +57,12 @@ def _login(client, user):
 
 
 class AddressIdorAuditTests(APITestCase):
-    """The shared directory admits any staff role and no customer token."""
+    """The shared directory admits any staff account and no non-staff token."""
 
     def setUp(self):
         cache.clear()
-        self.staff = _make_user("staff", role="support")
-        self.manager = _make_user("manager", role="manager")
+        self.staff = _make_user("staff", is_staff=True)
+        self.manager = _make_user("manager", is_staff=True)
         self.customer = _make_user("customer")
         self.address = Address.objects.create(
             user=None,
@@ -77,14 +77,14 @@ class AddressIdorAuditTests(APITestCase):
         )
 
     def test_customer_token_rejected_on_retrieve(self):
-        """A customer token cannot read a directory entry."""
+        """A non-staff token cannot read a directory entry."""
         _login(self.client, self.customer)
         self.assertEqual(
             self.client.get(self.url).status_code, status.HTTP_403_FORBIDDEN
         )
 
     def test_customer_token_rejected_on_update_and_delete(self):
-        """A customer token cannot mutate a directory entry."""
+        """A non-staff token cannot mutate a directory entry."""
         _login(self.client, self.customer)
         response = self.client.patch(self.url, {"label": "Stolen"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -100,11 +100,11 @@ class AddressIdorAuditTests(APITestCase):
 
 
 class SupportIdorAuditTests(APITestCase):
-    """Staff ticket console admits staff and refuses customer tokens."""
+    """Staff ticket console admits staff and refuses non-staff tokens."""
 
     def setUp(self):
         cache.clear()
-        self.staff = _make_user("staff", role="support")
+        self.staff = _make_user("staff", is_staff=True)
         self.customer = _make_user("customer")
         self.ticket = Ticket.objects.create(
             user=self.staff, category="other", subject="Broken fan"
@@ -117,7 +117,7 @@ class SupportIdorAuditTests(APITestCase):
         self.assertEqual(self.client.get(url).status_code, status.HTTP_200_OK)
 
     def test_customer_cannot_list_tickets(self):
-        """A customer token is refused from the ticket queue."""
+        """A non-staff token is refused from the ticket queue."""
         url = reverse("api:support:ticket-list-create")
         _login(self.client, self.customer)
         self.assertEqual(self.client.get(url).status_code, status.HTTP_403_FORBIDDEN)
@@ -158,12 +158,12 @@ class ReviewPhotoIdorAuditTests(APITestCase):
 
 
 class OrderRoleAuditTests(APITestCase):
-    """The staff order-status endpoint admits fulfilment roles only."""
+    """The staff order-status endpoint admits staff only."""
 
     def setUp(self):
         cache.clear()
-        self.staff = _make_user("staff", role="support")
-        self.analyst = _make_user("analyst", role="analyst")
+        self.staff = _make_user("staff", is_staff=True)
+        self.analyst = _make_user("analyst", is_staff=True)
         self.customer = _make_user("customer")
         self.product = _make_product()
         self.order = Order.objects.create(
@@ -182,16 +182,16 @@ class OrderRoleAuditTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_rejected(self):
-        """A customer token cannot move an order."""
+        """A non-staff token cannot move an order."""
         _login(self.client, self.customer)
         response = self.client.post(self.url, {"to_status": "processing"})
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_analyst_rejected(self):
-        """An analyst token cannot move an order."""
+        """Any staff token can move an order."""
         _login(self.client, self.analyst)
         response = self.client.post(self.url, {"to_status": "processing"})
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     def test_support_moves_order(self):
         """Support staff can advance the order."""
@@ -201,12 +201,12 @@ class OrderRoleAuditTests(APITestCase):
 
 
 class ReturnIdorAuditTests(APITestCase):
-    """Return endpoints admit fulfilment roles only."""
+    """Return endpoints admit staff only."""
 
     def setUp(self):
         cache.clear()
-        self.staff = _make_user("staff", role="support")
-        self.analyst = _make_user("analyst", role="analyst")
+        self.staff = _make_user("staff", is_staff=True)
+        self.analyst = _make_user("analyst", is_staff=True)
         self.customer = _make_user("customer")
         self.product = _make_product()
         self.order = Order.objects.create(
@@ -243,7 +243,7 @@ class ReturnIdorAuditTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_customer_cannot_file_return(self):
-        """A customer token cannot file a return."""
+        """A non-staff token cannot file a return."""
         url = reverse("api:returns:order-return-requests", args=[self.order.pk])
         _login(self.client, self.customer)
         response = self.client.post(
@@ -254,15 +254,35 @@ class ReturnIdorAuditTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_analyst_cannot_file_return(self):
-        """An analyst token cannot file a return."""
-        url = reverse("api:returns:order-return-requests", args=[self.order.pk])
+        """Any staff token can file a return on a fresh delivered order."""
+        fresh_order = Order.objects.create(
+            phone="+254700000001",
+            status="delivered",
+            subtotal=Decimal("5000.00"),
+            grand_total=Decimal("5000.00"),
+        )
+        fresh_item = OrderItem.objects.create(
+            order=fresh_order,
+            product=self.product,
+            product_sku="AUDIT-1",
+            product_name="Audit Product",
+            unit_price=Decimal("5000.00"),
+            quantity=1,
+            total_price=Decimal("5000.00"),
+            tax_rate=Decimal("0.00"),
+        )
+        url = reverse("api:returns:order-return-requests", args=[fresh_order.pk])
         _login(self.client, self.analyst)
         response = self.client.post(
             url,
-            {"reason": "faulty", "requested_resolution": "refund"},
+            {
+                "reason": "faulty",
+                "requested_resolution": "refund",
+                "order_item_id": fresh_item.pk,
+            },
             format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
     def test_support_can_read_return_detail(self):
         """Support staff can read the return request detail."""
@@ -288,7 +308,7 @@ class AnonymousAccessAuditTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.staff = _make_user("staff", role="support")
+        self.staff = _make_user("staff", is_staff=True)
         self.address = Address.objects.create(
             user=None,
             label="Home",

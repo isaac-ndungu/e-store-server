@@ -3,7 +3,7 @@
 Staff authentication (JWT login/refresh/logout, ``/me/`` profile, password
 change and reset) plus the shared staff ``Address`` directory. There is no
 public registration  -  accounts exist only for staff/admin access. Address
-list/detail views are staff-wide (manager/support): the directory holds
+list/detail views are staff-wide: the directory holds
 repeat-delivery addresses reused across orders, so any staff member can read
 or edit any entry.
 """
@@ -22,7 +22,6 @@ from rest_framework_simplejwt.views import (
 )
 
 from apps.accounts.models import Address
-from apps.accounts.permissions import IsManagerOrSupport
 from apps.accounts.selectors import list_addresses
 from apps.accounts.serializers import (
     AddressSerializer,
@@ -44,8 +43,8 @@ class LoginView(TokenObtainPairView):
 
     Public (``AllowAny``) by design  -  login precedes authentication.
     Rate-limited with the dedicated ``auth_login`` scope to blunt brute-force
-    guessing of passwords. Only staff-role accounts are served here: with no
-    customer storefront login, a customer-role credential has no reachable
+    guessing of passwords. Only staff accounts are served here: every account
+    is an admin account and a non-staff credential has no reachable
     endpoint and is rejected outright.
     """
 
@@ -60,7 +59,7 @@ class LoginView(TokenObtainPairView):
             request: the POST request with credentials.
 
         Returns:
-            Response: the token pair, ``403`` for a valid customer-role
+            Response: the token pair, ``403`` for a valid non-staff
                 credential, or ``401`` for bad credentials.
         """
         serializer = self.get_serializer(data=request.data)
@@ -70,10 +69,7 @@ class LoginView(TokenObtainPairView):
             raise InvalidToken(exc.args[0]) from exc
 
         user = serializer.user
-        if user is not None and not (
-            user.is_superuser
-            or user.has_role("manager", "support", "analyst", "courier")
-        ):
+        if user is not None and not (user.is_staff or user.is_superuser):
             return Response(
                 {"detail": "This login is for staff accounts only."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -276,14 +272,14 @@ class AddressPagination(PageNumberPagination):
 class AddressListCreateView(generics.ListCreateAPIView):
     """List the shared directory or add a repeat-delivery address to it.
 
-    Staff-only (manager/support): the directory is reused across orders, so
+    Staff-only: the directory is reused across orders, so
     any staff member reads every entry. The list is paginated with a
     client-selectable bounded page size and supports exact filtering on
     ``is_default`` and ``county``, free-text search across the contact/location
     fields, and ordering by the declared fields.
     """
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     serializer_class = AddressSerializer
     pagination_class = AddressPagination
     filterset_fields = ["is_default", "county"]
@@ -317,7 +313,7 @@ class AddressListCreateView(generics.ListCreateAPIView):
 class AddressRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a single directory entry (staff only)."""
 
-    permission_classes = [IsManagerOrSupport]
+    permission_classes = [permissions.IsAdminUser]
     serializer_class = AddressSerializer
     queryset = Address.objects.all()
 
