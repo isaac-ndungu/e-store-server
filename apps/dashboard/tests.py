@@ -1,8 +1,8 @@
 """Tests for the dashboard app.
 
-Covers the security matrix on every widget endpoint — anonymous rejection, a
+Covers the security matrix on every widget endpoint  -  anonymous rejection, a
 customer token rejection, and staff-role restriction (analyst and manager in,
-support/courier out) — plus per-module reconciliation against hand-seeded
+support/courier out)  -  plus per-module reconciliation against hand-seeded
 rows: conversion-rate math, COD status splits, reservation-expiry boundaries,
 orphaned-discontinued detection, collection refresh staleness, bundle attach
 rate and discount cost, promotions expiring-soon boundaries, return
@@ -24,7 +24,7 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
 from apps.bundles.models import Bundle
-from apps.catalog.models import Product, ProductVariant
+from apps.catalog.models import Product
 from apps.collections.models import Collection
 from apps.inquiries.models import Inquiry
 from apps.orders.models import Order, OrderItem
@@ -102,34 +102,32 @@ def _make_order(user, *, status_name, subtotal, grand_total, placed_at=None, **k
 
 
 def _make_product(sku, name, **kwargs):
-    """Create a catalogue product and its default active variant."""
-    product = Product.objects.create(
+    """Create a catalogue product."""
+    price = kwargs.pop("price", Decimal("1000.00"))
+    return Product.objects.create(
         name=name,
         slug=sku.lower(),
         sku=sku,
         description="For dashboard tests",
+        price=price,
         **kwargs,
     )
-    variant = ProductVariant.objects.create(
-        product=product, sku=f"{sku}-VAR", price=Decimal("1000.00")
-    )
-    return product, variant
 
 
-def _flag_variant(variant, stock_status):
-    """Set a variant's staff availability flag."""
-    variant.stock_status = stock_status
-    variant.save(update_fields=["stock_status"])
-    return variant
+def _flag_product(product, stock_status):
+    """Set a product's staff availability flag."""
+    product.stock_status = stock_status
+    product.save(update_fields=["stock_status"])
+    return product
 
 
-def _make_item(order, variant, *, quantity=1, unit_price, total_price, **kwargs):
-    """Create a snapshotted order line for a variant."""
+def _make_item(order, product, *, quantity=1, unit_price, total_price, **kwargs):
+    """Create a snapshotted order line for a product."""
     return OrderItem.objects.create(
         order=order,
-        product=variant.product,
-        variant_sku=variant.sku,
-        product_name=variant.product.name,
+        product=product,
+        product_sku=product.sku,
+        product_name=product.name,
         unit_price=unit_price,
         quantity=quantity,
         total_price=total_price,
@@ -272,7 +270,7 @@ class DashboardParamValidationTests(_AnalystClient):
     def test_limit_caps_top_products(self):
         """A products limit caps how many top products are returned."""
         for index in range(3):
-            product, variant = _make_product(f"SKU{index}", f"Product {index}")
+            product = _make_product(f"SKU{index}", f"Product {index}")
             order = _make_order(
                 _make_user(email=f"u{index}@example.com", username=f"u{index}"),
                 status_name="delivered",
@@ -281,7 +279,7 @@ class DashboardParamValidationTests(_AnalystClient):
             )
             _make_item(
                 order,
-                variant,
+                product,
                 unit_price=Decimal("100.00"),
                 total_price=Decimal("100.00"),
             )
@@ -304,7 +302,7 @@ class SalesDashboardTests(_AnalystClient):
                 subtotal=Decimal("5000.00"),
                 grand_total=Decimal("5000.00"),
             )
-        product, _ = _make_product("VIEWED", "Viewed Product")
+        product = _make_product("VIEWED", "Viewed Product")
         for index in range(4):
             ProductViewEvent.objects.create(
                 product=product, session_key=f"session-{index}"
@@ -335,7 +333,7 @@ class SalesDashboardTests(_AnalystClient):
             grand_total=Decimal("9000.00"),
             placed_at=timezone.now() - timedelta(days=30),
         )
-        product, _ = _make_product("VIEWED2", "Viewed Again")
+        product = _make_product("VIEWED2", "Viewed Again")
         ProductViewEvent.objects.create(product=product, session_key="s-1")
         ProductViewEvent.objects.create(product=product, session_key="s-2")
         response = self.client.get(reverse(SALES_URL))
@@ -400,21 +398,21 @@ class CodDashboardTests(_AnalystClient):
 
 
 class StockDashboardTests(_AnalystClient):
-    """The stock widget counts variants by staff-set status."""
+    """The stock widget counts products by staff-set status."""
 
     def test_snapshot_counts_statuses(self):
-        """In-stock, low, and out-of-stock variants are counted separately."""
-        _, in_variant = _make_product("SNAP1", "Snap One")
-        _, low_variant = _make_product("SNAP2", "Snap Two")
-        _, out_variant = _make_product("SNAP3", "Snap Three")
-        _flag_variant(low_variant, "low_stock")
-        _flag_variant(out_variant, "out_of_stock")
+        """In-stock, low, and out-of-stock products are counted separately."""
+        _make_product("SNAP1", "Snap One")
+        low_product = _make_product("SNAP2", "Snap Two")
+        out_product = _make_product("SNAP3", "Snap Three")
+        _flag_product(low_product, "low_stock")
+        _flag_product(out_product, "out_of_stock")
         response = self.client.get(reverse(STOCK_URL))
         snapshot = response.data["snapshot"]
         self.assertEqual(snapshot["in_stock"], 1)
         self.assertEqual(snapshot["low_stock"], 1)
         self.assertEqual(snapshot["out_of_stock"], 1)
-        self.assertEqual(snapshot["variants"], 3)
+        self.assertEqual(snapshot["products"], 3)
 
 
 class ProductsDashboardTests(_AnalystClient):
@@ -423,10 +421,10 @@ class ProductsDashboardTests(_AnalystClient):
     def test_discontinued_without_replacement_flagged(self):
         """Only discontinued products without a replacement are flagged."""
         _make_product("ORPHAN", "No Successor", is_discontinued=True)
-        product_with_replacement, _ = _make_product(
+        product_with_replacement = _make_product(
             "REPLACED", "Has Successor", is_discontinued=True
         )
-        successor, _ = _make_product("SUCCESSOR", "Successor")
+        successor = _make_product("SUCCESSOR", "Successor")
         product_with_replacement.replacement_product = successor
         product_with_replacement.save()
         _make_product("KEEP", "Still For Sale", is_discontinued=False)
@@ -442,8 +440,8 @@ class ProductsDashboardTests(_AnalystClient):
 
     def test_top_products_ordered_by_revenue(self):
         """The top list orders products by revenue from snapshot order lines."""
-        _, first_variant = _make_product("TOP1", "Top One")
-        _, second_variant = _make_product("TOP2", "Top Two")
+        first_product = _make_product("TOP1", "Top One")
+        second_product = _make_product("TOP2", "Top Two")
         user = _make_user()
         order = _make_order(
             user,
@@ -453,23 +451,23 @@ class ProductsDashboardTests(_AnalystClient):
         )
         _make_item(
             order,
-            first_variant,
+            first_product,
             quantity=1,
             unit_price=Decimal("800.00"),
             total_price=Decimal("800.00"),
         )
         _make_item(
             order,
-            second_variant,
+            second_product,
             quantity=3,
             unit_price=Decimal("400.00"),
             total_price=Decimal("1200.00"),
         )
         response = self.client.get(reverse(PRODUCTS_URL))
         top = response.data["top"]
-        self.assertEqual(top[0]["variant_sku"], "TOP2-VAR")
+        self.assertEqual(top[0]["product_sku"], "TOP2")
         self.assertEqual(top[0]["revenue"], Decimal("1200.00"))
-        self.assertEqual(top[1]["variant_sku"], "TOP1-VAR")
+        self.assertEqual(top[1]["product_sku"], "TOP1")
 
 
 class CollectionsDashboardTests(_AnalystClient):
@@ -529,12 +527,12 @@ class BundlesDashboardTests(_AnalystClient):
             subtotal=Decimal("1800.00"),
             grand_total=Decimal("1800.00"),
         )
-        _, first_variant = _make_product("BDL1", "Bundle One")
-        _, second_variant = _make_product("BDL2", "Bundle Two")
+        first_product = _make_product("BDL1", "Bundle One")
+        second_product = _make_product("BDL2", "Bundle Two")
         group = uuid4()
         _make_item(
             bundled_order,
-            first_variant,
+            first_product,
             quantity=1,
             unit_price=Decimal("1000.00"),
             total_price=Decimal("900.00"),
@@ -543,7 +541,7 @@ class BundlesDashboardTests(_AnalystClient):
         )
         _make_item(
             bundled_order,
-            second_variant,
+            second_product,
             quantity=1,
             unit_price=Decimal("1000.00"),
             total_price=Decimal("900.00"),
@@ -759,12 +757,12 @@ class AlertsDashboardTests(_AnalystClient):
     """Every alert fires under its seeded boundary and stays silent outside."""
 
     def test_out_of_stock_alert_is_critical(self):
-        """Variants staff flagged out of stock raise a critical alert."""
-        _, low_variant = _make_product("LOW1", "Low Stock")
-        _flag_variant(low_variant, "low_stock")
-        _, out_variant = _make_product("OUT1", "Out Stock")
-        _flag_variant(out_variant, "out_of_stock")
-        _, fine_variant = _make_product("FINE1", "Fine Stock")
+        """Products staff flagged out of stock raise a critical alert."""
+        low_product = _make_product("LOW1", "Low Stock")
+        _flag_product(low_product, "low_stock")
+        out_product = _make_product("OUT1", "Out Stock")
+        _flag_product(out_product, "out_of_stock")
+        _make_product("FINE1", "Fine Stock")
         response = self.client.get(reverse(ALERTS_URL))
         alerts = {a["type"]: a for a in response.data["alerts"]}
         self.assertEqual(alerts["out_of_stock"]["severity"], "critical")
@@ -773,7 +771,7 @@ class AlertsDashboardTests(_AnalystClient):
         self.assertEqual(alerts["low_stock"]["count"], 1)
 
     def test_stock_alerts_silent_when_everything_in_stock(self):
-        """No availability alert fires when every variant is in stock."""
+        """No availability alert fires when every product is in stock."""
         _make_product("HIGH1", "High Stock")
         response = self.client.get(reverse(ALERTS_URL))
         self.assertFalse(
@@ -918,7 +916,7 @@ class CollectionsServiceRefreshTests(_AnalystClient):
         """A successful smart refresh records when it last ran."""
         from apps.collections.services import refresh_smart_collection
 
-        product, _ = _make_product("REFRESHED", "Freshly Refreshed")
+        _make_product("REFRESHED", "Freshly Refreshed")
         collection = Collection.objects.create(
             name="Smart One",
             slug="smart-one",

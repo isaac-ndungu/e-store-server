@@ -4,7 +4,7 @@ Covers the post-delivery return lifecycle with manual refunds, the
 pre-shipment cancellation path, and the money invariants the service layer
 upholds: server-side refund caps, audit-trail completeness, idempotent
 refund recording, and the staff-only access control on every endpoint.
-Refunds are arranged by staff outside the system — these tests assert the
+Refunds are arranged by staff outside the system  -  these tests assert the
 record, never a payout integration.
 """
 
@@ -19,7 +19,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.catalog.models import Category, Product, ProductVariant
+from apps.catalog.models import Category, Product
 from apps.orders.models import Order, OrderStatusHistory
 from apps.orders.services import create_staff_order, transition_order
 from apps.returns.models import ReturnRequest, ReturnRequestStatusHistory
@@ -67,46 +67,39 @@ def _login(client, email="buyer@example.com", password="StrongPass123!"):
 
 
 def _make_product(price="5000.00", **kwargs):
-    """Create a product with a default active variant, ensuring unique keys."""
+    """Create a product, ensuring unique keys."""
     _SEQ[0] += 1
     n = _SEQ[0]
     category = Category.objects.get_or_create(name="Appliances", slug="appliances")[0]
-    product = Product.objects.create(
+    return Product.objects.create(
         name=f"Kettle {n}",
         slug=f"kettle-{n}",
         sku=f"KTL-{n}",
         description="A test product.",
         category=category,
+        price=Decimal(price),
+        package_weight=Decimal("2.00"),
         is_active=True,
         **kwargs,
     )
-    variant = ProductVariant.objects.create(
-        product=product,
-        sku=f"KTL-{n}-V",
-        attributes={"color": "Silver"},
-        price=price,
-        package_weight="2.00",
-        is_active=True,
-    )
-    return product, variant
 
 
-def _place_order(variant, payment_method="cod", phone="+254712345678", quantity=1):
-    """Create a confirmed intake order for a variant."""
+def _place_order(product, payment_method="cod", phone="+254712345678", quantity=1):
+    """Create a confirmed intake order for a product."""
     _SEQ[0] += 1
     staff = _make_staff(email=f"intake{_SEQ[0]}@example.com")
     return create_staff_order(
         staff_user=staff,
         phone=phone,
-        lines=[{"variant_id": variant.pk, "quantity": quantity}],
+        lines=[{"product_id": product.pk, "quantity": quantity}],
         order_source="whatsapp",
         payment_method=payment_method,
     )
 
 
-def _delivered_order(variant, payment_method="cod", phone="+254712345678"):
+def _delivered_order(product, payment_method="cod", phone="+254712345678"):
     """Create, ship, and deliver an intake order."""
-    order = _place_order(variant, payment_method=payment_method, phone=phone)
+    order = _place_order(product, payment_method=payment_method, phone=phone)
     transition_order(order, "shipped")
     transition_order(order, "delivered")
     return order
@@ -117,8 +110,8 @@ class ReturnRequestModelTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _, self.variant = _make_product()
-        self.order = _delivered_order(self.variant)
+        self.product = _make_product()
+        self.order = _delivered_order(self.product)
 
     def test_money_constraint_rejects_negative_stored_amounts(self):
         """The DB constraint forbids negative fee or refund amounts."""
@@ -185,9 +178,9 @@ class ReturnRequestCreationTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _, self.variant = _make_product()
+        self.product = _make_product()
         self.staff = _make_staff()
-        self.order = _delivered_order(self.variant)
+        self.order = _delivered_order(self.product)
         _login(self.client, email="staff@example.com")
         self.url = reverse("api:returns:order-return-requests", args=[self.order.pk])
 
@@ -217,7 +210,7 @@ class ReturnRequestCreationTests(APITestCase):
 
     def test_not_delivered_rejected(self):
         """A return cannot be opened against a non-delivered order."""
-        order = _place_order(self.variant)
+        order = _place_order(self.product)
         url = reverse("api:returns:order-return-requests", args=[order.pk])
         response = self.client.post(url, {"reason": "faulty"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -233,7 +226,7 @@ class ReturnRequestCreationTests(APITestCase):
 
     def test_non_returnable_product_rejected(self):
         """A product flagged non-returnable cannot be returned."""
-        _, non_returnable = _make_product(is_returnable=False)
+        non_returnable = _make_product(is_returnable=False)
         order = _delivered_order(non_returnable)
         url = reverse("api:returns:order-return-requests", args=[order.pk])
         response = self.client.post(
@@ -251,14 +244,14 @@ class ReturnRequestCreationTests(APITestCase):
 
     def test_second_request_after_completed_refund_rejected(self):
         """A refunded line on a still-delivered order cannot be returned again."""
-        _, variant_two = _make_product(price="3000.00")
+        product_two = _make_product(price="3000.00")
         _SEQ[0] += 1
         order = create_staff_order(
             staff_user=_make_staff(email=f"multi{_SEQ[0]}@example.com"),
             phone="+254712345678",
             lines=[
-                {"variant_id": self.variant.pk, "quantity": 1},
-                {"variant_id": variant_two.pk, "quantity": 1},
+                {"product_id": self.product.pk, "quantity": 1},
+                {"product_id": product_two.pk, "quantity": 1},
             ],
             order_source="whatsapp",
             payment_method="cod",
@@ -266,7 +259,7 @@ class ReturnRequestCreationTests(APITestCase):
         transition_order(order, "shipped")
         transition_order(order, "delivered")
 
-        line_a = order.items.get(variant_sku=self.variant.sku)
+        line_a = order.items.get(product_sku=self.product.sku)
         first = create_return_request(
             order=order,
             order_item_id=line_a.pk,
@@ -309,14 +302,14 @@ class ReturnRequestCreationTests(APITestCase):
 
     def test_whole_order_return_requires_single_line_order(self):
         """A whole-order return on a multi-line order is rejected."""
-        _, variant_two = _make_product(price="3000.00")
+        product_two = _make_product(price="3000.00")
         _SEQ[0] += 1
         order = create_staff_order(
             staff_user=_make_staff(email=f"whole{_SEQ[0]}@example.com"),
             phone="+254712345678",
             lines=[
-                {"variant_id": self.variant.pk, "quantity": 1},
-                {"variant_id": variant_two.pk, "quantity": 1},
+                {"product_id": self.product.pk, "quantity": 1},
+                {"product_id": product_two.pk, "quantity": 1},
             ],
             order_source="whatsapp",
             payment_method="cod",
@@ -329,8 +322,8 @@ class ReturnRequestCreationTests(APITestCase):
 
     def test_foreign_line_rejected(self):
         """A line that does not belong to the order is rejected."""
-        _, other_variant = _make_product(price="1000.00")
-        other_order = _delivered_order(other_variant)
+        other_product = _make_product(price="1000.00")
+        other_order = _delivered_order(other_product)
         foreign_item = other_order.items.first()
         response = self._create(order_item_id=foreign_item.pk)
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -356,9 +349,9 @@ class ReturnAccessTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _, self.variant = _make_product()
+        self.product = _make_product()
         self.staff = _make_staff()
-        self.order = _delivered_order(self.variant)
+        self.order = _delivered_order(self.product)
         self.return_request = create_return_request(
             order=self.order, reason="faulty", user=self.staff
         )
@@ -437,9 +430,9 @@ class ReturnRefundFlowTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _, self.variant = _make_product()
+        self.product = _make_product()
         self.customer = _make_user()
-        self.order = _delivered_order(self.variant)
+        self.order = _delivered_order(self.product)
         self.return_request = create_return_request(
             order=self.order, reason="faulty", user=self.customer
         )
@@ -579,9 +572,9 @@ class ReturnApprovalMoneyTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _, self.variant = _make_product(price="5000.00")
+        self.product = _make_product(price="5000.00")
         self.customer = _make_user()
-        self.order = _delivered_order(self.variant)
+        self.order = _delivered_order(self.product)
         self.return_request = create_return_request(
             order=self.order, reason="faulty", user=self.customer
         )
@@ -645,8 +638,8 @@ class ReturnApprovalMoneyTests(APITestCase):
 
     def test_replacement_resolution_rejected_at_approval(self):
         """A replacement resolution is rejected until fulfillment accounting exists."""
-        _, variant_two = _make_product(price="3000.00")
-        replacement_order = _delivered_order(variant_two)
+        product_two = _make_product(price="3000.00")
+        replacement_order = _delivered_order(product_two)
         replacement = create_return_request(
             order=replacement_order,
             requested_resolution="replacement",
@@ -698,9 +691,9 @@ class ReturnRejectAndCloseTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _, self.variant = _make_product()
+        self.product = _make_product()
         self.customer = _make_user()
-        self.order = _delivered_order(self.variant)
+        self.order = _delivered_order(self.product)
         self.return_request = create_return_request(
             order=self.order, reason="changed mind", user=self.customer
         )
@@ -765,9 +758,9 @@ class PreShipmentCancellationTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        _, self.variant = _make_product()
+        self.product = _make_product()
         self.customer = _make_user()
-        self.order = _place_order(self.variant)
+        self.order = _place_order(self.product)
         self.staff = _make_staff()
         _login(self.client, email="staff@example.com")
         self.url = reverse(
@@ -830,7 +823,7 @@ class PreShipmentCancellationTests(APITestCase):
 
     def test_shipped_order_rejected(self):
         """Orders already shipped cannot take the pre-shipment cancel path."""
-        rejected = _delivered_order(self.variant)
+        rejected = _delivered_order(self.product)
         url = reverse("api:returns:order-pre-shipment-cancel", args=[rejected.pk])
         response = self.client.post(
             url,

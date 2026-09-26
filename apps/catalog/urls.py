@@ -21,8 +21,6 @@ from apps.catalog.views import (
     AdminProductImageDetailView,
     AdminProductImageListCreateView,
     AdminProductListCreateView,
-    AdminProductVariantDetailView,
-    AdminProductVariantListCreateView,
     AdminRelatedProductDetailView,
     AdminRelatedProductListCreateView,
     BrandDetailView,
@@ -79,16 +77,6 @@ urlpatterns = [
         "catalog/admin/products/<int:pk>/",
         AdminProductDetailView.as_view(),
         name="admin-product-detail",
-    ),
-    path(
-        "catalog/admin/products/<int:product_pk>/variants/",
-        AdminProductVariantListCreateView.as_view(),
-        name="admin-product-variant-list-create",
-    ),
-    path(
-        "catalog/admin/products/<int:product_pk>/variants/<int:pk>/",
-        AdminProductVariantDetailView.as_view(),
-        name="admin-product-variant-detail",
     ),
     path(
         "catalog/admin/products/<int:product_pk>/images/",

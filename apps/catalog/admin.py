@@ -7,17 +7,16 @@ from apps.catalog.models import (
     PricingTier,
     Product,
     ProductImage,
-    ProductVariant,
     RelatedProduct,
 )
 
 
-class ProductVariantInline(admin.TabularInline):
-    """Inline editor for a product's variants within the product page."""
+class PricingTierInline(admin.TabularInline):
+    """Inline editor for a product's volume pricing tiers."""
 
-    model = ProductVariant
+    model = PricingTier
     extra = 1
-    ordering = ["sku"]
+    ordering = ["min_quantity"]
 
 
 class ProductImageInline(admin.TabularInline):
@@ -50,32 +49,32 @@ class BrandAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    """Admin page for products with inline variants and images."""
+    """Admin page for products with inline pricing tiers and images."""
 
     list_display = (
         "name",
         "slug",
         "sku",
+        "price",
+        "stock_status",
         "category",
         "brand",
         "is_active",
         "is_featured",
         "created_at",
     )
-    list_filter = ("is_active", "is_featured", "product_type", "condition", "brand")
-    search_fields = ("name", "slug", "sku", "manufacturer_model_number")
+    list_filter = (
+        "is_active",
+        "is_featured",
+        "stock_status",
+        "product_type",
+        "condition",
+        "brand",
+    )
+    search_fields = ("name", "slug", "sku", "barcode", "manufacturer_model_number")
     prepopulated_fields = {"slug": ("name",)}
-    inlines = [ProductVariantInline, ProductImageInline]
+    inlines = [PricingTierInline, ProductImageInline]
     readonly_fields = ("created_at", "updated_at")
-
-
-@admin.register(ProductVariant)
-class ProductVariantAdmin(admin.ModelAdmin):
-    """Admin page for product variants."""
-
-    list_display = ("sku", "product", "price", "stock_status", "is_active")
-    list_filter = ("is_active", "stock_status")
-    search_fields = ("sku", "product__name")
 
 
 @admin.register(ProductImage)
@@ -98,8 +97,8 @@ class RelatedProductAdmin(admin.ModelAdmin):
 class PricingTierAdmin(admin.ModelAdmin):
     """Admin page for volume-based pricing tiers."""
 
-    list_display = ("variant", "min_quantity", "unit_price")
-    list_filter = ("variant__product",)
+    list_display = ("product", "min_quantity", "unit_price")
+    list_filter = ("product",)
 
 
 @admin.register(FacetDefinition)

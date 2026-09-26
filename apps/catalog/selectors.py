@@ -9,7 +9,7 @@ queries.
 from django.db import connection
 from django.db.models import Count, Prefetch
 
-from apps.catalog.models import Brand, Category, Product, ProductImage, ProductVariant
+from apps.catalog.models import Brand, Category, Product, ProductImage
 
 
 def get_active_categories():
@@ -69,6 +69,9 @@ def get_product_list_queryset():
             "name",
             "slug",
             "sku",
+            "price",
+            "compare_at_price",
+            "stock_status",
             "short_description",
             "product_type",
             "category_id",
@@ -102,12 +105,7 @@ def get_product_by_slug(slug, include_inactive=False):
         "brand",
         "replacement_product",
     ).prefetch_related(
-        Prefetch(
-            "variants",
-            queryset=ProductVariant.objects.filter(is_active=True).prefetch_related(
-                "pricing_tiers"
-            ),
-        ),
+        "pricing_tiers",
         "images",
     )
     if not include_inactive:

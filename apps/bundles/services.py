@@ -1,8 +1,8 @@
 """Business logic for the bundles app.
 
-The central service is ``get_bundle_price`` — the single source of truth for
+The central service is ``get_bundle_price``  -  the single source of truth for
 the displayed and charged price of a bundle. It derives the regular price from
-the current component-variant prices and applies the bundle's discount, all in
+the current component product prices and applies the bundle's discount, all in
 exact ``Decimal`` arithmetic, and caches the result per slug.
 
 The price is always computed server-side here from live catalogue prices and
@@ -10,8 +10,7 @@ the bundle's own discount fields; a value supplied by a client is display
 data, never an input to what actually gets charged.
 
 CRUD helpers keep the views thin, mirroring the catalogue and collections
-apps. ``variant`` referencing is handled at the service layer so the price
-calculation only ever sees concrete variant prices.
+apps.
 """
 
 import logging
@@ -93,9 +92,8 @@ def create_bundle(
         Bundle: the newly created bundle with its items.
 
     Raises:
-        ValidationError: if a bundle item references a product that has no
-            variant (a component must be priceable) or imports a variant that
-            does not belong to its product.
+        ValidationError: if a bundle item references an inactive or missing
+            product (a component must be priceable).
     """
     if not slug:
         slug = _unique_slug(name)
@@ -135,15 +133,12 @@ def update_bundle(bundle, **data):
     return bundle
 
 
-def add_bundle_item(
-    bundle, *, product_id, variant_id=None, quantity=1, is_optional=False
-):
+def add_bundle_item(bundle, *, product_id, quantity=1, is_optional=False):
     """Add a component to a bundle.
 
     Args:
         bundle (Bundle): the bundle to extend.
         product_id (int): the component product id.
-        variant_id (int | None): the component variant id, when specific.
         quantity (int): how many of the component are included.
         is_optional (bool): whether the component may be dropped by the buyer.
 
@@ -151,12 +146,10 @@ def add_bundle_item(
         BundleItem: the created item.
 
     Raises:
-        ValidationError: if the product is unpriceable or the variant does not
-            belong to the product.
+        ValidationError: if the product is missing or inactive.
     """
     data = {
         "product_id": product_id,
-        "variant_id": variant_id,
         "quantity": quantity,
         "is_optional": is_optional,
     }
@@ -167,10 +160,8 @@ def add_bundle_item(
 def _validate_item(data):
     """Reject a bundle item that cannot be priced cleanly.
 
-    A component must resolve to a concrete price so the bundle can be quoted.
-    A product-only item (no variant) is allowed only when the product has an
-    active variant to price against; a variant that is supplied must belong to
-    the item's product.
+    A component must resolve to a concrete price so the bundle can be quoted:
+    the product must exist and be active.
 
     Args:
         data (dict): the item data to validate.
@@ -178,21 +169,13 @@ def _validate_item(data):
     Raises:
         ValidationError: if the component cannot be priced.
     """
-    from apps.catalog.models import Product, ProductVariant
+    from apps.catalog.models import Product
 
-    variant_id = data.get("variant_id")
     product_id = data.get("product_id")
-    if variant_id is not None:
-        variant = ProductVariant.objects.filter(pk=variant_id).first()
-        if variant is None or variant.product_id != product_id:
-            raise ValidationError(
-                "Bundle item variant must belong to the item's product."
-            )
-    else:
-        if not Product.objects.filter(pk=product_id, variants__is_active=True).exists():
-            raise ValidationError(
-                "Bundle item product must have at least one active variant."
-            )
+    if not Product.objects.filter(pk=product_id, is_active=True).exists():
+        raise ValidationError(
+            "Bundle item product must exist and be active to be priced."
+        )
 
 
 # Bundle pricing
@@ -202,15 +185,13 @@ def get_bundle_price(bundle):
     """Return the price breakdown for a bundle.
 
     The regular price is the sum of each component's billable price times its
-    quantity, all derived server-side from the current variant prices. The
-    discount — a percentage of the regular total or a fixed amount — is applied
+    quantity, all derived server-side from the current product prices. The
+    discount  -  a percentage of the regular total or a fixed amount  -  is applied
     to produce the bundle price. A fixed discount is capped at the regular
     total so the bundle price never goes negative.
 
-    A component with no specific variant is priced at the lowest price among
-    its product's active variants — the storefront convention for a product
-    offered in several configurations. Optional items are included in the
-    quoted price; dropping them is a checkout-time decision.
+    Optional items are included in the quoted price; dropping them is a
+    checkout-time decision.
 
     The result is cached per slug and invalidated on any bundle/item change.
 
@@ -245,7 +226,7 @@ def _compute_bundle_price(bundle):
     Raises:
         ValidationError: if any component cannot be priced.
     """
-    item_rows = list(bundle.items.select_related("product", "variant").order_by("pk"))
+    item_rows = list(bundle.items.select_related("product").order_by("pk"))
     if not item_rows:
         raise ValidationError("A bundle must have at least one item to be priced.")
 
@@ -253,8 +234,7 @@ def _compute_bundle_price(bundle):
     effective_total = Decimal("0.00")
     items_detail = []
     for item in item_rows:
-        source = _item_source_variant(item)
-        regular_unit = source.price
+        regular_unit = _money(item.product.price)
         unit_price = _item_unit_price(item)
         regular_total += regular_unit * item.quantity
         effective_total += unit_price * item.quantity
@@ -262,7 +242,7 @@ def _compute_bundle_price(bundle):
             {
                 "product": item.product_id,
                 "product_name": item.product.name,
-                "variant": item.variant_id,
+                "product_sku": item.product.sku,
                 "quantity": item.quantity,
                 "is_optional": item.is_optional,
                 "unit_price": str(unit_price),
@@ -282,67 +262,31 @@ def _compute_bundle_price(bundle):
     }
 
 
-def _item_source_variant(item):
-    """Return the catalog variant a bundle item should be priced from.
-
-    A variant-specific item prices from that variant. A product-only item
-    prices from the product's cheapest active variant.
-
-    Args:
-        item (BundleItem): the bundle item.
-
-    Returns:
-        ProductVariant: the source variant.
-
-    Raises:
-        ValidationError: if the item has no priceable source.
-    """
-    if item.variant_id is not None:
-        if item.variant is None:
-            raise ValidationError(
-                "Bundle item variant was removed and can no longer be priced."
-            )
-        return item.variant
-    cheapest = (
-        item.product.variants.filter(is_active=True).order_by("price", "pk").first()
-    )
-    if cheapest is None:
-        raise ValidationError(
-            "Bundle item product has no active variant to price against."
-        )
-    return cheapest
-
-
 def _item_unit_price(item):
     """Return the billable unit price for a bundle item.
 
-    A variant-specific item uses that variant's effective price (after any
-    discount that opts into bundles). A product-only item uses the lowest
-    price among the product's active variants, likewise discount-adjusted.
-    The effective price comes from the promotions service so a component
-    inside a bundle is never double-discounted by an individual-item
-    promotion unless it is explicitly marked to apply within bundles.
+    The component prices from its product's effective price (after any
+    discount that opts into bundles). The effective price comes from the
+    promotions service so a component inside a bundle is never
+    double-discounted by an individual-item promotion unless it is
+    explicitly marked to apply within bundles.
 
     Args:
         item (BundleItem): the bundle item.
 
     Returns:
         Decimal: the unit price for the component.
-
-    Raises:
-        ValidationError: if the item has no priceable source.
     """
     from apps.promotions.services import effective_unit_price
 
-    variant = _item_source_variant(item)
-    return effective_unit_price(variant, within_bundle=True)
+    return effective_unit_price(item.product, within_bundle=True)
 
 
 def _discount_amount(bundle, regular_total):
     """Return the discount to apply for a bundle on a regular total.
 
-    The result is rounded to two decimal places — the precision of the money
-    fields — so a percent discount on a large total (which can produce
+    The result is rounded to two decimal places  -  the precision of the money
+    fields  -  so a percent discount on a large total (which can produce
     fractional cents) stays exact and consistent across callers.
 
     Args:

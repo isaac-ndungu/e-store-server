@@ -21,7 +21,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.catalog.models import Product, ProductVariant
+from apps.catalog.models import Product
 from apps.collections import cache as collection_cache
 from apps.collections.models import Collection, CollectionMembership
 from apps.collections.services import (
@@ -74,24 +74,23 @@ def _login(client, email="manager@example.com", password="ManagerPass123!"):
 
 
 def _make_product(**kwargs):
-    """Create a product with unique slugs and skus, optionally with a variant."""
+    """Create a product with unique slugs and skus, carrying its own price."""
+    from decimal import Decimal
+
     _PRODUCT_SEQ[0] += 1
     n = _PRODUCT_SEQ[0]
+    kwargs.pop("with_variant", None)
+    kwargs.pop("variant_sku", None)
+    price = kwargs.pop("price", "25000.00")
     product = Product.objects.create(
         name=kwargs.pop("name", f"Appliance {n}"),
         slug=kwargs.pop("slug", f"appliance-{n}"),
         sku=kwargs.pop("sku", f"APP-{n}"),
         description=kwargs.pop("description", _DEFAULT_DESCRIPTION),
+        price=Decimal(price),
         **kwargs,
     )
-    variant = None
-    if kwargs.pop("with_variant", True):
-        variant = ProductVariant.objects.create(
-            product=product,
-            sku=kwargs.pop("variant_sku", f"APP-{n}-V1"),
-            price=kwargs.pop("price", "25000.00"),
-        )
-    return (product, variant) if variant is not None else product
+    return product
 
 
 def _make_collection(**kwargs):
@@ -126,11 +125,11 @@ class SmartMembershipServiceTests(CollectionsAPITestCase):
 
     def test_new_arrivals_match_products_created_in_window(self):
         """Only products created within the rule window are returned."""
-        recent, _ = _make_product(name="Recent", slug="recent")
+        recent = _make_product(name="Recent", slug="recent")
         Product.objects.filter(pk=recent.pk).update(
             created_at=timezone.now() - timedelta(days=1)
         )
-        old, _ = _make_product(name="Old", slug="old")
+        old = _make_product(name="Old", slug="old")
         Product.objects.filter(pk=old.pk).update(
             created_at=timezone.now() - timedelta(days=30)
         )
@@ -143,7 +142,7 @@ class SmartMembershipServiceTests(CollectionsAPITestCase):
 
     def test_new_arrivals_exclude_inactive_products(self):
         """Discontinued or inactive products never match new arrivals."""
-        product, _ = _make_product(name="Hidden", slug="hidden", is_active=False)
+        product = _make_product(name="Hidden", slug="hidden", is_active=False)
         Product.objects.filter(pk=product.pk).update(
             created_at=timezone.now() - timedelta(days=1)
         )
@@ -154,15 +153,15 @@ class SmartMembershipServiceTests(CollectionsAPITestCase):
 
     def test_restocked_match_restocked_in_window(self):
         """Products restocked within the window match, oldest excluded."""
-        fresh_restock, _ = _make_product(name="Fresh", slug="fresh")
+        fresh_restock = _make_product(name="Fresh", slug="fresh")
         Product.objects.filter(pk=fresh_restock.pk).update(
             last_restocked_at=timezone.now() - timedelta(days=2)
         )
-        stale_restock, _ = _make_product(name="Stale", slug="stale")
+        stale_restock = _make_product(name="Stale", slug="stale")
         Product.objects.filter(pk=stale_restock.pk).update(
             last_restocked_at=timezone.now() - timedelta(days=60)
         )
-        never, _ = _make_product(name="Never", slug="never", last_restocked_at=None)
+        never = _make_product(name="Never", slug="never", last_restocked_at=None)
         collection = _make_collection(
             collection_type="smart", smart_rule="restocked", rule_window_days=14
         )
@@ -171,12 +170,12 @@ class SmartMembershipServiceTests(CollectionsAPITestCase):
         self.assertNotIn(stale_restock.pk, pks)
         self.assertNotIn(never.pk, pks)
 
-    def test_low_stock_matches_flagged_variants(self):
-        """A variant staff flagged low matches; others do not."""
-        low, low_var = _make_product(name="Low", slug="low")
-        healthy, healthy_var = _make_product(name="Healthy", slug="healthy")
-        low_var.stock_status = "low_stock"
-        low_var.save(update_fields=["stock_status"])
+    def test_low_stock_matches_flagged_products(self):
+        """A product staff flagged low matches; others do not."""
+        low = _make_product(name="Low", slug="low")
+        healthy = _make_product(name="Healthy", slug="healthy")
+        low.stock_status = "low_stock"
+        low.save(update_fields=["stock_status"])
         collection = _make_collection(
             collection_type="smart",
             smart_rule="low_stock",
@@ -186,12 +185,12 @@ class SmartMembershipServiceTests(CollectionsAPITestCase):
         self.assertNotIn(healthy.pk, pks)
 
     def test_low_stock_ignores_other_statuses(self):
-        """In-stock and out-of-stock variants never match the low rule."""
-        product, variant = _make_product(name="Split", slug="split")
+        """In-stock and out-of-stock products never match the low rule."""
+        product = _make_product(name="Split", slug="split")
         collection = _make_collection(collection_type="smart", smart_rule="low_stock")
         self.assertNotIn(product.pk, compute_membership(collection))
-        variant.stock_status = "out_of_stock"
-        variant.save(update_fields=["stock_status"])
+        product.stock_status = "out_of_stock"
+        product.save(update_fields=["stock_status"])
         self.assertNotIn(product.pk, compute_membership(collection))
 
     def test_unavailable_and_pending_rules_return_empty(self):
@@ -217,7 +216,7 @@ class SmartRefreshServiceTests(CollectionsAPITestCase):
 
     def test_refresh_rewrites_membership_rows(self):
         """A refresh replaces the previous membership with the fresh result."""
-        product, _ = _make_product(name="New", slug="new")
+        product = _make_product(name="New", slug="new")
         Product.objects.filter(pk=product.pk).update(
             created_at=timezone.now() - timedelta(days=1)
         )
@@ -247,7 +246,7 @@ class SmartRefreshServiceTests(CollectionsAPITestCase):
 
     def test_refresh_caches_product_list_per_slug(self):
         """The refreshed product id list is cached for the storefront read."""
-        product, _ = _make_product(name="Cached", slug="cached")
+        product = _make_product(name="Cached", slug="cached")
         Product.objects.filter(pk=product.pk).update(
             created_at=timezone.now() - timedelta(days=1)
         )
@@ -260,7 +259,7 @@ class SmartRefreshServiceTests(CollectionsAPITestCase):
 
     def test_refresh_all_recomputes_every_smart_collection(self):
         """The bulk refresh updates all in-window smart collections."""
-        recent, _ = _make_product(name="Bulk", slug="bulk")
+        recent = _make_product(name="Bulk", slug="bulk")
         Product.objects.filter(pk=recent.pk).update(
             created_at=timezone.now() - timedelta(days=1)
         )
@@ -277,7 +276,7 @@ class SmartRefreshServiceTests(CollectionsAPITestCase):
 
     def test_refresh_sets_last_refreshed_at(self):
         """A successful refresh records when the membership was rebuilt."""
-        product, _ = _make_product(name="Timed", slug="timed")
+        product = _make_product(name="Timed", slug="timed")
         Product.objects.filter(pk=product.pk).update(
             created_at=timezone.now() - timedelta(days=1)
         )
@@ -290,7 +289,7 @@ class SmartRefreshServiceTests(CollectionsAPITestCase):
 
     def test_refresh_is_idempotent(self):
         """A repeated refresh converges on the same membership and cache."""
-        product, _ = _make_product(name="Repeat", slug="repeat")
+        product = _make_product(name="Repeat", slug="repeat")
         Product.objects.filter(pk=product.pk).update(
             created_at=timezone.now() - timedelta(days=1)
         )
@@ -316,7 +315,7 @@ class CacheInvalidationSignalTests(CollectionsAPITestCase):
     def test_renaming_collection_invalidates_old_and_new_slug(self):
         """A rename purges the old key so no stale list is served."""
         collection = _make_collection(slug="old-slug")
-        product, _ = _make_product(name="P1", slug="p1")
+        product = _make_product(name="P1", slug="p1")
         self._warm(collection, product)
         self.assertIsNotNone(collection_cache.get_cached_product_pks("old-slug"))
         collection.slug = "new-slug"
@@ -327,7 +326,7 @@ class CacheInvalidationSignalTests(CollectionsAPITestCase):
     def test_deleting_collection_invalidates_cache(self):
         """Deleting a collection drops its cached list."""
         collection = _make_collection(slug="del-me")
-        product, _ = _make_product(name="Gone", slug="gone")
+        product = _make_product(name="Gone", slug="gone")
         self._warm(collection, product)
         collection.delete()
         self.assertIsNone(collection_cache.get_cached_product_pks("del-me"))
@@ -335,7 +334,7 @@ class CacheInvalidationSignalTests(CollectionsAPITestCase):
     def test_membership_write_invalidates_parent_cache(self):
         """Creating a membership row drops the parent's cached list."""
         collection = _make_collection(slug="mem-write")
-        product, _ = _make_product(name="Mem", slug="mem")
+        product = _make_product(name="Mem", slug="mem")
         self._warm(collection, product)
         CollectionMembership.objects.create(collection=collection, product=product)
         self.assertIsNone(collection_cache.get_cached_product_pks("mem-write"))
@@ -421,7 +420,7 @@ class CollectionEndpointTests(CollectionsAPITestCase):
     def test_collection_detail_returns_products(self):
         """The detail endpoint renders the collection with its products."""
         collection = _make_collection(slug="detail")
-        product, _ = _make_product(name="Fridge", slug="fridge")
+        product = _make_product(name="Fridge", slug="fridge")
         CollectionMembership.objects.create(collection=collection, product=product)
         detail_url = reverse("api:collections:collection-detail", args=["detail"])
         response = self.client.get(detail_url)
@@ -454,7 +453,7 @@ class CollectionEndpointTests(CollectionsAPITestCase):
     def test_collection_detail_uses_cache_when_warm(self):
         """A warm cache answers the product list without extra queries."""
         collection = _make_collection(slug="cached")
-        product, _ = _make_product(name="Cached", slug="cached-product")
+        product = _make_product(name="Cached", slug="cached-product")
         collection_cache.cache_product_pks(collection.slug, [product.pk])
         detail_url = reverse("api:collections:collection-detail", args=["cached"])
         with CaptureQueriesContext(connection) as captured:
@@ -581,7 +580,7 @@ class AdminMembershipAPITests(CollectionsAPITestCase):
 
     def _membership_payload(self):
         """Return a membership payload referencing a fresh product."""
-        product, _ = _make_product(name="Member", slug="member")
+        product = _make_product(name="Member", slug="member")
         return {
             "collection": self.collection.pk,
             "product": product.pk,
@@ -620,7 +619,7 @@ class AdminMembershipAPITests(CollectionsAPITestCase):
     def test_admin_can_update_and_delete_membership(self):
         """An admin can re-order and remove a membership row."""
         _login(self.client)
-        product, _ = _make_product(name="Member", slug="member")
+        product = _make_product(name="Member", slug="member")
         membership = CollectionMembership.objects.create(
             collection=self.collection, product=product, sort_order=0
         )
@@ -637,7 +636,7 @@ class AdminMembershipAPITests(CollectionsAPITestCase):
     def test_duplicate_membership_is_rejected(self):
         """A product already in a collection cannot be added twice."""
         _login(self.client)
-        product, _ = _make_product(name="Member", slug="member")
+        product = _make_product(name="Member", slug="member")
         payload = {
             "collection": self.collection.pk,
             "product": product.pk,
@@ -651,7 +650,7 @@ class AdminMembershipAPITests(CollectionsAPITestCase):
 
     def test_membership_db_constraint_rejects_duplicate(self):
         """The database independently rejects a duplicate membership."""
-        product, _ = _make_product(name="Member", slug="member")
+        product = _make_product(name="Member", slug="member")
         CollectionMembership.objects.create(collection=self.collection, product=product)
         with self.assertRaises(IntegrityError):
             CollectionMembership.objects.create(

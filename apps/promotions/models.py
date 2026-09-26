@@ -1,12 +1,12 @@
 """Data models for the promotions app.
 
 Promotions change what a shopper is charged: ``Discount`` models automatic
-price reductions (on variants, products, categories, brands, bundles, or
+price reductions (on products, categories, brands, bundles, or
 sitewide), ``Coupon`` models an optional code a shopper can apply at checkout,
 and ``CouponRedemption`` records each time a coupon is used so usage limits
 can be enforced.
 
-The authoritative price — after any discount or coupon — is produced by
+The authoritative price  -  after any discount or coupon  -  is produced by
 ``apps.promotions.services.get_effective_price``, never by a figure supplied
 by a client. Money fields are ``DecimalField`` throughout (never ``float``) so
 discount arithmetic stays exact and ``min`` / truncation never compounds
@@ -25,22 +25,21 @@ MIN_ZERO = MinValueValidator(decimal.Decimal("0.00"))
 class Discount(models.Model):
     """An automatic price reduction applied to a set of products.
 
-    ``scope`` decides which catalogue entities a discount covers — a specific
-    set of variants, products, categories, brands, one bundle, or every
-    product (sitewide). When ``scope`` is not ``sitewide``, at least one of
-    the matching relation fields (``variants`` / ``products`` / ``categories``
-    / ``brands`` / ``bundle``) must be populated, enforced by ``clean()``.
+    ``scope`` decides which catalogue entities a discount covers  -  a specific
+    set of products, categories, brands, one bundle, or every product
+    (sitewide). When ``scope`` is not ``sitewide``, at least one of the
+    matching relation fields (``products`` / ``categories`` / ``brands`` /
+    ``bundle``) must be populated, enforced by ``clean()``.
 
-    ``priority`` breaks ties when several discounts match the same variant:
+    ``priority`` breaks ties when several discounts match the same product:
     the highest ``priority`` wins, then the discount that yields the lowest
-    price. ``applies_within_bundles`` controls the double-discount guard — a
+    price. ``applies_within_bundles`` controls the double-discount guard  -  a
     bundle already has its own discount, so an item discount only stacks with
     it when this flag is set. ``max_redemptions`` / ``redemption_count`` cap
     how many times the discount may be applied in total.
     """
 
     SCOPE_CHOICES = (
-        ("variant", "Specific Variant(s)"),
         ("product", "Specific Product(s)"),
         ("category", "Category"),
         ("brand", "Brand"),
@@ -57,9 +56,6 @@ class Discount(models.Model):
     scope = models.CharField(max_length=20, choices=SCOPE_CHOICES)
     discount_type = models.CharField(max_length=10, choices=DISCOUNT_TYPE_CHOICES)
     value = models.DecimalField(max_digits=10, decimal_places=2, validators=[MIN_ZERO])
-    variants = models.ManyToManyField(
-        "catalog.ProductVariant", blank=True, related_name="discounts"
-    )
     products = models.ManyToManyField(
         "catalog.Product", blank=True, related_name="discounts"
     )
@@ -122,7 +118,6 @@ class Discount(models.Model):
                 {"bundle": "A bundle-scoped discount must select a bundle."}
             )
         relation_fields = {
-            "variant": ("variants",),
             "product": ("products",),
             "category": ("categories",),
             "brand": ("brands",),
@@ -149,7 +144,7 @@ class Coupon(models.Model):
     when it still has usage budget: a global ``usage_limit_total`` and a per
     user ``usage_limit_per_user``. ``min_order_value`` and the
     ``applies_to_products`` / ``applies_to_categories`` relations restrict
-    which carts it may be used against — evaluated at checkout where cart
+    which carts it may be used against  -  evaluated at checkout where cart
     totals exist. ``stackable_with_discounts`` decides whether a coupon
     applies on top of an already discounted price.
     """

@@ -4,7 +4,7 @@ Covers the assisted-sale path: staff-only access (anonymous and customer
 tokens rejected), server-side repricing, the staff-quoted delivery fee,
 confirmed creation with a status-history row, inquiry conversion linking,
 idempotent retries, and out-of-stock rejection. No stock is touched anywhere
-— availability is a staff-set flag.
+ -  availability is a staff-set flag.
 """
 
 from decimal import Decimal
@@ -15,7 +15,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 from apps.inquiries.models import Inquiry
 from apps.orders.models import Order
 from apps.shipping.models import DeliveryArea
@@ -45,26 +45,20 @@ def _login(client, email):
     client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
 
 
-def _make_variant(price="5000.00", stock_status="in_stock"):
-    """Create an active variant with no stock rows behind it."""
+def _make_product(price="5000.00", stock_status="in_stock"):
+    """Create an active product with no stock rows behind it."""
     _SEQ[0] += 1
     n = _SEQ[0]
     category, _ = Category.objects.get_or_create(name="Appliances", slug="appliances")
     brand, _ = Brand.objects.get_or_create(name="Samsung", slug="samsung")
-    product = Product.objects.create(
+    return Product.objects.create(
         name=f"Kettle {n}",
         slug=f"kettle-{n}",
         sku=f"KTL-{n}",
         description="A test product.",
         category=category,
         brand=brand,
-        is_active=True,
-    )
-    return ProductVariant.objects.create(
-        product=product,
-        sku=f"KTL-{n}-V",
-        attributes={"color": "Silver"},
-        price=price,
+        price=Decimal(price),
         package_weight=Decimal("2.00"),
         stock_status=stock_status,
         is_active=True,
@@ -78,13 +72,13 @@ def _make_area():
     )
 
 
-def _intake_payload(variant, **overrides):
-    """Build a minimal intake payload for the variant."""
+def _intake_payload(product, **overrides):
+    """Build a minimal intake payload for the product."""
     payload = {
         "phone": "+254712345678",
         "order_source": "whatsapp",
         "payment_method": "cod",
-        "items": [{"variant_id": variant.pk, "quantity": 2}],
+        "items": [{"product_id": product.pk, "quantity": 2}],
     }
     payload.update(overrides)
     return payload
@@ -98,10 +92,10 @@ class StaffIntakeAccessTests(APITestCase):
 
     def test_intake_rejects_anonymous(self):
         """Anonymous callers cannot create staff orders."""
-        variant = _make_variant()
+        product = _make_product()
         response = self.client.post(
             INTAKE_URL,
-            _intake_payload(variant),
+            _intake_payload(product),
             format="json",
             HTTP_IDEMPOTENCY_KEY="k1",
         )
@@ -134,10 +128,10 @@ class StaffIntakeTests(APITestCase):
 
     def test_intake_creates_confirmed_order_with_history(self):
         """Staff intake creates a confirmed order without touching stock."""
-        variant = _make_variant(price="5000.00")
+        product = _make_product(price="5000.00")
         response = self._post(
             _intake_payload(
-                variant, payment_reference="QHX7ABC123", order_source="whatsapp"
+                product, payment_reference="QHX7ABC123", order_source="whatsapp"
             )
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -151,8 +145,8 @@ class StaffIntakeTests(APITestCase):
 
     def test_intake_reprices_server_side(self):
         """The charged unit price comes from the catalogue, not the client."""
-        variant = _make_variant(price="5000.00")
-        payload = _intake_payload(variant)
+        product = _make_product(price="5000.00")
+        payload = _intake_payload(product)
         payload["items"][0]["unit_price"] = "1.00"
         response = self._post(payload)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -162,10 +156,10 @@ class StaffIntakeTests(APITestCase):
 
     def test_intake_stores_quoted_delivery_fee_with_vat(self):
         """The staff-quoted fee is stored and taxed like before."""
-        variant = _make_variant(price="5000.00")
+        product = _make_product(price="5000.00")
         area = _make_area()
         response = self._post(
-            _intake_payload(variant, delivery_area_id=area.pk, delivery_fee="450.00"),
+            _intake_payload(product, delivery_area_id=area.pk, delivery_fee="450.00"),
             key="fee-1",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -183,44 +177,44 @@ class StaffIntakeTests(APITestCase):
 
     def test_intake_rejects_negative_delivery_fee(self):
         """A negative quoted fee fails validation and creates nothing."""
-        variant = _make_variant(price="5000.00")
+        product = _make_product(price="5000.00")
         response = self._post(
-            _intake_payload(variant, delivery_fee="-10.00"), key="fee-neg"
+            _intake_payload(product, delivery_fee="-10.00"), key="fee-neg"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Order.objects.count(), 0)
 
     def test_intake_rejects_unknown_delivery_area(self):
         """An unknown area id fails validation and creates nothing."""
-        variant = _make_variant(price="5000.00")
+        product = _make_product(price="5000.00")
         response = self._post(
-            _intake_payload(variant, delivery_area_id=999999), key="area-bad"
+            _intake_payload(product, delivery_area_id=999999), key="area-bad"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Order.objects.count(), 0)
 
-    def test_intake_rejects_out_of_stock_variant(self):
-        """A variant staff flagged out of stock cannot be ordered."""
-        variant = _make_variant(price="5000.00", stock_status="out_of_stock")
-        response = self._post(_intake_payload(variant), key="oos-1")
+    def test_intake_rejects_out_of_stock_product(self):
+        """A product staff flagged out of stock cannot be ordered."""
+        product = _make_product(price="5000.00", stock_status="out_of_stock")
+        response = self._post(_intake_payload(product), key="oos-1")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(Order.objects.count(), 0)
 
     def test_intake_converts_inquiry(self):
         """Passing inquiry_id links the order and converts the inquiry."""
-        variant = _make_variant(price="5000.00")
+        product = _make_product(price="5000.00")
         inquiry = Inquiry.objects.create(
             channel="whatsapp",
             cart_snapshot=[
                 {
-                    "sku": variant.sku,
+                    "sku": product.sku,
                     "name": "Kettle",
                     "quantity": 2,
                     "price": "5000.00",
                 }
             ],
         )
-        payload = _intake_payload(variant, inquiry_id=inquiry.pk)
+        payload = _intake_payload(product, inquiry_id=inquiry.pk)
         response = self._post(payload)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         inquiry.refresh_from_db()
@@ -229,8 +223,8 @@ class StaffIntakeTests(APITestCase):
 
     def test_intake_idempotent_retry(self):
         """Repeating the same idempotency key returns the first order."""
-        variant = _make_variant(price="5000.00")
-        payload = _intake_payload(variant)
+        product = _make_product(price="5000.00")
+        payload = _intake_payload(product)
         first = self._post(payload, key="same-key")
         second = self._post(payload, key="same-key")
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)
@@ -240,8 +234,8 @@ class StaffIntakeTests(APITestCase):
 
     def test_intake_key_reused_with_different_payload_conflicts(self):
         """The same key with a different body is a 409, not a replay."""
-        variant = _make_variant(price="5000.00")
-        payload = _intake_payload(variant)
+        product = _make_product(price="5000.00")
+        payload = _intake_payload(product)
         first = self._post(payload, key="reused-key")
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)
         payload["items"][0]["quantity"] = 3
@@ -251,14 +245,14 @@ class StaffIntakeTests(APITestCase):
 
     def test_intake_warns_on_duplicate_payment_reference(self):
         """Reusing a receipt code still creates the order, with a warning."""
-        variant = _make_variant(price="5000.00")
+        product = _make_product(price="5000.00")
         first = self._post(
-            _intake_payload(variant, payment_reference="DUPREF123"), key="dup-1"
+            _intake_payload(product, payment_reference="DUPREF123"), key="dup-1"
         )
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)
         self.assertNotIn("warnings", first.data)
         second = self._post(
-            _intake_payload(variant, payment_reference="DUPREF123"), key="dup-2"
+            _intake_payload(product, payment_reference="DUPREF123"), key="dup-2"
         )
         self.assertEqual(second.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Order.objects.count(), 2)
@@ -269,9 +263,9 @@ class StaffIntakeTests(APITestCase):
 
     def test_intake_no_warning_for_blank_reference(self):
         """Orders without a reference never warn."""
-        variant = _make_variant(price="5000.00")
-        first = self._post(_intake_payload(variant), key="blank-1")
-        second = self._post(_intake_payload(variant), key="blank-2")
+        product = _make_product(price="5000.00")
+        first = self._post(_intake_payload(product), key="blank-1")
+        second = self._post(_intake_payload(product), key="blank-2")
         self.assertEqual(first.status_code, status.HTTP_201_CREATED)
         self.assertEqual(second.status_code, status.HTTP_201_CREATED)
         self.assertNotIn("warnings", second.data)

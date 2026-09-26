@@ -8,7 +8,7 @@ class BundleItemInline(admin.TabularInline):
 
     model = BundleItem
     extra = 0
-    autocomplete_fields = ["product", "variant"]
+    autocomplete_fields = ["product"]
 
 
 @admin.register(Bundle)
@@ -34,7 +34,7 @@ class BundleAdmin(admin.ModelAdmin):
 class BundleItemAdmin(admin.ModelAdmin):
     """Admin page for individual bundle components."""
 
-    list_display = ("bundle", "product", "variant", "quantity", "is_optional")
+    list_display = ("bundle", "product", "quantity", "is_optional")
     list_filter = ("bundle", "is_optional")
     search_fields = ("bundle__name", "product__name", "product__sku")
-    autocomplete_fields = ["product", "variant"]
+    autocomplete_fields = ["product"]

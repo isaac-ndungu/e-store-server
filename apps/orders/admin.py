@@ -49,7 +49,7 @@ class OrderItemAdmin(admin.ModelAdmin):
         "id",
         "order",
         "product_name",
-        "variant_sku",
+        "product_sku",
         "quantity",
         "total_price",
     )

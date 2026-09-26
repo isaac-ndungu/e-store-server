@@ -17,22 +17,19 @@ CART_COOKIE_MAX_AGE = 90 * 24 * 60 * 60
 MAX_LINE_QUANTITY = 999
 
 
-def variant_is_orderable(variant):
-    """Return whether a variant may be added to a cart.
+def product_is_orderable(product):
+    """Return whether a product may be added to a cart.
 
     Args:
-        variant (ProductVariant): the variant with ``product`` prefetched.
+        product (Product): the product to check.
 
     Returns:
-        bool: False when the variant or its product is inactive, or staff
-            have marked the variant out of stock.
+        bool: False when the product is inactive, or staff have marked
+            it out of stock.
     """
-    if not variant.is_active:
+    if not product.is_active:
         return False
-    product = getattr(variant, "product", None)
-    if product is not None and not product.is_active:
-        return False
-    return variant.stock_status != "out_of_stock"
+    return product.stock_status != "out_of_stock"
 
 
 def get_cart_from_cookie(cookies):
@@ -49,9 +46,9 @@ def get_cart_from_cookie(cookies):
     if not raw:
         return None
     try:
-        return Cart.objects.prefetch_related(
-            "items__variant__product", "items__bundle"
-        ).get(anonymous_id=raw)
+        return Cart.objects.prefetch_related("items__product", "items__bundle").get(
+            anonymous_id=raw
+        )
     except Cart.DoesNotExist, ValidationError, ValueError, TypeError:
         return None
 
@@ -80,7 +77,7 @@ def price_cart_lines(cart):
 
     Returns:
         tuple: ``(lines, subtotal)`` where lines is a list of dicts with
-            the item, variant, bundle, quantity, unit price, and line
+            the item, product, bundle, quantity, unit price, and line
             total, and subtotal is the Decimal sum of line totals.
     """
     from apps.promotions.services import get_effective_price
@@ -89,7 +86,7 @@ def price_cart_lines(cart):
     subtotal = Decimal("0.00")
     for item in cart.items.all():
         effective = get_effective_price(
-            item.variant, within_bundle=item.bundle_id is not None
+            item.product, within_bundle=item.bundle_id is not None
         )
         unit_price = Decimal(effective["price"])
         line_total = unit_price * item.quantity
@@ -97,7 +94,7 @@ def price_cart_lines(cart):
         lines.append(
             {
                 "item": item,
-                "variant": item.variant,
+                "product": item.product,
                 "bundle": item.bundle,
                 "quantity": item.quantity,
                 "unit_price": unit_price,
@@ -111,7 +108,7 @@ def build_cart_snapshot(cart):
     """Build the staff-facing snapshot lines for a cart.
 
     Used when an inquiry is captured: staff see sku, name, quantity, and
-    the display-time price for each line. Prices stay display data — intake
+    the display-time price for each line. Prices stay display data  -  intake
     reprices everything.
 
     Args:
@@ -124,12 +121,11 @@ def build_cart_snapshot(cart):
     priced_lines, _ = price_cart_lines(cart)
     snapshot = []
     for entry in priced_lines:
-        variant = entry["variant"]
-        product = getattr(variant, "product", None)
+        product = entry["product"]
         snapshot.append(
             {
-                "sku": variant.sku,
-                "name": product.name if product is not None else variant.sku,
+                "sku": product.sku,
+                "name": product.name,
                 "quantity": entry["quantity"],
                 "price": str(entry["unit_price"]),
             }

@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 from apps.promotions.models import Coupon, Discount
 
 
@@ -12,9 +12,6 @@ class DiscountSerializer(serializers.ModelSerializer):
     scope supplies at least one matching relation.
     """
 
-    variants = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=ProductVariant.objects.all(), required=False
-    )
     products = serializers.PrimaryKeyRelatedField(
         many=True, queryset=Product.objects.all(), required=False
     )
@@ -34,7 +31,6 @@ class DiscountSerializer(serializers.ModelSerializer):
             "scope",
             "discount_type",
             "value",
-            "variants",
             "products",
             "categories",
             "brands",
@@ -82,7 +78,6 @@ class DiscountSerializer(serializers.ModelSerializer):
         if scope == "sitewide":
             return attrs
         field_names = {
-            "variant": "variants",
             "product": "products",
             "category": "categories",
             "brand": "brands",
@@ -212,12 +207,12 @@ class CouponValidationResultSerializer(serializers.Serializer):
 
 
 class EffectivePriceResultSerializer(serializers.Serializer):
-    """Read serializer describing the effective price of a variant.
+    """Read serializer describing the effective price of a product.
 
     All money fields are returned as strings to travel exactly as computed.
     """
 
-    variant = serializers.IntegerField()
+    product = serializers.IntegerField()
     base_price = serializers.CharField()
     price = serializers.CharField()
     discount = serializers.CharField()

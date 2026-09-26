@@ -4,7 +4,7 @@ Writable serializers whitelist exactly the fields a caller may supply:
 staff name the order, line, reason, and requested resolution when filing a
 request after a customer complaint, and name the refund method (and
 optionally an explicit refund or restocking-fee amount) at approval. No
-client-supplied money value is ever treated as authoritative — the service
+client-supplied money value is ever treated as authoritative  -  the service
 caps every amount against the order snapshot and the collected total.
 
 Read serializers expose the request state, the computed economics, and the
@@ -25,7 +25,7 @@ class ReturnOrderItemSerializer(serializers.ModelSerializer):
         model = OrderItem
         fields = [
             "id",
-            "variant_sku",
+            "product_sku",
             "product_name",
             "quantity",
             "unit_price",
@@ -131,7 +131,7 @@ class ReturnApproveSerializer(serializers.Serializer):
 
     ``refund_method`` is free text naming how the money will go back (e.g.
     "M-Pesa - sent manually"); the service records it, never executes it.
-    ``refund_amount`` and ``restocking_fee`` are optional staff overrides —
+    ``refund_amount`` and ``restocking_fee`` are optional staff overrides  - 
     when absent, the service computes them from the order snapshot, and any
     supplied value is still capped server-side.
     """
@@ -174,7 +174,7 @@ class ReturnRejectSerializer(serializers.Serializer):
 class ReturnRefundSerializer(serializers.Serializer):
     """Input for staff recording a manually-sent return refund.
 
-    ``refund_note`` is required and must say how the money went back — it
+    ``refund_note`` is required and must say how the money went back  -  it
     becomes the order's refund record alongside the approved amount.
     """
 
@@ -241,7 +241,7 @@ class PreShipmentCancelSerializer(serializers.Serializer):
         cleaned = self._sanitise(value)
         if not cleaned.strip():
             raise serializers.ValidationError(
-                "A cancellation note is required — record what happened and "
+                "A cancellation note is required  -  record what happened and "
                 "whether/how a refund was arranged."
             )
         return cleaned

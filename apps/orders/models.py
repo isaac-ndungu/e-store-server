@@ -22,14 +22,14 @@ from django.db.models.constraints import CheckConstraint
 class Order(models.Model):
     """A purchase with its shipping, payment, and fulfilment details.
 
-    ``phone`` is the order-level contact number — the number staff confirm
+    ``phone`` is the order-level contact number  -  the number staff confirm
     payment and delivery against. ``user`` is null for assisted sales (there
     are no customer accounts); ``staff_created_by`` records which staff
     member created the order.
     ``status`` tracks the order through the fulfilment pipeline; the service
     layer records every change in ``OrderStatusHistory`` alongside it.
     ``delivery_fee`` is the amount staff quoted the customer for delivery in
-    the sales conversation, typed in at intake — no fee table stands behind
+    the sales conversation, typed in at intake  -  no fee table stands behind
     it. ``delivery_area`` records where the order is going. ``refund_note``
     and ``refund_amount`` record money returned to the customer when an order
     is cancelled or returned; refunds are arranged manually by staff, so
@@ -153,7 +153,7 @@ class Order(models.Model):
         """Return the sum of all line-item total prices.
 
         This is used to reconcile the order's money fields, never to charge
-        the customer — the authoritative amounts are the snapshot fields on
+        the customer  -  the authoritative amounts are the snapshot fields on
         the order.
 
         Returns:
@@ -169,9 +169,9 @@ class OrderItem(models.Model):
     """One line of an order with order-time data snapshotted.
 
     ``product`` is nullable (``SET_NULL``) so a deleted catalogue product does
-    not destroy the line; ``product_name``, ``variant_sku``, ``variant_attributes``
-    and the money fields are copied at checkout time so the historical order
-    renders independently of live catalogue state.
+    not destroy the line; ``product_name``, ``product_sku`` and the money
+    fields are copied at checkout time so the historical order renders
+    independently of live catalogue state.
 
     ``bundle_group_id`` groups the component lines that resulted from a single
     bundle purchase. When a bundle is bought, each component becomes its own
@@ -194,9 +194,8 @@ class OrderItem(models.Model):
         related_name="order_items",
     )
     bundle_group_id = models.UUIDField(null=True, blank=True)
-    variant_sku = models.CharField(max_length=100)
+    product_sku = models.CharField(max_length=100)
     product_name = models.CharField(max_length=255)
-    variant_attributes = models.JSONField(default=dict)
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     quantity = models.PositiveIntegerField(default=1)
     total_price = models.DecimalField(max_digits=12, decimal_places=2)
@@ -214,7 +213,7 @@ class OrderItem(models.Model):
             models.Index(
                 fields=["order", "bundle_group_id"], name="order_item_bundle_idx"
             ),
-            models.Index(fields=["variant_sku"], name="order_item_sku_idx"),
+            models.Index(fields=["product_sku"], name="order_item_sku_idx"),
         ]
         constraints = [
             CheckConstraint(
@@ -227,7 +226,7 @@ class OrderItem(models.Model):
 
     def __str__(self):
         """Return a compact label identifying the line."""
-        return f"{self.product_name} ({self.variant_sku}) x{self.quantity}"
+        return f"{self.product_name} ({self.product_sku}) x{self.quantity}"
 
 
 class OrderStatusHistory(models.Model):

@@ -15,31 +15,25 @@ from rest_framework.test import APITestCase
 from apps.bundles.models import Bundle
 from apps.cart.models import Cart, CartItem
 from apps.cart.selectors import CART_COOKIE_NAME
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 
 CART_URL = reverse("api:cart:cart-detail")
 ITEMS_URL = reverse("api:cart:cart-item-add")
 
 
-def _make_variant(price="5000.00", active=True, stock_status="in_stock", seq=0):
-    """Create an active product with one variant."""
+def _make_product(price="5000.00", active=True, stock_status="in_stock", seq=0):
+    """Create an active product."""
     category, _ = Category.objects.get_or_create(name="Appliances", slug="appliances")
     brand, _ = Brand.objects.get_or_create(name="Samsung", slug="samsung")
-    product = Product.objects.create(
+    return Product.objects.create(
         name=f"Kettle {seq}",
         slug=f"kettle-cart-{seq}",
         sku=f"KTL-CART-{seq}",
         description="A test product.",
         category=category,
         brand=brand,
-        is_active=True,
-    )
-    return ProductVariant.objects.create(
-        product=product,
-        sku=f"KTL-CART-{seq}-V",
-        attributes={"color": "Silver"},
-        price=price,
         is_active=active,
+        price=price,
         stock_status=stock_status,
     )
 
@@ -87,27 +81,27 @@ class CartAddTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.variant = _make_variant(seq=1)
+        self.product = _make_product(seq=1)
 
     def test_anonymous_add_allowed(self):
         """An anonymous visitor can add a line without auth."""
         response = self.client.post(
             ITEMS_URL,
-            {"variant_id": self.variant.pk, "quantity": 2},
+            {"product_id": self.product.pk, "quantity": 2},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["item_count"], 2)
         self.assertEqual(len(response.data["items"]), 1)
         line = response.data["items"][0]
-        self.assertEqual(line["sku"], self.variant.sku)
+        self.assertEqual(line["sku"], self.product.sku)
         self.assertEqual(line["quantity"], 2)
 
     def test_add_prices_server_side(self):
         """The line price comes from the catalogue, not the request."""
         response = self.client.post(
             ITEMS_URL,
-            {"variant_id": self.variant.pk, "quantity": 2, "price": "1.00"},
+            {"product_id": self.product.pk, "quantity": 2, "price": "1.00"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -117,44 +111,44 @@ class CartAddTests(APITestCase):
         self.assertEqual(Decimal(response.data["subtotal"]), Decimal("10000.00"))
 
     def test_add_merges_identical_line(self):
-        """Adding the same variant twice bumps quantity on one line."""
+        """Adding the same product twice bumps quantity on one line."""
         self.client.post(
-            ITEMS_URL, {"variant_id": self.variant.pk, "quantity": 1}, format="json"
+            ITEMS_URL, {"product_id": self.product.pk, "quantity": 1}, format="json"
         )
         response = self.client.post(
-            ITEMS_URL, {"variant_id": self.variant.pk, "quantity": 2}, format="json"
+            ITEMS_URL, {"product_id": self.product.pk, "quantity": 2}, format="json"
         )
         self.assertEqual(len(response.data["items"]), 1)
         self.assertEqual(response.data["items"][0]["quantity"], 3)
         self.assertEqual(CartItem.objects.count(), 1)
 
-    def test_add_rejects_unknown_variant(self):
-        """An unknown variant id is a 400, not an empty cart."""
+    def test_add_rejects_unknown_product(self):
+        """An unknown product id is a 400, not an empty cart."""
         response = self.client.post(
-            ITEMS_URL, {"variant_id": 999999, "quantity": 1}, format="json"
+            ITEMS_URL, {"product_id": 999999, "quantity": 1}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_add_rejects_inactive_variant(self):
-        """An inactive variant cannot be added."""
-        variant = _make_variant(active=False, seq=2)
+    def test_add_rejects_inactive_product(self):
+        """An inactive product cannot be added."""
+        product = _make_product(active=False, seq=2)
         response = self.client.post(
-            ITEMS_URL, {"variant_id": variant.pk, "quantity": 1}, format="json"
+            ITEMS_URL, {"product_id": product.pk, "quantity": 1}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_add_rejects_out_of_stock_variant(self):
-        """A staff-marked out-of-stock variant cannot be added."""
-        variant = _make_variant(stock_status="out_of_stock", seq=3)
+    def test_add_rejects_out_of_stock_product(self):
+        """A staff-marked out-of-stock product cannot be added."""
+        product = _make_product(stock_status="out_of_stock", seq=3)
         response = self.client.post(
-            ITEMS_URL, {"variant_id": variant.pk, "quantity": 1}, format="json"
+            ITEMS_URL, {"product_id": product.pk, "quantity": 1}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_add_rejects_bad_quantity(self):
         """Zero quantity fails serializer validation."""
         response = self.client.post(
-            ITEMS_URL, {"variant_id": self.variant.pk, "quantity": 0}, format="json"
+            ITEMS_URL, {"product_id": self.product.pk, "quantity": 0}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -169,7 +163,7 @@ class CartAddTests(APITestCase):
         )
         response = self.client.post(
             ITEMS_URL,
-            {"variant_id": self.variant.pk, "quantity": 1, "bundle_id": bundle.pk},
+            {"product_id": self.product.pk, "quantity": 1, "bundle_id": bundle.pk},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -183,9 +177,9 @@ class CartUpdateTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.variant = _make_variant(seq=4)
+        self.product = _make_product(seq=4)
         created = self.client.post(
-            ITEMS_URL, {"variant_id": self.variant.pk, "quantity": 1}, format="json"
+            ITEMS_URL, {"product_id": self.product.pk, "quantity": 1}, format="json"
         )
         self.item_id = created.data["items"][0]["id"]
 
@@ -207,10 +201,10 @@ class CartUpdateTests(APITestCase):
 
     def test_patch_cannot_touch_other_cart_line(self):
         """A line from another visitor's cart is not found (400)."""
-        other_variant = _make_variant(seq=5)
+        other_product = _make_product(seq=5)
         other_cart = Cart.objects.create()
         other_item = CartItem.objects.create(
-            cart=other_cart, variant=other_variant, quantity=1
+            cart=other_cart, product=other_product, quantity=1
         )
         response = self.client.patch(
             _item_url(other_item.pk), {"quantity": 5}, format="json"

@@ -20,7 +20,7 @@ from django.db import connection
 from django.test import TransactionTestCase
 
 from apps.accounts.models import User
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 from apps.orders.models import Order, OrderStatusHistory
 from apps.orders.services import create_staff_order
 from apps.returns.models import ReturnRequestStatusHistory
@@ -53,23 +53,18 @@ def _make_staff(suffix="race"):
     )
 
 
-def _make_variant(sku="RACE-1"):
-    """Create a product with one active variant and no stock behind it."""
+def _make_product(sku="RACE-1"):
+    """Create a product with no stock behind it."""
     category, _ = Category.objects.get_or_create(name="Kitchen", slug="kitchen")
     brand, _ = Brand.objects.get_or_create(name="Ramtons", slug="ramtons")
-    product = Product.objects.create(
+    return Product.objects.create(
         name="Race Blender",
         slug="race-blender",
         sku=sku,
         description="A test product.",
         brand=brand,
-        is_active=True,
-    )
-    return ProductVariant.objects.create(
-        product=product,
-        sku=f"{sku}-V",
-        is_active=True,
         price=Decimal("5000.00"),
+        is_active=True,
     )
 
 
@@ -89,7 +84,7 @@ class IntakeIdempotencyRaceTests(TransactionTestCase):
         """Build a product and a staff caller."""
         cache.clear()
         self.staff = _make_staff("intake-race")
-        self.variant = _make_variant("KETTLE-1")
+        self.product = _make_product("KETTLE-1")
 
     def _intake_payload(self):
         """Return the minimal intake payload."""
@@ -97,7 +92,7 @@ class IntakeIdempotencyRaceTests(TransactionTestCase):
             "phone": "+254712345678",
             "order_source": "whatsapp",
             "payment_method": "cod",
-            "items": [{"variant_id": self.variant.pk, "quantity": 1}],
+            "items": [{"product_id": self.product.pk, "quantity": 1}],
         }
 
     @_postgres_only
@@ -146,11 +141,11 @@ class CancelRaceTests(TransactionTestCase):
         """Build a confirmed order and a staff caller."""
         cache.clear()
         self.staff = _make_staff("cancel-race")
-        variant = _make_variant("CANCEL-1")
+        product = _make_product("CANCEL-1")
         self.order = create_staff_order(
             staff_user=self.staff,
             phone="+254712345678",
-            lines=[{"variant_id": variant.pk, "quantity": 1}],
+            lines=[{"product_id": product.pk, "quantity": 1}],
             order_source="whatsapp",
             payment_method="cod",
         )
@@ -199,11 +194,11 @@ class RefundRecordRaceTests(TransactionTestCase):
         """Build a delivered order with an approved, received return."""
         cache.clear()
         self.staff = _make_staff("refund-race")
-        variant = _make_variant("REFUND-1")
+        product = _make_product("REFUND-1")
         order = create_staff_order(
             staff_user=self.staff,
             phone="+254712345678",
-            lines=[{"variant_id": variant.pk, "quantity": 1}],
+            lines=[{"product_id": product.pk, "quantity": 1}],
             order_source="whatsapp",
             payment_method="cod",
         )

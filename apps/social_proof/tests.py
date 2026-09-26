@@ -4,7 +4,7 @@ Covers the live-viewer counter (Redis semantics emulated on the test cache),
 the bucketed durable event log with its concurrency-safe deduplication, the
 cached feature-flag gate and its signal-driven invalidation, the retention
 purge task, and every public endpoint: single and batch viewer counts, the
-recent-sales feed, plus the security invariants — cookie-only identity,
+recent-sales feed, plus the security invariants  -  cookie-only identity,
 ignored client-supplied session keys, bot-traffic exclusion, CSRF-exempt
 recording, and the concurrent-views scenario the feature is designed for.
 """
@@ -54,6 +54,7 @@ def _make_product(**kwargs):
         description=kwargs.pop("description", _DEFAULT_DESCRIPTION),
         is_active=kwargs.pop("is_active", True),
         is_discontinued=kwargs.pop("is_discontinued", False),
+        price=kwargs.pop("price", "100.00"),
         **kwargs,
     )
 
@@ -77,7 +78,7 @@ def _make_order_item(order, product):
     return OrderItem.objects.create(
         order=order,
         product=product,
-        variant_sku="APP-SKU",
+        product_sku="APP-SKU",
         product_name=product.name,
         unit_price=Decimal("100.00"),
         quantity=1,

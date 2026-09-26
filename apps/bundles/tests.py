@@ -21,7 +21,7 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
 from apps.bundles.models import Bundle, BundleItem
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 
 URLS = {
     "bundles": reverse("api:bundles:bundle-list"),
@@ -77,8 +77,8 @@ def _unique_slug(value):
     return slug
 
 
-def _make_product(name, slug, sku, **kwargs):
-    """Create a product with a reusable category and brand."""
+def _make_product(name, slug, sku, price="5000.00", **kwargs):
+    """Create a product with a reusable category and brand, carrying its own price."""
     category = (
         kwargs.pop("category", None)
         or Category.objects.get_or_create(name="Appliances", slug="appliances")[0]
@@ -97,6 +97,8 @@ def _make_product(name, slug, sku, **kwargs):
     while Product.objects.filter(sku=unique_sku).exists():
         unique_sku = f"{sku}-{counter}"
         counter += 1
+    from decimal import Decimal
+
     product = Product.objects.create(
         name=name,
         slug=unique_slug,
@@ -104,33 +106,17 @@ def _make_product(name, slug, sku, **kwargs):
         description="A test product.",
         category=category,
         brand=brand,
-        is_active=True,
+        price=Decimal(price),
+        is_active=kwargs.pop("is_active", True),
+        **kwargs,
     )
     return product
 
 
-def _make_variant(product, sku, price, **kwargs):
-    """Create an active variant for a product with a unique SKU."""
-    unique_sku = sku
-    counter = 1
-    while ProductVariant.objects.filter(sku=unique_sku).exists():
-        unique_sku = f"{sku}-{counter}"
-        counter += 1
-    return ProductVariant.objects.create(
-        product=product,
-        sku=unique_sku,
-        attributes=kwargs.pop("attributes", {"color": "Silver"}),
-        price=price,
-        is_active=True,
-    )
-
-
 def _make_bundle(name="Kitchen Starter", items=None, **kwargs):
     """Create a bundle, optionally with items, and return it."""
-    product_a = _make_product("Kettle", "kettle", "KTL-1")
-    product_b = _make_product("Toaster", "toaster", "TST-1")
-    variant_a = _make_variant(product_a, "KTL-1-SILVER", "5000.00")
-    variant_b = _make_variant(product_b, "TST-1-SILVER", "7000.00")
+    product_a = _make_product("Kettle", "kettle", "KTL-1", price="5000.00")
+    product_b = _make_product("Toaster", "toaster", "TST-1", price="7000.00")
 
     bundle = Bundle.objects.create(
         name=name,
@@ -141,8 +127,8 @@ def _make_bundle(name="Kitchen Starter", items=None, **kwargs):
     )
     if items is None:
         items = [
-            {"product": product_a, "variant": variant_a, "quantity": 1},
-            {"product": product_b, "variant": variant_b, "quantity": 1},
+            {"product": product_a, "quantity": 1},
+            {"product": product_b, "quantity": 1},
         ]
     for item in items:
         BundleItem.objects.create(bundle=bundle, **item)
@@ -156,30 +142,24 @@ class BundleServiceTests(APITestCase):
         cache.clear()
 
     def _products(self):
-        """Return two products with their single variant each."""
-        product_a = _make_product("Kettle", "srv-kettle", "SRV-KTL")
-        variant_a = _make_variant(product_a, "SRV-KTL-1", "5000.00")
-        product_b = _make_product("Toaster", "srv-toaster", "SRV-TST")
-        variant_b = _make_variant(product_b, "SRV-TST-1", "7000.00")
-        return product_a, variant_a, product_b, variant_b
+        """Return two products with their prices."""
+        product_a = _make_product("Kettle", "srv-kettle", "SRV-KTL", price="5000.00")
+        product_b = _make_product("Toaster", "srv-toaster", "SRV-TST", price="7000.00")
+        return product_a, product_b
 
     def test_percent_discount_price(self):
         """A percent discount reduces the regular total proportionally."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a, _, variant_b = self._products()
+        product_a, product_b = self._products()
         bundle = Bundle.objects.create(
             name="Kitchen",
             slug="srv-kitchen",
             discount_type="percent",
             discount_value="10.00",
         )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_a.product, variant=variant_a
-        )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_b.product, variant=variant_b
-        )
+        BundleItem.objects.create(bundle=bundle, product=product_a)
+        BundleItem.objects.create(bundle=bundle, product=product_b)
 
         price = get_bundle_price(bundle)
         self.assertEqual(price["regular_price"], "12000.00")
@@ -190,19 +170,15 @@ class BundleServiceTests(APITestCase):
         """A fixed discount reduces the regular total by the amount."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a, _, variant_b = self._products()
+        product_a, product_b = self._products()
         bundle = Bundle.objects.create(
             name="Kitchen",
             slug="srv-kitchen",
             discount_type="fixed",
             discount_value="1500.00",
         )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_a.product, variant=variant_a
-        )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_b.product, variant=variant_b
-        )
+        BundleItem.objects.create(bundle=bundle, product=product_a)
+        BundleItem.objects.create(bundle=bundle, product=product_b)
 
         price = get_bundle_price(bundle)
         self.assertEqual(price["price"], "10500.00")
@@ -211,16 +187,14 @@ class BundleServiceTests(APITestCase):
         """A fixed discount larger than the total never yields a negative price."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a, _, _ = self._products()
+        product_a, _ = self._products()
         bundle = Bundle.objects.create(
             name="Single",
             slug="srv-single",
             discount_type="fixed",
             discount_value="99999.00",
         )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_a.product, variant=variant_a
-        )
+        BundleItem.objects.create(bundle=bundle, product=product_a)
 
         price = get_bundle_price(bundle)
         self.assertEqual(price["price"], "0.00")
@@ -229,25 +203,21 @@ class BundleServiceTests(APITestCase):
         """Line totals scale with each item's quantity."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a, _, _ = self._products()
+        product_a, _ = self._products()
         bundle = Bundle.objects.create(
             name="Bulk", slug="srv-bulk", discount_type="fixed", discount_value="0.00"
         )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_a.product, variant=variant_a, quantity=3
-        )
+        BundleItem.objects.create(bundle=bundle, product=product_a, quantity=3)
 
         price = get_bundle_price(bundle)
         self.assertEqual(price["regular_price"], "15000.00")
         self.assertEqual(price["price"], "15000.00")
 
-    def test_product_only_item_prices_lowest_active_variant(self):
-        """A product-only item is priced at its cheapest active variant."""
+    def test_product_item_prices_at_product_price(self):
+        """A product item is priced at its product's price."""
         from apps.bundles.services import get_bundle_price
 
-        product_a = _make_product("Kettle", "srv-kettle", "SRV-KTL")
-        _make_variant(product_a, "SRV-KTL-1", "5000.00")
-        _make_variant(product_a, "SRV-KTL-2", "4500.00")
+        product_a = _make_product("Kettle", "srv-kettle", "SRV-KTL", price="4500.00")
 
         bundle = Bundle.objects.create(
             name="Kettle",
@@ -259,24 +229,22 @@ class BundleServiceTests(APITestCase):
 
         price = get_bundle_price(bundle)
         self.assertEqual(price["regular_price"], "4500.00")
+        self.assertEqual(price["items"][0]["product"], product_a.pk)
+        self.assertEqual(price["items"][0]["product_sku"], product_a.sku)
 
     def test_price_is_cached_and_read_from_cache(self):
         """A second call reads the cached value without recomputation."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a, _, variant_b = self._products()
+        product_a, product_b = self._products()
         bundle = Bundle.objects.create(
             name="Kitchen",
             slug="srv-kitchen-cache",
             discount_type="percent",
             discount_value="10.00",
         )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_a.product, variant=variant_a
-        )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_b.product, variant=variant_b
-        )
+        BundleItem.objects.create(bundle=bundle, product=product_a)
+        BundleItem.objects.create(bundle=bundle, product=product_b)
 
         with CaptureQueriesContext(connection) as ctx:
             get_bundle_price(bundle)
@@ -290,19 +258,15 @@ class BundleServiceTests(APITestCase):
         """Updating a bundle invalidates its cached price."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a, _, variant_b = self._products()
+        product_a, product_b = self._products()
         bundle = Bundle.objects.create(
             name="Kitchen",
             slug="srv-kitchen-inv",
             discount_type="fixed",
             discount_value="0.00",
         )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_a.product, variant=variant_a
-        )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_b.product, variant=variant_b
-        )
+        BundleItem.objects.create(bundle=bundle, product=product_a)
+        BundleItem.objects.create(bundle=bundle, product=product_b)
 
         first = get_bundle_price(bundle)
         bundle.discount_value = Decimal("2000.00")
@@ -316,19 +280,15 @@ class BundleServiceTests(APITestCase):
         """Changing a bundle item invalidates the cached price."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a, _, variant_b = self._products()
+        product_a, product_b = self._products()
         bundle = Bundle.objects.create(
             name="Kitchen",
             slug="srv-kitchen-item",
             discount_type="fixed",
             discount_value="0.00",
         )
-        item_a = BundleItem.objects.create(
-            bundle=bundle, product=variant_a.product, variant=variant_a
-        )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_b.product, variant=variant_b
-        )
+        item_a = BundleItem.objects.create(bundle=bundle, product=product_a)
+        BundleItem.objects.create(bundle=bundle, product=product_b)
 
         first = get_bundle_price(bundle)
         item_a.quantity = 2
@@ -337,28 +297,24 @@ class BundleServiceTests(APITestCase):
         self.assertEqual(second["regular_price"], "17000.00")
         self.assertNotEqual(first["regular_price"], second["regular_price"])
 
-    def test_price_cache_invalidated_on_variant_price_change(self):
-        """Editing a component variant's price invalidates the bundle cache."""
+    def test_price_cache_invalidated_on_product_price_change(self):
+        """Editing a component product's price invalidates the bundle cache."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a, _, variant_b = self._products()
+        product_a, product_b = self._products()
         bundle = Bundle.objects.create(
             name="Kitchen",
-            slug="srv-kitchen-variant",
+            slug="srv-kitchen-product",
             discount_type="fixed",
             discount_value="0.00",
         )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_a.product, variant=variant_a
-        )
-        BundleItem.objects.create(
-            bundle=bundle, product=variant_b.product, variant=variant_b
-        )
+        BundleItem.objects.create(bundle=bundle, product=product_a)
+        BundleItem.objects.create(bundle=bundle, product=product_b)
 
         first = get_bundle_price(bundle)
         self.assertEqual(first["regular_price"], "12000.00")
-        variant_a.price = Decimal("6000.00")
-        variant_a.save()
+        product_a.price = Decimal("6000.00")
+        product_a.save()
         second = get_bundle_price(bundle)
         self.assertEqual(second["regular_price"], "13000.00")
         self.assertNotEqual(first["regular_price"], second["regular_price"])
@@ -572,28 +528,27 @@ class BundleAdminTests(APITestCase):
         """An admin can add a component item to a bundle."""
         _login(self.client)
         bundle = _make_bundle(name="Grow", slug="admin-grow")
-        product = _make_product("Blender", "blender", "BLD-1")
-        variant = _make_variant(product, "BLD-1-SILVER", "8000.00")
+        product = _make_product("Blender", "blender", "BLD-1", price="8000.00")
         url = reverse("api:bundles:admin-bundle-item-list-create", args=[bundle.pk])
         response = self.client.post(
             url,
-            {"product": product.id, "variant": variant.id, "quantity": 1},
+            {"product": product.id, "quantity": 1},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(bundle.items.count(), 3)
 
-    def test_admin_item_rejects_variant_from_other_product(self):
-        """A bundle item cannot pair a variant with a different product."""
+    def test_admin_item_rejects_inactive_product(self):
+        """A bundle item cannot use a product that cannot be priced."""
         _login(self.client)
         bundle = _make_bundle(name="Strict", slug="admin-strict")
-        product_a = _make_product("Kettle B", "kettle-b", "KTL-B")
-        product_b = _make_product("Toaster B", "toaster-b", "TST-B")
-        variant_b = _make_variant(product_b, "TST-B-1", "7000.00")
+        product = _make_product(
+            "Kettle B", "kettle-b", "KTL-B", price="5000.00", is_active=False
+        )
         url = reverse("api:bundles:admin-bundle-item-list-create", args=[bundle.pk])
         response = self.client.post(
             url,
-            {"product": product_a.pk, "variant": variant_b.pk},
+            {"product": product.pk, "quantity": 1},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

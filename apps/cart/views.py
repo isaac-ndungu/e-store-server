@@ -2,7 +2,7 @@
 
 The cart is deliberately public (``AllowAny``): there are no customer
 accounts, so possession of the ``estore_cart`` cookie is the cart's identity.
-Every response refreshes the cookie expiry. Views stay thin — line mutations
+Every response refreshes the cookie expiry. Views stay thin  -  line mutations
 live in the services layer and pricing in the selectors.
 """
 
@@ -63,7 +63,7 @@ def _cart_payload(cart):
     flat_lines = [
         {
             "id": entry["item"].pk,
-            "variant": entry["variant"],
+            "product": entry["product"],
             "bundle": entry["bundle"],
             "quantity": entry["quantity"],
             "unit_price": entry["unit_price"],
@@ -121,10 +121,10 @@ class CartItemCreateView(APIView):
         tags=["cart"],
     )
     def post(self, request):
-        """Add a variant line, merging with an identical line if present.
+        """Add a product line, merging with an identical line if present.
 
         Args:
-            request: the POST request with ``variant_id`` + quantity.
+            request: the POST request with ``product_id`` + quantity.
 
         Returns:
             Response: ``201 Created`` with the updated cart body.

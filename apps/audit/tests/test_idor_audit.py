@@ -18,7 +18,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import Address, User
-from apps.catalog.models import Category, Product, ProductVariant
+from apps.catalog.models import Category, Product
 from apps.orders.models import Order, OrderItem
 from apps.returns.models import ReturnRequest
 from apps.reviews.models import Review, ReviewPhoto
@@ -37,23 +37,17 @@ def _make_user(suffix, role="customer"):
 
 
 def _make_product():
-    """Create an active product with one active variant."""
+    """Create an active product."""
     category, _ = Category.objects.get_or_create(name="Appliances", slug="appliances")
-    product = Product.objects.create(
+    return Product.objects.create(
         name="Audit Product",
         slug="audit-product",
         sku="AUDIT-1",
         category=category,
-        is_active=True,
-    )
-    variant = ProductVariant.objects.create(
-        product=product,
-        sku="AUDIT-1-V",
         price="5000.00",
         package_weight="2.00",
         is_active=True,
     )
-    return product, variant
 
 
 def _login(client, user):
@@ -136,7 +130,7 @@ class ReviewPhotoIdorAuditTests(APITestCase):
         cache.clear()
         self.owner = _make_user("owner")
         self.other = _make_user("other")
-        self.product, _ = _make_product()
+        self.product = _make_product()
         self.photo = ReviewPhoto.objects.create(
             user=self.owner,
             review=Review.objects.create(
@@ -171,7 +165,7 @@ class OrderRoleAuditTests(APITestCase):
         self.staff = _make_user("staff", role="support")
         self.analyst = _make_user("analyst", role="analyst")
         self.customer = _make_user("customer")
-        _, self.variant = _make_product()
+        self.product = _make_product()
         self.order = Order.objects.create(
             phone="+254712345678",
             status="confirmed",
@@ -214,7 +208,7 @@ class ReturnIdorAuditTests(APITestCase):
         self.staff = _make_user("staff", role="support")
         self.analyst = _make_user("analyst", role="analyst")
         self.customer = _make_user("customer")
-        _, self.variant = _make_product()
+        self.product = _make_product()
         self.order = Order.objects.create(
             phone="+254712345678",
             status="delivered",
@@ -223,8 +217,8 @@ class ReturnIdorAuditTests(APITestCase):
         )
         self.order_item = OrderItem.objects.create(
             order=self.order,
-            product=self.variant.product,
-            variant_sku="AUDIT-1-V",
+            product=self.product,
+            product_sku="AUDIT-1",
             product_name="Audit Product",
             unit_price=Decimal("5000.00"),
             quantity=1,
@@ -303,7 +297,7 @@ class AnonymousAccessAuditTests(APITestCase):
             county="Nairobi",
             area_name="Westlands",
         )
-        product, self.variant = _make_product()
+        product = _make_product()
         self.order = Order.objects.create(
             phone="+254712345678",
             status="delivered",
@@ -316,7 +310,7 @@ class AnonymousAccessAuditTests(APITestCase):
         self.order_item = OrderItem.objects.create(
             order=self.order,
             product=product,
-            variant_sku="AUDIT-1-V",
+            product_sku="AUDIT-1",
             product_name="Audit Product",
             unit_price=Decimal("5000.00"),
             quantity=1,

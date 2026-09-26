@@ -30,7 +30,6 @@ from apps.catalog.models import (
     PricingTier,
     Product,
     ProductImage,
-    ProductVariant,
     RelatedProduct,
 )
 
@@ -98,7 +97,7 @@ def _unique_slug(model, value):
 
 
 def _unique_sku(value):
-    """Return a ``ProductVariant`` SKU that is unique in the test DB.
+    """Return a ``Product`` SKU that is unique in the test DB.
 
     Args:
         value (str): the base SKU.
@@ -108,7 +107,7 @@ def _unique_sku(value):
     """
     sku = value
     counter = 1
-    while ProductVariant.objects.filter(sku=sku).exists():
+    while Product.objects.filter(sku=sku).exists():
         sku = f"{value}-{counter}"
         counter += 1
     return sku
@@ -136,34 +135,24 @@ def _make_brand(**kwargs):
 
 
 def _make_product(**kwargs):
-    """Create a test product, optionally with a variant, and return it."""
+    """Create a test product and return it."""
     category = kwargs.get("category") or _make_category()
     brand = kwargs.get("brand") or _make_brand()
-    product = Product.objects.create(
-        name=kwargs.get("name", "Fridge 200L"),
-        slug=kwargs.get("slug", "fridge-200l"),
-        sku=kwargs.get("sku", "FRG-200"),
+    name = kwargs.get("name", "Fridge 200L")
+    slug = kwargs.get("slug") or _unique_slug(Product, name)
+    sku = kwargs.get("sku") or _unique_sku("FRG-200")
+    return Product.objects.create(
+        name=name,
+        slug=slug,
+        sku=sku,
         description=kwargs.get("description", "A 200L refrigerator."),
         category=category,
         brand=brand,
         is_active=kwargs.get("is_active", True),
         is_discontinued=kwargs.get("is_discontinued", False),
         specs=kwargs.get("specs", {"capacity": "200L", "energy_rating": "A"}),
-    )
-    if kwargs.get("with_variant", False):
-        _make_variant(product)
-    return product
-
-
-def _make_variant(product, **kwargs):
-    """Create a test variant for a product and return it."""
-    sku = kwargs.get("sku") or _unique_sku("FRG-200-SILVER")
-    return ProductVariant.objects.create(
-        product=product,
-        sku=sku,
-        attributes=kwargs.get("attributes", {"color": "Silver"}),
         price=kwargs.get("price", "45000.00"),
-        is_active=kwargs.get("is_active", True),
+        stock_status=kwargs.get("stock_status", "in_stock"),
     )
 
 
@@ -385,6 +374,7 @@ class QueryCountTests(APITestCase):
                 sku=f"QCOUNT-{i}",
                 category=self.category,
                 brand=self.brand,
+                price="1000.00",
             )
 
     def test_category_list_uses_single_query(self):
@@ -481,7 +471,7 @@ class ProductListBrowseTests(APITestCase):
         self.assertEqual(response.data["count"], 3)
 
     def test_ordering_by_price_is_not_allowed(self):
-        """Price ordering is not offered on the list (variants own price)."""
+        """Price ordering is not offered on the list."""
         response = self.client.get(URLS["products"], {"ordering": "price"})
         # Unknown orderings are silently ignored, not an error.
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -538,16 +528,21 @@ class ProductDetailBrowseTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.product = _make_product(with_variant=True)
+        self.product = _make_product()
 
-    def test_product_detail_is_public_and_includes_variants(self):
-        """A product detail returns nested variants and metadata."""
+    def test_product_detail_is_public_and_includes_pricing(self):
+        """A product detail returns nested pricing tiers and metadata."""
+        PricingTier.objects.create(
+            product=self.product, min_quantity=5, unit_price="41000.00"
+        )
         url = reverse("api:catalog:product-detail", args=[self.product.slug])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["name"], "Fridge 200L")
-        self.assertEqual(len(response.data["variants"]), 1)
-        self.assertEqual(response.data["variants"][0]["sku"], "FRG-200-SILVER")
+        self.assertEqual(response.data["price"], "45000.00")
+        self.assertEqual(len(response.data["pricing_tiers"]), 1)
+        self.assertEqual(response.data["pricing_tiers"][0]["min_quantity"], 5)
+        self.assertEqual(response.data["pricing_tiers"][0]["unit_price"], "41000.00")
 
     def test_inactive_product_detail_returns_404(self):
         """An inactive product is not retrievable by slug publicly."""
@@ -573,20 +568,20 @@ class ProductDetailBrowseTests(APITestCase):
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_price_endpoint_returns_variant_pricing(self):
-        """The price endpoint returns per-variant base and tier pricing."""
-        variant = self.product.variants.get()
+    def test_price_endpoint_returns_product_pricing(self):
+        """The price endpoint returns base and tier pricing for the product."""
         PricingTier.objects.create(
-            variant=variant, min_quantity=5, unit_price="41000.00"
+            product=self.product, min_quantity=5, unit_price="41000.00"
         )
         url = reverse("api:catalog:product-price", args=[self.product.slug])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["product_slug"], self.product.slug)
-        self.assertEqual(len(response.data["variants"]), 1)
-        self.assertEqual(response.data["variants"][0]["price"], "45000.00")
+        entry = response.data["product"]
+        self.assertEqual(entry["price"], "45000.00")
+        self.assertEqual(entry["base_price"], "45000.00")
         self.assertEqual(
-            response.data["variants"][0]["pricing_tiers"],
+            entry["pricing_tiers"],
             [{"min_quantity": 5, "unit_price": "41000.00"}],
         )
 
@@ -603,7 +598,7 @@ class ProductDetailBrowseTests(APITestCase):
         """The advertised price is the discount-reduced effective price.
 
         A client must never be shown the raw stored price when a sitewide
-        discount applies — the endpoint advertises the discounted amount and
+        discount applies  -  the endpoint advertises the discounted amount and
         reports the undiscounted base and saving for comparison.
         """
         from datetime import timedelta
@@ -613,7 +608,6 @@ class ProductDetailBrowseTests(APITestCase):
 
         from apps.promotions.models import Discount
 
-        variant = self.product.variants.get()
         Discount.objects.create(
             name="Launch",
             scope="sitewide",
@@ -625,26 +619,23 @@ class ProductDetailBrowseTests(APITestCase):
         url = reverse("api:catalog:product-price", args=[self.product.slug])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        entry = response.data["variants"][0]
-        self.assertEqual(entry["base_price"], str(variant.price))
+        entry = response.data["product"]
+        self.assertEqual(entry["base_price"], str(self.product.price))
         self.assertEqual(entry["price"], "40500.00")
         self.assertEqual(entry["discount"], "4500.00")
 
     def test_price_endpoint_query_bound(self):
-        """Variant, tier, and discount data are prefetched, not per-variant.
+        """Tier and discount data are prefetched, not queried per row.
 
-        Two product queries, one variant, one tier, and one discount query —
-        the discount query resolves the effective (discounted) price server-side.
+        One product query, one tier query, and discount queries  -  the
+        discount query resolves the effective (discounted) price server-side.
         """
-        product = _make_product(
-            name="Price Bound", slug="price-bound", sku="PR-BND", with_variant=True
-        )
-        variant = product.variants.get()
+        product = _make_product(name="Price Bound", slug="price-bound", sku="PR-BND")
         PricingTier.objects.create(
-            variant=variant, min_quantity=5, unit_price="41000.00"
+            product=product, min_quantity=5, unit_price="41000.00"
         )
         url = reverse("api:catalog:product-price", args=[product.slug])
-        with self.assertNumQueries(5):
+        with self.assertNumQueries(4):
             response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -664,7 +655,7 @@ class FacetSearchTests(APITestCase):
         FacetDefinition.objects.create(
             name="Color",
             key="color",
-            source_field="variant_attributes",
+            source_field="product_specs",
             facet_type="choice",
             is_active=True,
         )
@@ -679,15 +670,13 @@ class FacetSearchTests(APITestCase):
             name="Fridge 200L",
             slug="fac-fridge-200",
             sku="FAC-200",
-            specs={"capacity": "200L", "energy_rating": "A"},
-            with_variant=True,
+            specs={"capacity": "200L", "energy_rating": "A", "color": "Silver"},
         )
         _make_product(
             name="Fridge 300L",
             slug="fac-fridge-300",
             sku="FAC-300",
-            specs={"capacity": "300L", "energy_rating": "B"},
-            with_variant=True,
+            specs={"capacity": "300L", "energy_rating": "B", "color": "Black"},
         )
 
     def test_response_includes_facet_counts(self):
@@ -698,6 +687,8 @@ class FacetSearchTests(APITestCase):
         self.assertIn("Capacity", response.data["facets"])
         self.assertEqual(response.data["facets"]["Capacity"]["200L"], 1)
         self.assertEqual(response.data["facets"]["Capacity"]["300L"], 1)
+        self.assertEqual(response.data["facets"]["Color"]["Silver"], 1)
+        self.assertEqual(response.data["facets"]["Color"]["Black"], 1)
 
     def test_inactive_facets_excluded(self):
         """Inactive facet definitions do not appear in the response."""
@@ -732,6 +723,7 @@ class FacetSearchTests(APITestCase):
                 slug=f"fac-bulk-{i}",
                 sku=f"FAC-BULK-{i}",
                 specs={"capacity": f"{600 + i}L"},
+                price="1000.00",
             )
         with CaptureQueriesContext(connection) as ctx:
             response = self.client.get(URLS["products"])
@@ -839,7 +831,7 @@ class BrandAdminTests(APITestCase):
 
 
 class ProductAdminTests(APITestCase):
-    """Exercises admin product and variant CRUD."""
+    """Exercises admin product CRUD."""
 
     def setUp(self):
         cache.clear()
@@ -880,6 +872,7 @@ class ProductAdminTests(APITestCase):
                 "description": "A coffee maker.",
                 "category": category.id,
                 "brand": brand.id,
+                "price": "45000.00",
             },
             format="json",
         )
@@ -891,7 +884,12 @@ class ProductAdminTests(APITestCase):
         _make_product(sku="DUP-SKU")
         response = self.client.post(
             URLS["admin_products"],
-            {"name": "Other", "sku": "DUP-SKU", "description": "d"},
+            {
+                "name": "Other",
+                "sku": "DUP-SKU",
+                "description": "d",
+                "price": "45000.00",
+            },
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -902,7 +900,13 @@ class ProductAdminTests(APITestCase):
         _make_product(slug="dup-slug")
         response = self.client.post(
             URLS["admin_products"],
-            {"name": "Other", "slug": "dup-slug", "sku": "SKU-9", "description": "d"},
+            {
+                "name": "Other",
+                "slug": "dup-slug",
+                "sku": "SKU-9",
+                "description": "d",
+                "price": "45000.00",
+            },
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
@@ -924,49 +928,25 @@ class ProductAdminTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertEqual(Product.objects.count(), 0)
 
-    def test_admin_can_create_variant(self):
-        """An admin can add a variant to a product."""
+    def test_admin_can_update_product_price(self):
+        """An admin can update a product's sellable price."""
         product = _make_product()
-        url = reverse(
-            "api:catalog:admin-product-variant-list-create", args=[product.pk]
-        )
-        response = self.client.post(
-            url,
-            {
-                "sku": "FRG-200-RED",
-                "attributes": {"color": "Red"},
-                "price": "46000.00",
-            },
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(ProductVariant.objects.count(), 1)
-        self.assertEqual(ProductVariant.objects.get().product_id, product.pk)
-
-    def test_admin_can_update_variant(self):
-        """An admin can update a variant under a product."""
-        product = _make_product(with_variant=True)
-        variant = product.variants.get()
-        url = reverse(
-            "api:catalog:admin-product-variant-detail",
-            args=[product.pk, variant.pk],
-        )
+        url = reverse("api:catalog:admin-product-detail", args=[product.pk])
         response = self.client.patch(url, {"price": "50000.00"}, format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        variant.refresh_from_db()
-        self.assertEqual(str(variant.price), "50000.00")
+        product.refresh_from_db()
+        self.assertEqual(str(product.price), "50000.00")
 
-    def test_admin_can_delete_variant(self):
-        """An admin can delete a variant under a product."""
-        product = _make_product(with_variant=True)
-        variant = product.variants.get()
-        url = reverse(
-            "api:catalog:admin-product-variant-detail",
-            args=[product.pk, variant.pk],
+    def test_admin_can_mark_product_out_of_stock(self):
+        """An admin can flag a product out of stock."""
+        product = _make_product()
+        url = reverse("api:catalog:admin-product-detail", args=[product.pk])
+        response = self.client.patch(
+            url, {"stock_status": "out_of_stock"}, format="json"
         )
-        response = self.client.delete(url)
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertEqual(ProductVariant.objects.count(), 0)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        product.refresh_from_db()
+        self.assertEqual(product.stock_status, "out_of_stock")
 
 
 class NestedResourceOwnershipTests(APITestCase):
@@ -978,37 +958,32 @@ class NestedResourceOwnershipTests(APITestCase):
         _login(self.client)
         self.product_a = _make_product(name="A", slug="product-a", sku="A-1")
         self.product_b = _make_product(name="B", slug="product-b", sku="B-1")
-        self.variant_b = _make_variant(
-            self.product_b, sku="B-1-V", attributes={"color": "Blue"}
-        )
 
-    def test_pricing_tier_rejects_variant_from_other_product(self):
-        """A pricing tier cannot be attached to a variant under another product."""
+    def test_pricing_tier_belongs_to_parent_product(self):
+        """A pricing tier created under a product is owned by that product."""
         url = reverse(
             "api:catalog:admin-pricing-tier-list-create", args=[self.product_a.pk]
         )
         response = self.client.post(
             url,
-            {"variant": self.variant_b.id, "min_quantity": 5, "unit_price": "100.00"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(PricingTier.objects.count(), 0)
-
-    def test_pricing_tier_accepts_variant_of_parent_product(self):
-        """A pricing tier for a variant of the parent product succeeds."""
-        variant_a = _make_variant(
-            self.product_a, sku="A-1-V", attributes={"color": "Red"}
-        )
-        url = reverse(
-            "api:catalog:admin-pricing-tier-list-create", args=[self.product_a.pk]
-        )
-        response = self.client.post(
-            url,
-            {"variant": variant_a.id, "min_quantity": 5, "unit_price": "41000.00"},
+            {"min_quantity": 5, "unit_price": "41000.00"},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        tier = PricingTier.objects.get()
+        self.assertEqual(tier.product_id, self.product_a.pk)
+
+    def test_pricing_tier_detail_rejects_foreign_product_scope(self):
+        """A tier cannot be addressed through a product that does not own it."""
+        tier = PricingTier.objects.create(
+            product=self.product_b, min_quantity=5, unit_price="100.00"
+        )
+        url = reverse(
+            "api:catalog:admin-pricing-tier-detail",
+            args=[self.product_a.pk, tier.pk],
+        )
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
         self.assertEqual(PricingTier.objects.count(), 1)
 
     def test_related_product_rejects_self_reference(self):
@@ -1120,11 +1095,11 @@ class FacetDefinitionCRUDTests(APITestCase):
         """A facet over a non-allowlisted model column is rejected.
 
         Money, timestamps, and other non-facet columns must never become a
-        facet source — each one would ship unbounded aggregation over data
+        facet source  -  each one would ship unbounded aggregation over data
         storefronts do not filter by.
         """
         _login(self.client)
-        for field_name in ("created_at", "price", "review_count"):
+        for field_name in ("created_at", "review_count"):
             response = self.client.post(
                 URLS["admin_facets"],
                 {
@@ -1180,32 +1155,26 @@ class AtomicCreationTests(APITestCase):
     def test_create_product_rolls_back_on_child_failure(self):
         """A failing child create rolls back the product and siblings.
 
-        Uses the service directly with a duplicate variant SKU to force a
-        mid-way failure and confirm nothing is left orphaned.
+        Uses the service directly with a tier missing its unit price to
+        force a mid-way failure and confirm nothing is left orphaned.
         """
         from django.db import IntegrityError
 
         from apps.catalog.services import create_product
 
-        _make_product(
-            name="Seeder",
-            slug="seeder",
-            sku="SEED-1",
-            with_variant=True,
-        )
-        _make_variant(Product.objects.get(sku="SEED-1"), sku="SEED-VAR-1")
         with self.assertRaises(IntegrityError):
             create_product(
                 name="Atomic Product",
                 sku="ATOMIC-1",
                 description="d",
-                variants=[
-                    {"sku": "ATO-1", "price": "100.00"},
-                    {"sku": "SEED-VAR-1", "price": "200.00"},
+                price="100.00",
+                pricing_tiers=[
+                    {"min_quantity": 1, "unit_price": "100.00"},
+                    {"min_quantity": 5},
                 ],
             )
-        self.assertEqual(Product.objects.count(), 1)
-        self.assertEqual(ProductVariant.objects.count(), 2)
+        self.assertEqual(Product.objects.count(), 0)
+        self.assertEqual(PricingTier.objects.count(), 0)
 
     def test_create_product_with_children_succeeds(self):
         """A successful multi-child create makes the product and children."""
@@ -1215,13 +1184,14 @@ class AtomicCreationTests(APITestCase):
             name="Complete Product",
             sku="COMPLETE-1",
             description="d",
-            variants=[
-                {"sku": "CP-1", "price": "100.00"},
-                {"sku": "CP-2", "price": "200.00"},
+            price="100.00",
+            pricing_tiers=[
+                {"min_quantity": 1, "unit_price": "100.00"},
+                {"min_quantity": 5, "unit_price": "90.00"},
             ],
         )
         self.assertEqual(Product.objects.count(), 1)
-        self.assertEqual(product.variants.count(), 2)
+        self.assertEqual(product.pricing_tiers.count(), 2)
 
 
 class ImageUploadTests(APITestCase):
@@ -1337,7 +1307,7 @@ class NumericAndRangeFacetTests(APITestCase):
         FacetDefinition.objects.create(
             name="Price",
             field_name="price",
-            source_field="variant_field",
+            source_field="product_field",
             facet_type="range",
             is_active=True,
         )
@@ -1346,23 +1316,17 @@ class NumericAndRangeFacetTests(APITestCase):
             slug="num-fridge-small",
             sku="NUM-200",
             specs={"capacity": 200, "load_kg": 50},
-            with_variant=True,
+            price="30000.00",
         )
         Product.objects.filter(sku="NUM-200").update(wattage="500.00")
-        _make_variant(
-            Product.objects.get(sku="NUM-200"), sku="NUM-200-V", price="30000.00"
-        )
         _make_product(
             name="Big Fridge",
             slug="num-fridge-big",
             sku="NUM-400",
             specs={"capacity": 400, "load_kg": 120},
-            with_variant=True,
+            price="45000.00",
         )
         Product.objects.filter(sku="NUM-400").update(wattage="1500.00")
-        _make_variant(
-            Product.objects.get(sku="NUM-400"), sku="NUM-400-V", price="45000.00"
-        )
 
     def test_numeric_query_param_matches_stored_int(self):
         """A numeric query param matches an integer JSONB value."""
@@ -1386,8 +1350,8 @@ class NumericAndRangeFacetTests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["slug"], "num-fridge-small")
 
-    def test_variant_field_range_filter(self):
-        """A range facet on a variant field filters through the variant join."""
+    def test_price_range_filter(self):
+        """A range facet on the product price filters directly."""
         response = self.client.get(
             URLS["products"], {"price_min": "30000", "price_max": "40000"}
         )
@@ -1475,6 +1439,7 @@ class PrimaryImageTests(APITestCase):
             slug="multi-image",
             sku="MULTI-IMG-1",
             description="d",
+            price="10000.00",
             images=[
                 {"image": _png_upload(name="one.png"), "is_primary": True},
                 {"image": _png_upload(name="two.png"), "is_primary": True},
@@ -1530,6 +1495,7 @@ class UploadValidatorTests(APITestCase):
                 "name": "Manual Product",
                 "sku": "MANUAL-1",
                 "description": "d",
+                "price": "10000.00",
                 "manual_pdf": SimpleUploadedFile(
                     "manual.txt", b"not a pdf", content_type="text/plain"
                 ),
@@ -1546,6 +1512,7 @@ class UploadValidatorTests(APITestCase):
                 "name": "Manual Product",
                 "sku": "MANUAL-2",
                 "description": "d",
+                "price": "10000.00",
                 "manual_pdf": _pdf_upload(),
             },
             format="multipart",
@@ -1618,10 +1585,6 @@ class NestedResourceUpdateTests(APITestCase):
         _login(self.client)
         self.product_a = _make_product(name="A", slug="nested-a", sku="NA-1")
         self.product_b = _make_product(name="B", slug="nested-b", sku="NB-1")
-        self.variant_a = _make_variant(self.product_a, sku="NA-1-V")
-        self.variant_b = _make_variant(
-            self.product_b, sku="NB-1-V", attributes={"color": "Blue"}
-        )
 
     def test_image_update(self):
         """An image's alt text and ordering can be updated in place."""
@@ -1646,7 +1609,7 @@ class NestedResourceUpdateTests(APITestCase):
     def test_pricing_tier_update(self):
         """A pricing tier's price can be updated in place."""
         tier = PricingTier.objects.create(
-            variant=self.variant_a, min_quantity=5, unit_price="41000.00"
+            product=self.product_a, min_quantity=5, unit_price="41000.00"
         )
         url = reverse(
             "api:catalog:admin-pricing-tier-detail",
@@ -1657,17 +1620,19 @@ class NestedResourceUpdateTests(APITestCase):
         tier.refresh_from_db()
         self.assertEqual(tier.unit_price, Decimal("39999.99"))
 
-    def test_pricing_tier_update_rejects_foreign_variant(self):
-        """Moving a tier onto another product's variant is rejected."""
+    def test_pricing_tier_update_rejects_foreign_product_scope(self):
+        """A tier cannot be updated through a product that does not own it."""
         tier = PricingTier.objects.create(
-            variant=self.variant_a, min_quantity=5, unit_price="41000.00"
+            product=self.product_a, min_quantity=5, unit_price="41000.00"
         )
         url = reverse(
             "api:catalog:admin-pricing-tier-detail",
-            args=[self.product_a.pk, tier.pk],
+            args=[self.product_b.pk, tier.pk],
         )
-        response = self.client.patch(url, {"variant": self.variant_b.pk}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        response = self.client.patch(url, {"unit_price": "1.00"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        tier.refresh_from_db()
+        self.assertEqual(tier.unit_price, Decimal("41000.00"))
 
     def test_related_product_update(self):
         """A related-product link's type and order can be updated."""
@@ -1748,7 +1713,7 @@ class ProductDetailQueryTests(APITestCase):
 
     def test_product_detail_is_query_bound(self):
         """Detail serialization does not fire per-relation count queries."""
-        product = _make_product(with_variant=True)
+        product = _make_product()
         ProductImage.objects.create(
             product=product, image=_png_upload(), is_primary=True
         )
@@ -1757,5 +1722,5 @@ class ProductDetailQueryTests(APITestCase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["category"]["name"], product.category.name)
-        # Product, variant prefetch (+ tier prefetch), and image prefetch.
+        # Product, tier prefetch, and image prefetch.
         self.assertLessEqual(len(ctx.captured_queries), 4)

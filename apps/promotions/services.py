@@ -50,16 +50,16 @@ def _in_window(start, end):
     return True
 
 
-def _discounts_for_variant(variant, within_bundle):
-    """Return applicable, currently active discounts for a variant.
+def _discounts_for_product(product, within_bundle):
+    """Return applicable, currently active discounts for a product.
 
     Filters active, in-window discounts with a redemption budget remaining,
-    matched to the variant by the discount's scope. When ``within_bundle`` is
+    matched to the product by the discount's scope. When ``within_bundle`` is
     True only discounts with ``applies_within_bundles`` set are returned, so
     individual-item promotions do not stack with a bundle's own discount.
 
     Args:
-        variant (ProductVariant): the variant to price.
+        product (Product): the product to price.
         within_bundle (bool): whether the price is inside a bundle.
 
     Returns:
@@ -80,41 +80,39 @@ def _discounts_for_variant(variant, within_bundle):
             discount.redemption_count >= discount.max_redemptions
         ):
             continue
-        if _discount_matches(discount, variant):
+        if _discount_matches(discount, product):
             applicable.append(discount)
     return applicable
 
 
-def _discount_matches(discount, variant):
-    """Return whether a discount's scope covers the variant.
+def _discount_matches(discount, product):
+    """Return whether a discount's scope covers the product.
 
     A bundle-scoped discount applies to the whole bundle's price, not to an
-    individual variant lookup, so it is never returned here.
+    individual product lookup, so it is never returned here.
 
     Args:
         discount (Discount): the discount to evaluate.
-        variant (ProductVariant): the variant being priced.
+        product (Product): the product being priced.
 
     Returns:
-        bool: True when the discount applies to the variant.
+        bool: True when the discount applies to the product.
     """
     scope = discount.scope
     if scope == "bundle":
         return False
     if scope == "sitewide":
         return True
-    if scope == "variant":
-        return discount.variants.filter(pk=variant.pk).exists()
     if scope == "product":
-        return discount.products.filter(pk=variant.product_id).exists()
+        return discount.products.filter(pk=product.pk).exists()
     if scope == "category":
-        category_id = variant.product.category_id
+        category_id = product.category_id
         return (
             category_id is not None
             and discount.categories.filter(pk=category_id).exists()
         )
     if scope == "brand":
-        brand_id = variant.product.brand_id
+        brand_id = product.brand_id
         return brand_id is not None and discount.brands.filter(pk=brand_id).exists()
     return False
 
@@ -138,23 +136,23 @@ def _apply_discount(price, discount):
     return discounted.quantize(_PENNY, rounding=ROUND_HALF_UP)
 
 
-def _best_discount(variant, within_bundle):
-    """Return the best discount for a variant, or None.
+def _best_discount(product, within_bundle):
+    """Return the best discount for a product, or None.
 
     Chooses the highest-priority applicable discount; ties go to the one
     yielding the lowest price.
 
     Args:
-        variant (ProductVariant): the variant to price.
+        product (Product): the product to price.
         within_bundle (bool): whether the price is inside a bundle.
 
     Returns:
         Discount | None: the winning discount, or None when none apply.
     """
-    candidates = _discounts_for_variant(variant, within_bundle)
+    candidates = _discounts_for_product(product, within_bundle)
     if not candidates:
         return None
-    base = _money(variant.price)
+    base = _money(product.price)
     candidates.sort(key=lambda discount: -discount.priority)
     top_priority = candidates[0].priority
     return min(
@@ -163,35 +161,35 @@ def _best_discount(variant, within_bundle):
     )
 
 
-def get_effective_price(variant, coupon=None, within_bundle=False):
-    """Return the effective unit price of a variant.
+def get_effective_price(product, coupon=None, within_bundle=False):
+    """Return the effective unit price of a product.
 
     The effective price is the current catalogue price reduced by the best
     applicable discount and, when a coupon is supplied, that coupon's value
     (subject to the coupon's stacking rule). All money values are recomputed
-    server-side here — a client never supplies a price.
+    server-side here  -  a client never supplies a price.
 
-    The discount-reduced result is cached per variant and refreshed whenever
-    a discount or variant price changes (via the generation counter). The
+    The discount-reduced result is cached per product and refreshed whenever
+    a discount or product price changes (via the generation counter). The
     coupon adjustment is applied on top at call time rather than cached,
     because coupon state (redemption counts) is far more volatile.
 
     Args:
-        variant (ProductVariant): the variant to price.
+        product (Product): the product to price.
         coupon (Coupon | None): an optional coupon to apply.
         within_bundle (bool): whether the price is inside a bundle.
 
     Returns:
-        dict: ``variant``, ``base_price``, ``price``, ``discount``,
+        dict: ``product``, ``base_price``, ``price``, ``discount``,
             ``discount_type``, ``discount_name``, ``badge_text``,
             ``coupon_discount``, and ``within_bundle``, with money as strings.
     """
-    base = _money(variant.price)
-    discounted, discount_data = _discount_price(variant, within_bundle, base)
-    coupon_savings = _coupon_adjustment(variant, discounted, base, coupon)
+    base = _money(product.price)
+    discounted, discount_data = _discount_price(product, within_bundle, base)
+    coupon_savings = _coupon_adjustment(product, discounted, base, coupon)
     final_price = discounted - coupon_savings
     return {
-        "variant": variant.pk,
+        "product": product.pk,
         "base_price": str(base),
         "price": str(final_price),
         "discount": str(_discount_savings(base, final_price)),
@@ -203,24 +201,24 @@ def get_effective_price(variant, coupon=None, within_bundle=False):
     }
 
 
-def _discount_price(variant, within_bundle, base):
+def _discount_price(product, within_bundle, base):
     """Return the price after the best discount, using the cache when warm.
 
     Args:
-        variant (ProductVariant): the variant to price.
+        product (Product): the product to price.
         within_bundle (bool): whether the price is inside a bundle.
-        base (Decimal): the variant's base price.
+        base (Decimal): the product's base price.
 
     Returns:
         tuple: ``(discounted_price, discount_metadata)`` where the metadata
             is a dict of ``discount_type``, ``discount_name``, ``badge_text``.
     """
     generation = cache.get_discount_generation()
-    cached = cache.get_cached_effective_price(variant.pk, within_bundle, generation)
+    cached = cache.get_cached_effective_price(product.pk, within_bundle, generation)
     if cached is not None:
         return Decimal(cached["price"]), cached
 
-    discount = _best_discount(variant, within_bundle)
+    discount = _best_discount(product, within_bundle)
     if discount is None:
         metadata = {
             "discount_type": None,
@@ -237,7 +235,7 @@ def _discount_price(variant, within_bundle, base):
             "badge_text": discount.badge_text,
             "price": str(price),
         }
-    cache.cache_effective_price(variant.pk, within_bundle, generation, metadata)
+    cache.cache_effective_price(product.pk, within_bundle, generation, metadata)
     return price, metadata
 
 
@@ -254,8 +252,8 @@ def _discount_savings(price, final_price):
     return (price - final_price).quantize(_PENNY, rounding=ROUND_HALF_UP)
 
 
-def _coupon_applies_to_variant(coupon, variant):
-    """Return whether a coupon's product/category restrictions cover a variant.
+def _coupon_applies_to_product(coupon, product):
+    """Return whether a coupon's product/category restrictions cover a product.
 
     A coupon with neither ``applies_to_products`` nor ``applies_to_categories``
     is unrestricted and applies to every product. Otherwise it applies only
@@ -263,12 +261,11 @@ def _coupon_applies_to_variant(coupon, variant):
 
     Args:
         coupon (Coupon): the coupon.
-        variant (ProductVariant): the variant being priced.
+        product (Product): the product being priced.
 
     Returns:
-        bool: True when the coupon may discount this variant's product.
+        bool: True when the coupon may discount this product.
     """
-    product = variant.product
     if coupon.applies_to_products.exists():
         if coupon.applies_to_products.filter(pk=product.pk).exists():
             return True
@@ -284,20 +281,20 @@ def _coupon_applies_to_variant(coupon, variant):
     return True
 
 
-def _coupon_adjustment(variant, discounted, base, coupon):
+def _coupon_adjustment(product, discounted, base, coupon):
     """Return a coupon's price reduction, honoring stacking and scope rules.
 
     A coupon contributes to a unit price only when it is intrinsically
     applicable (active, in window), its product/category restrictions cover
-    the variant, and — where an automatic discount has already reduced the
-    price — the coupon is marked ``stackable_with_discounts``. A
+    the product, and  -  where an automatic discount has already reduced the
+    price  -  the coupon is marked ``stackable_with_discounts``. A
     ``free_shipping`` coupon reduces only shipping, which is outside this
     unit-price function's scope, so it contributes nothing here.
 
     Args:
-        variant (ProductVariant): the variant being priced.
+        product (Product): the product being priced.
         discounted (Decimal): the price after any automatic discount.
-        base (Decimal): the variant's base (undiscounted) price.
+        base (Decimal): the product's base (undiscounted) price.
         coupon (Coupon | None): the coupon to apply.
 
     Returns:
@@ -307,7 +304,7 @@ def _coupon_adjustment(variant, discounted, base, coupon):
         return Decimal("0.00")
     if not coupon.is_active or not _in_window(coupon.starts_at, coupon.ends_at):
         return Decimal("0.00")
-    if not _coupon_applies_to_variant(coupon, variant):
+    if not _coupon_applies_to_product(coupon, product):
         return Decimal("0.00")
     if coupon.discount_type == "free_shipping":
         return Decimal("0.00")
@@ -321,21 +318,21 @@ def _coupon_adjustment(variant, discounted, base, coupon):
     return min(savings, discounted).quantize(_PENNY, rounding=ROUND_HALF_UP)
 
 
-def effective_unit_price(variant, within_bundle=False):
-    """Return the effective unit price of a variant as a ``Decimal``.
+def effective_unit_price(product, within_bundle=False):
+    """Return the effective unit price of a product as a ``Decimal``.
 
     Convenience wrapper for callers (notably bundle pricing) that only need
     the numeric unit price rather than the display breakdown.
 
     Args:
-        variant (ProductVariant): the variant to price.
+        product (Product): the product to price.
         within_bundle (bool): whether the price is inside a bundle.
 
     Returns:
         Decimal: the effective unit price.
     """
-    base = _money(variant.price)
-    price, _ = _discount_price(variant, within_bundle, base)
+    base = _money(product.price)
+    price, _ = _discount_price(product, within_bundle, base)
     return price
 
 
@@ -416,7 +413,6 @@ def _scope_relation_key(scope):
         str: the matching many-to-many relation name.
     """
     return {
-        "variant": "variants",
         "product": "products",
         "category": "categories",
         "brand": "brands",
@@ -433,7 +429,7 @@ def _extract_relations(data):
         dict: the relation id lists, keyed by relation name.
     """
     relations = {}
-    for relation in ("variants", "products", "categories", "brands"):
+    for relation in ("products", "categories", "brands"):
         if relation in data:
             relations[relation] = data.pop(relation)
     return relations

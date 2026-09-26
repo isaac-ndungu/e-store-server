@@ -1,10 +1,10 @@
 """Data models for the bundles app.
 
-A dynamic ``Bundle`` groups several catalogue products (or specific variants)
-that a shopper can buy together, priced as a set. Buying a bundle decomposes
-into real per-component order lines at checkout with correct per-component
-tax treatment — never a single opaque line for the whole bundle
-— which is why each ``BundleItem`` points at a specific component.
+A dynamic ``Bundle`` groups several catalogue products that a shopper can
+buy together, priced as a set. Buying a bundle decomposes into real
+per-component order lines at checkout with correct per-component
+tax treatment  -  never a single opaque line for the whole bundle
+ -  which is why each ``BundleItem`` points at a specific component.
 
 """
 
@@ -66,11 +66,10 @@ class Bundle(models.Model):
 class BundleItem(models.Model):
     """A single component of a bundle.
 
-    ``product`` and, when the component is a specific colour/size/etc.,
-    ``variant`` select the item. When ``variant`` is null the bundle matches
-    the product broadly; quantity is the number of that component included.
-    ``is_optional`` marks a component the shopper may drop. ``product`` is a
-    plain ``ForeignKey`` because one product can appear in many bundles.
+    ``product`` selects the component; quantity is the number of that
+    component included. ``is_optional`` marks a component the shopper may
+    drop. ``product`` is a plain ``ForeignKey`` because one product can
+    appear in many bundles.
 
     ``product`` is ``CASCADE``: deleting a catalogue product silently removes
     it from every bundle that references it, which can leave those bundles
@@ -81,12 +80,6 @@ class BundleItem(models.Model):
 
     bundle = models.ForeignKey(Bundle, related_name="items", on_delete=models.CASCADE)
     product = models.ForeignKey("catalog.Product", on_delete=models.CASCADE)
-    variant = models.ForeignKey(
-        "catalog.ProductVariant",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-    )
     quantity = models.PositiveIntegerField(default=1)
     is_optional = models.BooleanField(default=False)
 

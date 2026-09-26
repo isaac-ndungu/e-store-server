@@ -3,12 +3,11 @@
 The smart-collection refresh is the core here. A smart ``Collection`` is
 governed by one rule that decides which products belong to it:
 
-- ``new_arrivals`` — products created within the rule window, newest first.
-- ``restocked`` — products with a restock recorded within the window.
-- ``on_sale`` — products with a currently active automatic discount.
-- ``low_stock`` (almost gone) — products with an active variant staff have
-  flagged ``low_stock``. The flag is set by hand; no quantity stands behind
-  it.
+- ``new_arrivals``  -  products created within the rule window, newest first.
+- ``restocked``  -  products with a restock recorded within the window.
+- ``on_sale``  -  products with a currently active automatic discount.
+- ``low_stock`` (almost gone)  -  products staff have flagged ``low_stock``.
+  The flag is set by hand; no quantity stands behind it.
 
 Each refresh deletes the collection's previous smart membership rows and
 recreates them from the freshly computed product set inside one transaction,
@@ -16,8 +15,8 @@ then caches the resulting product id list per slug. Manual collections are
 untouched. Collecting the product ids in a single query and matching them in
 Python keeps the refresh cheap even with many candidates.
 
-``best_sellers`` is a valid smart rule on the model, but its data source —
-order-line counts — is not yet built, so it currently computes to an empty
+``best_sellers`` is a valid smart rule on the model, but its data source  - 
+order-line counts  -  is not yet built, so it currently computes to an empty
 membership. Its computation slots into ``_SMART_RULE_COMPUTERS`` when that
 feature lands.
 """
@@ -115,11 +114,11 @@ def _restocked(collection):
 
 
 def _low_stock(collection):
-    """Return products with a variant flagged low on stock.
+    """Return products flagged low on stock.
 
     Availability is a staff-set flag, not a counted quantity: a product
-    qualifies when any of its active variants carries ``stock_status``
-    ``low_stock``. ``rule_threshold`` is ignored.
+    qualifies when it is active and carries ``stock_status`` ``low_stock``.
+    ``rule_threshold`` is ignored.
 
     Args:
         collection (Collection): the smart collection.
@@ -127,16 +126,10 @@ def _low_stock(collection):
     Returns:
         list[int]: product primary keys.
     """
-    from apps.catalog.models import Product, ProductVariant
+    from apps.catalog.models import Product
 
-    low_variant_ids = ProductVariant.objects.filter(
-        is_active=True, stock_status="low_stock"
-    ).values("pk")
     return list(
-        Product.objects.filter(
-            is_active=True,
-            variants__in=low_variant_ids,
-        )
+        Product.objects.filter(is_active=True, stock_status="low_stock")
         .distinct()
         .values_list("pk", flat=True)
     )
@@ -146,7 +139,7 @@ def _on_sale(collection):
     """Return products with a currently active discount.
 
     A product qualifies when at least one active, in-window discount applies
-    to it under any scope other than ``bundle`` — a bundle discount reduces
+    to it under any scope other than ``bundle``  -  a bundle discount reduces
     the bundle's own price, not the price of the products inside it. The
     result is ordered by discount priority so the most prominent offers come
     first.
@@ -180,9 +173,7 @@ def _on_sale(collection):
     seen = set()
     for discount in budgets:
         scope = discount.scope
-        if scope == "variant":
-            ids = discount.variants.values_list("product_id", flat=True)
-        elif scope == "product":
+        if scope == "product":
             ids = discount.products.values_list("pk", flat=True)
         elif scope == "category":
             ids = discount.categories.values_list("products__pk", flat=True)

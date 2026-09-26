@@ -1,6 +1,6 @@
 """Serializers for the cart app.
 
-Write serializers whitelist exactly what a visitor may send (variant,
+Write serializers whitelist exactly what a visitor may send (product,
 quantity, optional bundle); prices are never an input. Read serializers
 carry the server-computed unit and line totals alongside the line identity.
 """
@@ -13,7 +13,7 @@ from apps.cart.selectors import MAX_LINE_QUANTITY
 class CartItemAddSerializer(serializers.Serializer):
     """Input for adding a line to the visitor's cart."""
 
-    variant_id = serializers.IntegerField(min_value=1)
+    product_id = serializers.IntegerField(min_value=1)
     quantity = serializers.IntegerField(
         min_value=1, max_value=MAX_LINE_QUANTITY, default=1
     )
@@ -32,10 +32,9 @@ class CartLineSerializer(serializers.Serializer):
     """Read shape for one priced cart line."""
 
     id = serializers.IntegerField()
-    variant_id = serializers.IntegerField(source="variant.id")
-    sku = serializers.CharField(source="variant.sku")
+    product_id = serializers.IntegerField(source="product.id")
+    sku = serializers.CharField(source="product.sku")
     product_name = serializers.SerializerMethodField()
-    attributes = serializers.DictField(source="variant.attributes")
     bundle_id = serializers.IntegerField(source="bundle.id", allow_null=True)
     bundle_name = serializers.SerializerMethodField()
     quantity = serializers.IntegerField()
@@ -44,18 +43,15 @@ class CartLineSerializer(serializers.Serializer):
     added_at = serializers.DateTimeField(source="item.added_at")
 
     def get_product_name(self, obj):
-        """Return the line's product name, falling back to the sku.
+        """Return the line's product name.
 
         Args:
             obj (dict): the priced line entry.
 
         Returns:
-            str: the product name or variant sku.
+            str: the product name.
         """
-        product = getattr(obj["variant"], "product", None)
-        if product is not None:
-            return product.name
-        return obj["variant"].sku
+        return obj["product"].name
 
     def get_bundle_name(self, obj):
         """Return the bundle name, or None for a standalone line.

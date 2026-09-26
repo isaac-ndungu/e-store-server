@@ -1,12 +1,11 @@
 """Data models for the catalog app.
 
 Defines the product catalog: hierarchical ``Category`` tree, ``Brand`` registry,
-``Product`` with JSON specs/features, ``ProductImage`` gallery, ``ProductVariant``
-with per-variant pricing, ``RelatedProduct`` cross-links, volume-based
-``PricingTier``, and ``FacetDefinition`` metadata that drives the faceted
-search endpoint.
+``Product`` sellable unit with pricing and stock status, ``ProductImage``
+gallery, ``RelatedProduct`` cross-links, volume-based ``PricingTier``, and
+``FacetDefinition`` metadata that drives the faceted search endpoint.
 
-Money fields are ``DecimalField`` throughout — never ``float`` — to avoid
+Money fields are ``DecimalField`` throughout  -  never ``float``  -  to avoid
 rounding errors in price and discount calculations.
 """
 
@@ -60,7 +59,7 @@ class Brand(models.Model):
     """A product brand or manufacturer.
 
     ``is_authorized_dealer`` flags whether the business is an authorized
-    dealer for this brand — displayed as a trust signal on the storefront.
+    dealer for this brand  -  displayed as a trust signal on the storefront.
     """
 
     name = models.CharField(max_length=255)
@@ -84,9 +83,15 @@ class Brand(models.Model):
 class Product(models.Model):
     """A sellable product in the catalog.
 
-    Products carry structured ``specs`` (JSON) and ``features`` (JSON) for
-    display and faceted search. The ``tax_class`` field determines VAT
-    treatment at checkout — a cart can mix standard/zero-rated/exempt products,
+    Each product is a single sellable unit carrying its own ``sku``,
+    ``price``, and optional ``compare_at_price`` / ``cost_price``.
+    ``package_weight`` and ``package_dimensions`` are staff reference data
+    for quoting delivery, not inputs to any fee formula. ``stock_status``
+    is set manually by staff  -  there is no quantity tracking behind it.
+
+    Products also carry structured ``specs`` (JSON) and ``features`` (JSON)
+    for display and faceted search. The ``tax_class`` field determines VAT
+    treatment at checkout  -  a cart can mix standard/zero-rated/exempt products,
     so tax is always computed per line item, never from a single flat rate.
 
     ``last_restocked_at`` drives the ``restocked`` smart-collection rule.
@@ -112,6 +117,11 @@ class Product(models.Model):
         ("manufacturer", "Manufacturer"),
         ("dealer", "Dealer/Local"),
     )
+    STOCK_STATUS_CHOICES = (
+        ("in_stock", "In Stock"),
+        ("low_stock", "Low Stock"),
+        ("out_of_stock", "Out of Stock"),
+    )
 
     product_type = models.CharField(
         max_length=20, choices=PRODUCT_TYPE_CHOICES, default="physical"
@@ -131,6 +141,29 @@ class Product(models.Model):
     name = models.CharField(max_length=255)
     slug = models.SlugField(unique=True)
     sku = models.CharField(max_length=100, unique=True)
+    supplier_sku = models.CharField(max_length=100, blank=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2)
+    compare_at_price = models.DecimalField(
+        max_digits=12, decimal_places=2, blank=True, null=True
+    )
+    cost_price = models.DecimalField(
+        max_digits=12, decimal_places=2, blank=True, null=True
+    )
+    barcode = models.CharField(max_length=100, blank=True)
+    weight = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
+    dimensions = models.JSONField(default=dict, blank=True)
+    package_weight = models.DecimalField(
+        max_digits=10, decimal_places=2, blank=True, null=True
+    )
+    package_dimensions = models.JSONField(default=dict, blank=True)
+    pieces_per_unit = models.PositiveIntegerField(default=1)
+    stock_status = models.CharField(
+        max_length=20,
+        choices=STOCK_STATUS_CHOICES,
+        default="in_stock",
+        help_text="Staff-set availability. No quantity is tracked behind it.",
+    )
+    expected_restock_date = models.DateField(null=True, blank=True)
     short_description = models.CharField(max_length=500, blank=True)
     description = models.TextField()
     specs = models.JSONField(default=dict, blank=True)
@@ -198,6 +231,7 @@ class Product(models.Model):
             models.Index(fields=["sku"], name="prod_sku_idx"),
             models.Index(fields=["name"], name="prod_name_idx"),
             models.Index(fields=["is_active"], name="prod_active_idx"),
+            models.Index(fields=["stock_status"], name="prod_stock_status_idx"),
             models.Index(fields=["is_featured"], name="prod_featured_idx"),
             models.Index(fields=["category"], name="prod_category_idx"),
             models.Index(fields=["brand"], name="prod_brand_idx"),
@@ -262,74 +296,6 @@ class ProductImage(models.Model):
         return f"Image for {self.product_id} ({self.sort_order})"
 
 
-class ProductVariant(models.Model):
-    """A specific variant of a product (e.g. colour, size, capacity).
-
-    Every variant carries its own ``sku``, ``price``, and optional
-    ``compare_at_price`` / ``cost_price``. ``attributes`` is a JSON dict
-    holding the variant-specific attributes (e.g. ``{"color": "Silver",
-    "capacity": "200L"}``). ``package_weight`` and ``package_dimensions``
-    are staff reference data for quoting delivery, not inputs to any fee
-    formula. ``stock_status`` is set manually by staff — there is no
-    quantity tracking behind it.
-    """
-
-    STOCK_STATUS_CHOICES = (
-        ("in_stock", "In Stock"),
-        ("low_stock", "Low Stock"),
-        ("out_of_stock", "Out of Stock"),
-    )
-
-    product = models.ForeignKey(
-        Product, related_name="variants", on_delete=models.CASCADE
-    )
-    sku = models.CharField(max_length=100, unique=True)
-    supplier_sku = models.CharField(max_length=100, blank=True)
-    attributes = models.JSONField(default=dict)
-    price = models.DecimalField(max_digits=12, decimal_places=2)
-    compare_at_price = models.DecimalField(
-        max_digits=12, decimal_places=2, blank=True, null=True
-    )
-    cost_price = models.DecimalField(
-        max_digits=12, decimal_places=2, blank=True, null=True
-    )
-    barcode = models.CharField(max_length=100, blank=True)
-    weight = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
-    dimensions = models.JSONField(default=dict, blank=True)
-    package_weight = models.DecimalField(
-        max_digits=10, decimal_places=2, blank=True, null=True
-    )
-    package_dimensions = models.JSONField(default=dict, blank=True)
-    pieces_per_unit = models.PositiveIntegerField(default=1)
-    stock_status = models.CharField(
-        max_length=20,
-        choices=STOCK_STATUS_CHOICES,
-        default="in_stock",
-        help_text="Staff-set availability. No quantity is tracked behind it.",
-    )
-    expected_restock_date = models.DateField(null=True, blank=True)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["-created_at"]
-        indexes = [
-            models.Index(fields=["product"], name="var_product_idx"),
-            models.Index(fields=["sku"], name="var_sku_idx"),
-            models.Index(fields=["is_active"], name="var_active_idx"),
-            models.Index(fields=["stock_status"], name="var_stock_status_idx"),
-            GinIndex(
-                name="var_attrs_gin_idx",
-                fields=["attributes"],
-                opclasses=["jsonb_path_ops"],
-            ),
-        ]
-
-    def __str__(self):
-        return f"{self.product_id} — {self.sku}"
-
-
 class RelatedProduct(models.Model):
     """A cross-link between two products (accessory, alternative, upgrade).
 
@@ -375,15 +341,15 @@ class RelatedProduct(models.Model):
 
 
 class PricingTier(models.Model):
-    """Volume-based pricing for a product variant.
+    """Volume-based pricing for a product.
 
-    When a customer orders ``min_quantity`` or more of a variant, the
+    When a customer orders ``min_quantity`` or more of a product, the
     ``unit_price`` applies. Tiers are evaluated in ascending
     ``min_quantity`` order; the highest qualifying tier wins.
     """
 
-    variant = models.ForeignKey(
-        ProductVariant, related_name="pricing_tiers", on_delete=models.CASCADE
+    product = models.ForeignKey(
+        Product, related_name="pricing_tiers", on_delete=models.CASCADE
     )
     min_quantity = models.PositiveIntegerField()
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
@@ -391,31 +357,29 @@ class PricingTier(models.Model):
     class Meta:
         ordering = ["min_quantity"]
         indexes = [
-            models.Index(fields=["variant", "min_quantity"], name="tier_var_qty_idx"),
+            models.Index(fields=["product", "min_quantity"], name="tier_prod_qty_idx"),
         ]
 
     def __str__(self):
-        return f"Tier {self.min_quantity}+ for {self.variant_id}"
+        return f"Tier {self.min_quantity}+ for {self.product_id}"
 
 
 class FacetDefinition(models.Model):
     """Metadata describing a filterable facet for the product catalog.
 
     ``source_field`` determines which underlying data store is queried:
-    ``product_specs`` or ``variant_attributes`` for JSON fields, or
-    ``product_field`` / ``variant_field`` for direct model columns.
+    ``product_specs`` for the JSON field, or ``product_field`` for direct
+    model columns.
 
-    ``key`` is the JSON key path (required for JSON sources) and
-    ``field_name`` is the Django model field name (required for relational
-    sources). Both must be consistent with the ``source_field`` — the
-    ``clean()`` method enforces this.
+    ``key`` is the JSON key path (required for the JSON source) and
+    ``field_name`` is the Django model field name (required for the
+    relational source). Both must be consistent with the ``source_field``  -
+    the ``clean()`` method enforces this.
     """
 
     SOURCE_CHOICES = (
         ("product_specs", "Product.specs (JSON)"),
-        ("variant_attributes", "ProductVariant.attributes (JSON)"),
         ("product_field", "Direct Product field"),
-        ("variant_field", "Direct ProductVariant field"),
     )
     FACET_TYPE_CHOICES = (
         ("choice", "Choice"),
@@ -423,9 +387,11 @@ class FacetDefinition(models.Model):
     )
 
     # Direct model fields a facet may be defined over. Anything storefronts
-    # will never filter by — timestamps, prices, stock counts, internal IDs —
-    # is deliberately excluded so a misconfigured facet can't build a query
-    # over a non-facet column.
+    # will never filter by  -  timestamps, supplier cost, internal IDs  -  is
+    # deliberately excluded so a misconfigured facet can't build a query
+    # over a non-facet column. Availability (``stock_status``/``is_active``)
+    # and ``price`` stay facetable: hiding unavailable items and bounding
+    # prices are core catalog-filtering behavior.
     FACETABLE_PRODUCT_FIELDS = frozenset(
         {
             "product_type",
@@ -438,20 +404,22 @@ class FacetDefinition(models.Model):
             "wattage",
             "warranty_duration_months",
             "is_featured",
+            "is_active",
+            "stock_status",
+            "price",
         }
     )
-    FACETABLE_VARIANT_FIELDS = frozenset({"is_active", "stock_status", "price"})
 
     name = models.CharField(max_length=100)
     key = models.CharField(
         max_length=100,
         blank=True,
-        help_text="JSON key path — required when source is product_specs or variant_attributes.",
+        help_text="JSON key path  -  required when source is product_specs.",
     )
     field_name = models.CharField(
         max_length=100,
         blank=True,
-        help_text="Model field name — required when source is product_field or variant_field.",
+        help_text="Model field name  -  required when source is product_field.",
     )
     source_field = models.CharField(max_length=20, choices=SOURCE_CHOICES)
     facet_type = models.CharField(
@@ -479,7 +447,7 @@ class FacetDefinition(models.Model):
             ValidationError: if the field pairing is inconsistent.
         """
         super().clean()
-        json_sources = {"product_specs", "variant_attributes"}
+        json_sources = {"product_specs"}
 
         if self.source_field in json_sources and not self.key:
             raise ValidationError(
@@ -501,20 +469,6 @@ class FacetDefinition(models.Model):
                         "field_name": (
                             f"'{self.field_name}' is not in the allowlist of "
                             "facetable product fields."
-                        )
-                    }
-                )
-        if self.source_field == "variant_field":
-            if not self.field_name:
-                raise ValidationError(
-                    {"field_name": "'field_name' is required for this source."}
-                )
-            if self.field_name not in self.FACETABLE_VARIANT_FIELDS:
-                raise ValidationError(
-                    {
-                        "field_name": (
-                            f"'{self.field_name}' is not in the allowlist of "
-                            "facetable variant fields."
                         )
                     }
                 )

@@ -1,14 +1,14 @@
 """Read-side composition and aggregation helpers for the dashboard app.
 
 The dashboard is the staff-facing widget layer: each function returns the
-specific curated shape a UI card needs — thresholds, alert flags, named
-breakdowns — rather than the generic, query-param-driven shape the analytics
+specific curated shape a UI card needs  -  thresholds, alert flags, named
+breakdowns  -  rather than the generic, query-param-driven shape the analytics
 app produces. Where a dashboard card has an exact analytics equivalent
 (sales, stock, products, promotions, returns, support) the widget function
 delegates to ``apps.analytics.selectors`` and adds only the widget-specific
 bits; everything else is computed directly from the owning app's tables. No
 module duplicates business logic that already lives behind the analytics
-aggregates, and no module reads a table that does not exist — a section whose
+aggregates, and no module reads a table that does not exist  -  a section whose
 domain has no backing store is simply not surfaced.
 
 Money is summed as ``Decimal`` throughout, mirroring the analytics
@@ -44,7 +44,7 @@ from apps.analytics.selectors import (
     traffic_summary,
 )
 from apps.bundles.models import Bundle
-from apps.catalog.models import Product, ProductVariant
+from apps.catalog.models import Product
 from apps.collections.models import Collection
 from apps.inquiries.models import Inquiry
 from apps.orders.models import Order, OrderItem
@@ -206,7 +206,7 @@ def inquiry_conversion_dashboard(from_time=None, to_time=None):
 def cod_dashboard():
     """Return the COD-operations widget for the current state.
 
-    COD orders are tracked by their own fulfilment statuses — collection
+    COD orders are tracked by their own fulfilment statuses  -  collection
     happens at the door, so this is a live split of open, delivered, and
     failed COD orders rather than a payment-callback funnel.
 
@@ -346,7 +346,7 @@ def bundles_dashboard(from_time=None, to_time=None):
 
     Bundle purchases are the set of distinct ``bundle_group_id`` values seen
     on kept order items in the period; ``attach_rate_percent`` is their share
-    of all kept orders, and ``discount_cost`` is what the platform gave away —
+    of all kept orders, and ``discount_cost`` is what the platform gave away  -
     the difference between the component prices a customer would have paid
     standalone and what the bundle actually charged.
 
@@ -568,18 +568,12 @@ def alerts():
     alerts = []
 
     off_sale = list(
-        ProductVariant.objects.filter(
-            is_active=True, product__is_active=True, stock_status="out_of_stock"
+        Product.objects.filter(is_active=True, stock_status="out_of_stock").order_by(
+            "sku"
         )
-        .select_related("product")
-        .order_by("sku")
     )
     thin = list(
-        ProductVariant.objects.filter(
-            is_active=True, product__is_active=True, stock_status="low_stock"
-        )
-        .select_related("product")
-        .order_by("sku")
+        Product.objects.filter(is_active=True, stock_status="low_stock").order_by("sku")
     )
     if off_sale:
         alerts.append(
@@ -588,7 +582,7 @@ def alerts():
                 "severity": "critical",
                 "count": len(off_sale),
                 "items": [
-                    {"label": f"{row.sku} ({row.product.name}) — out of stock"}
+                    {"label": f"{row.sku} ({row.name})  -  out of stock"}
                     for row in off_sale[:8]
                 ],
             }
@@ -600,7 +594,7 @@ def alerts():
                 "severity": "warning",
                 "count": len(thin),
                 "items": [
-                    {"label": f"{row.sku} ({row.product.name}) — low stock"}
+                    {"label": f"{row.sku} ({row.name})  -  low stock"}
                     for row in thin[:8]
                 ],
             }

@@ -10,7 +10,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 from apps.inquiries.models import Inquiry
 
 CREATE_URL = reverse("api:inquiries:inquiry-create")
@@ -103,20 +103,15 @@ class InquiryServerCartTests(APITestCase):
             category=category,
             brand=brand,
             is_active=True,
-        )
-        self.variant = ProductVariant.objects.create(
-            product=product,
-            sku="KTL-INQ-V",
-            attributes={"color": "Silver"},
             price="5000.00",
-            is_active=True,
         )
+        self.product = product
 
     def _add_to_cart(self, quantity=2):
-        """Put the variant in the visitor's server cart via the API."""
+        """Put the product in the visitor's server cart via the API."""
         response = self.client.post(
             CART_ITEMS_URL,
-            {"variant_id": self.variant.pk, "quantity": quantity},
+            {"product_id": self.product.pk, "quantity": quantity},
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -128,7 +123,7 @@ class InquiryServerCartTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         inquiry = Inquiry.objects.get()
         self.assertEqual(len(inquiry.cart_snapshot), 1)
-        self.assertEqual(inquiry.cart_snapshot[0]["sku"], "KTL-INQ-V")
+        self.assertEqual(inquiry.cart_snapshot[0]["sku"], "KTL-INQ")
         self.assertEqual(inquiry.cart_snapshot[0]["quantity"], 2)
         self.assertEqual(inquiry.cart_snapshot[0]["price"], "5000.00")
 
@@ -145,7 +140,7 @@ class InquiryServerCartTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         inquiry = Inquiry.objects.get()
-        self.assertEqual(inquiry.cart_snapshot[0]["sku"], "KTL-INQ-V")
+        self.assertEqual(inquiry.cart_snapshot[0]["sku"], "KTL-INQ")
 
 
 class InquiryQueueTests(APITestCase):

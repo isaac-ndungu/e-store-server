@@ -26,7 +26,6 @@ from apps.catalog.models import (
     PricingTier,
     Product,
     ProductImage,
-    ProductVariant,
     RelatedProduct,
 )
 from apps.catalog.selectors import (
@@ -51,8 +50,6 @@ from apps.catalog.serializers import (
     ProductImageSerializer,
     ProductImageWriteSerializer,
     ProductListSerializer,
-    ProductVariantDetailSerializer,
-    ProductVariantWriteSerializer,
     ProductWriteSerializer,
     RelatedProductSerializer,
     RelatedProductWriteSerializer,
@@ -69,7 +66,7 @@ class CategoryListView(APIView):
     """List active categories for public browsing.
 
     Returns a flat list of active categories with product counts. The list
-    is not paginated — category trees are bounded. The serialized rows are
+    is not paginated  -  category trees are bounded. The serialized rows are
     served from the category cache when current, avoiding the count query
     on every storefront load.
     """
@@ -167,7 +164,7 @@ class CategoryDetailView(generics.RetrieveAPIView):
 class BrandListView(generics.ListAPIView):
     """List active brands for public browsing.
 
-    Not paginated — the brand list is bounded.
+    Not paginated  -  the brand list is bounded.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -271,10 +268,10 @@ class ProductDetailView(generics.RetrieveAPIView):
 
 
 class ProductPriceView(APIView):
-    """Return variant pricing for a product.
+    """Return the effective price of a product.
 
-    Public endpoint showing the base price, compare-at price, and pricing
-    tiers for each active variant. Used by the storefront's pricing display.
+    Public endpoint showing the base price, compare-at price, and volume
+    pricing tiers. Used by the storefront's pricing display.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -286,11 +283,11 @@ class ProductPriceView(APIView):
         responses={200: dict},
     )
     def get(self, request, slug):
-        """Return pricing data for all active variants of the product.
+        """Return the effective pricing data of the product.
 
         The advertised price is the server-computed effective price (catalogue
         price after the best applicable discount), never the raw stored price
-        — a storefront that wires this endpoint into a checkout must never
+         -  a storefront that wires this endpoint into a checkout must never
         show or charge a discount-ignoring amount.
 
         Args:
@@ -298,7 +295,7 @@ class ProductPriceView(APIView):
             slug (str): the product slug.
 
         Returns:
-            Response: 200 with variant pricing, or 404.
+            Response: 200 with the product pricing, or 404.
         """
         from apps.promotions.services import get_effective_price
 
@@ -308,23 +305,21 @@ class ProductPriceView(APIView):
 
             raise Http404
 
-        variants = product.variants.all()
+        tiers = product.pricing_tiers.all()
+        pricing = get_effective_price(product)
 
-        data = []
-        for variant in variants:
-            tiers = variant.pricing_tiers.all()
-            pricing = get_effective_price(variant)
-            data.append(
-                {
-                    "id": variant.id,
-                    "sku": variant.sku,
-                    "attributes": variant.attributes,
+        return Response(
+            {
+                "product_slug": slug,
+                "product": {
+                    "id": product.id,
+                    "sku": product.sku,
                     "price": pricing["price"],
                     "base_price": pricing["base_price"],
                     "discount": pricing["discount"],
                     "compare_at_price": (
-                        str(variant.compare_at_price)
-                        if variant.compare_at_price
+                        str(product.compare_at_price)
+                        if product.compare_at_price
                         else None
                     ),
                     "pricing_tiers": [
@@ -334,10 +329,9 @@ class ProductPriceView(APIView):
                         }
                         for t in tiers
                     ],
-                }
-            )
-
-        return Response({"product_slug": slug, "variants": data})
+                },
+            }
+        )
 
 
 # Admin CRUD views
@@ -426,50 +420,6 @@ class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
         return get_all_products_admin()
 
 
-class AdminProductVariantListCreateView(generics.ListCreateAPIView):
-    """List or create variants for a specific product (admin only).
-
-    ``product`` is set from the URL, not the request body.
-    """
-
-    permission_classes = [permissions.IsAdminUser]
-    throttle_scope = "admin"
-
-    def get_serializer_class(self):
-        if self.request.method == "GET":
-            return ProductVariantDetailSerializer
-        return ProductVariantWriteSerializer
-
-    def get_parent_product(self):
-        """Return the parent product from the URL, or 404."""
-        return get_object_or_404(Product, pk=self.kwargs["product_pk"])
-
-    def get_queryset(self):
-        """Return variants belonging to the parent product."""
-        return ProductVariant.objects.filter(
-            product_id=self.kwargs["product_pk"]
-        ).prefetch_related("pricing_tiers")
-
-    def perform_create(self, serializer):
-        """Attach the variant to the parent product from the URL."""
-        product = self.get_parent_product()
-        serializer.save(product=product)
-
-
-class AdminProductVariantDetailView(generics.RetrieveUpdateDestroyAPIView):
-    """Retrieve, update, or delete a variant (admin only)."""
-
-    permission_classes = [permissions.IsAdminUser]
-    throttle_scope = "admin"
-    serializer_class = ProductVariantWriteSerializer
-
-    def get_queryset(self):
-        """Return only variants belonging to the parent product."""
-        return ProductVariant.objects.filter(
-            product_id=self.kwargs["product_pk"]
-        ).prefetch_related("pricing_tiers")
-
-
 class AdminProductImageListCreateView(generics.ListCreateAPIView):
     """List or create images for a specific product (admin only).
 
@@ -534,9 +484,9 @@ class AdminProductImageDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class AdminPricingTierListCreateView(generics.ListCreateAPIView):
-    """List or create pricing tiers for variants of a specific product (admin only).
+    """List or create pricing tiers for a specific product (admin only).
 
-    The ``variant`` FK is validated to belong to the parent product.
+    The ``product`` association comes from the URL, not the request body.
     """
 
     permission_classes = [permissions.IsAdminUser]
@@ -548,20 +498,13 @@ class AdminPricingTierListCreateView(generics.ListCreateAPIView):
         return get_object_or_404(Product, pk=self.kwargs["product_pk"])
 
     def get_queryset(self):
-        """Return tiers for variants belonging to the parent product."""
-        return PricingTier.objects.filter(variant__product_id=self.kwargs["product_pk"])
+        """Return tiers belonging to the parent product."""
+        return PricingTier.objects.filter(product_id=self.kwargs["product_pk"])
 
     def perform_create(self, serializer):
-        """Validate that the variant belongs to the parent product."""
+        """Attach the tier to the parent product from the URL."""
         product = self.get_parent_product()
-        variant = serializer.validated_data["variant"]
-        if variant.product_id != product.pk:
-            from rest_framework.exceptions import ValidationError
-
-            raise ValidationError(
-                {"variant": "This variant does not belong to the specified product."}
-            )
-        serializer.save()
+        serializer.save(product=product)
 
 
 @extend_schema(responses={204: None})
@@ -576,8 +519,7 @@ class AdminPricingTierDeleteView(generics.DestroyAPIView):
 class AdminPricingTierDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a pricing tier (admin only).
 
-    Scoped so a tier can only be addressed through the product that owns
-    its variant.
+    Scoped so a tier can only be addressed through the product that owns it.
     """
 
     permission_classes = [permissions.IsAdminUser]
@@ -589,16 +531,8 @@ class AdminPricingTierDetailView(generics.RetrieveUpdateDestroyAPIView):
         return PricingTierWriteSerializer
 
     def get_queryset(self):
-        """Return tiers for variants belonging to the parent product."""
-        return PricingTier.objects.filter(variant__product_id=self.kwargs["product_pk"])
-
-    def get_serializer_context(self):
-        """Inject the parent product for variant-ownership validation."""
-        context = super().get_serializer_context()
-        context["parent_product"] = get_object_or_404(
-            Product, pk=self.kwargs["product_pk"]
-        )
-        return context
+        """Return tiers belonging to the parent product."""
+        return PricingTier.objects.filter(product_id=self.kwargs["product_pk"])
 
 
 class AdminRelatedProductListCreateView(generics.ListCreateAPIView):

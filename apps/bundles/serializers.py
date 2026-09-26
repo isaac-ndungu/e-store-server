@@ -7,16 +7,14 @@ from apps.bundles.models import Bundle, BundleItem
 class BundleItemSerializer(serializers.ModelSerializer):
     """Read/write serializer for a bundle's component items.
 
-    Read responses surface the component's product and variant display data so
-    the detail endpoint can show what the bundle contains without extra
+    Read responses surface the component's product display data so the
+    detail endpoint can show what the bundle contains without extra
     lookups on the storefront.
     """
 
     product_name = serializers.CharField(source="product.name", read_only=True)
     product_slug = serializers.CharField(source="product.slug", read_only=True)
-    variant_sku = serializers.CharField(
-        source="variant.sku", read_only=True, default=None
-    )
+    product_sku = serializers.CharField(source="product.sku", read_only=True)
 
     class Meta:
         model = BundleItem
@@ -26,8 +24,7 @@ class BundleItemSerializer(serializers.ModelSerializer):
             "product",
             "product_name",
             "product_slug",
-            "variant",
-            "variant_sku",
+            "product_sku",
             "quantity",
             "is_optional",
         ]
@@ -36,10 +33,8 @@ class BundleItemSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         """Reject a component that cannot be priced.
 
-        A variant supplied must belong to the item's product (the model leaves
-        the two as independent relations, so this is checked explicitly). A
-        product-only item (no variant) must have at least one active variant
-        so the price service can resolve a billable figure.
+        The item's product must be active so the price service can resolve
+        a billable figure.
 
         Args:
             attrs (dict): the validated data (partial on PATCH).
@@ -48,29 +43,14 @@ class BundleItemSerializer(serializers.ModelSerializer):
             dict: the validated data.
 
         Raises:
-            ValidationError: if the variant does not belong to the product, or
-                the product has no active variants when variant is omitted.
+            ValidationError: if the product is missing or inactive.
         """
         instance = self.instance
-        variant = attrs.get("variant", getattr(instance, "variant", None))
         product = attrs.get("product", getattr(instance, "product", None))
-        if (
-            variant is not None
-            and product is not None
-            and variant.product_id != product.pk
-        ):
+        if product is not None and not product.is_active:
             raise serializers.ValidationError(
-                {"variant": "This variant does not belong to the item's product."}
+                {"product": "This product is not active and cannot be priced."}
             )
-        if variant is None and product is not None:
-            from apps.catalog.models import ProductVariant
-
-            if not ProductVariant.objects.filter(
-                product=product, is_active=True
-            ).exists():
-                raise serializers.ValidationError(
-                    {"product": "This product has no active variant to price against."}
-                )
         return attrs
 
 

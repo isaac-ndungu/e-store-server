@@ -1,6 +1,5 @@
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
-from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -11,50 +10,10 @@ from apps.promotions.serializers import (
     CouponValidationResultSerializer,
     CouponValidationSerializer,
     DiscountSerializer,
-    EffectivePriceResultSerializer,
 )
-from apps.promotions.services import (
-    get_effective_price,
-    validate_coupon_code,
-)
+from apps.promotions.services import validate_coupon_code
 
 # Public views
-
-
-class VariantEffectivePriceView(APIView):
-    """Return the effective price of a product variant (public).
-
-    The storefront calls this to display the discounted price it should show
-    and charge. The amount is recomputed server-side from the current variant
-    price and active promotions — never from a client-supplied value.
-    """
-
-    permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public_catalog"
-
-    @extend_schema(
-        operation_id="variant_effective_price",
-        responses={200: EffectivePriceResultSerializer},
-    )
-    def get(self, request, variant_pk):
-        """Return the effective price breakdown for a variant.
-
-        Args:
-            request: the GET request.
-            variant_pk (int): the product variant id.
-
-        Returns:
-            Response: the effective-price data, or 404 for an unknown variant.
-        """
-        from apps.catalog.models import ProductVariant
-
-        variant = ProductVariant.objects.filter(pk=variant_pk, is_active=True).first()
-        if variant is None:
-            raise NotFound("No such variant.")
-        price_data = get_effective_price(variant)
-        serializer = EffectivePriceResultSerializer(price_data)
-        return Response(serializer.data)
 
 
 class CouponValidateView(APIView):
@@ -108,9 +67,7 @@ class AdminDiscountListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         """Return discounts with their scope relations pre-fetched."""
-        return list_discounts().prefetch_related(
-            "variants", "products", "categories", "brands"
-        )
+        return list_discounts().prefetch_related("products", "categories", "brands")
 
 
 class AdminDiscountDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -123,9 +80,7 @@ class AdminDiscountDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         """Return discounts with their scope relations pre-fetched."""
-        return list_discounts().prefetch_related(
-            "variants", "products", "categories", "brands"
-        )
+        return list_discounts().prefetch_related("products", "categories", "brands")
 
 
 class AdminCouponListCreateView(generics.ListCreateAPIView):

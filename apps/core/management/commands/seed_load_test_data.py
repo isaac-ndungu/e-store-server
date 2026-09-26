@@ -1,12 +1,11 @@
 """Demo/load-test seed data for the storefront and analytics reports.
 
-Seeds a catalog (categories, brands, products, variants, warehouse stock,
-collections) plus a realistic volume of orders, line items, and
-product view events so the public storefront endpoints and the manager-only
-analytics reports run against data shaped like production. Every seeded row
-carries a ``loadtest-``/``LT-`` prefix marker so a re-run cleans up only its
-own rows and can never touch real data — the command is idempotent and safe
-to run repeatedly.
+Seeds a catalog (categories, brands, products) plus a realistic volume of
+orders, line items, and product view events so the public storefront
+endpoints and the manager-only analytics reports run against data shaped
+like production. Every seeded row carries a ``loadtest-``/``LT-`` prefix
+marker so a re-run cleans up only its own rows and can never touch real
+data  -  the command is idempotent and safe to run repeatedly.
 
 Creation-time auto fields (``placed_at``, ``created_at``) cannot be set
 through ``bulk_create``, so historical timestamps are applied afterwards with
@@ -22,7 +21,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.accounts.models import User
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 from apps.collections.models import Collection, CollectionMembership
 from apps.orders.models import Order, OrderItem, OrderStatusHistory
 from apps.social_proof.models import ProductViewEvent
@@ -95,9 +94,8 @@ def _cleanup():
     ProductViewEvent.objects.filter(
         session_key__startswith=_VIEW_SESSION_PREFIX
     ).delete()
-    OrderItem.objects.filter(variant_sku__startswith="LT-").delete()
+    OrderItem.objects.filter(product_sku__startswith="LT-").delete()
     Order.objects.filter(phone__startswith=_ORDER_PHONE_PREFIX).delete()
-    ProductVariant.objects.filter(sku__startswith="LT-").delete()
     Product.objects.filter(slug__startswith="loadtest-").delete()
     CollectionMembership.objects.filter(
         collection__slug__startswith="loadtest-col-"
@@ -179,7 +177,7 @@ class Command(BaseCommand):
         return categories, brands
 
     def _seed_products(self, categories, brands, product_count):
-        """Create products and one variant each.
+        """Create sellable products with pricing and stock status.
 
         Args:
             categories (list): seeded categories to attribute products to.
@@ -190,12 +188,14 @@ class Command(BaseCommand):
             list: the created products, ordered by pk.
         """
         products = []
-        variants = []
         for i in range(product_count):
             product = Product.objects.create(
                 name=f"LoadTest {brands[i % len(brands)].name} Model {i:04d}",
                 slug=f"loadtest-product-{i:04d}",
-                sku=f"LT-PROD-{i:04d}",
+                sku=f"LT-{i:04d}-A",
+                price=_rand_money(20000, 89000),
+                package_weight=Decimal("15.00"),
+                stock_status="low_stock" if i % 10 == 0 else "in_stock",
                 description=(
                     "A load-testing product with a realistic description so "
                     "search and listing queries have text to match."
@@ -211,16 +211,6 @@ class Command(BaseCommand):
                 },
             )
             products.append(product)
-            variants.append(
-                ProductVariant(
-                    product=product,
-                    sku=f"LT-{i:04d}-A",
-                    attributes={"color": "Black"},
-                    price=_rand_money(20000, 89000),
-                    package_weight=Decimal("15.00"),
-                )
-            )
-        ProductVariant.objects.bulk_create(variants, batch_size=500)
         return products
 
     def _seed_collections(self, products):
@@ -286,10 +276,6 @@ class Command(BaseCommand):
             order_count (int): how many orders to create.
         """
         now = timezone.now()
-        variants = {
-            variant.product_id: variant
-            for variant in ProductVariant.objects.filter(sku__startswith="LT-")
-        }
         orders = []
         item_plans = []
         order_history = []
@@ -302,7 +288,7 @@ class Command(BaseCommand):
             subtotal = Decimal("0.00")
             for product in picked:
                 quantity = random.randint(1, 3)
-                unit_price = variants[product.pk].price
+                unit_price = product.price
                 line_total = (unit_price * quantity).quantize(Decimal("0.01"))
                 subtotal += line_total
                 item_plans.append(
@@ -310,9 +296,8 @@ class Command(BaseCommand):
                         i,
                         OrderItem(
                             product=product,
-                            variant_sku=variants[product.pk].sku,
+                            product_sku=product.sku,
                             product_name=product.name,
-                            variant_attributes={"color": "Black"},
                             unit_price=unit_price,
                             quantity=quantity,
                             total_price=line_total,

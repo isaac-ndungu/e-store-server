@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
 from apps.bundles.models import Bundle, BundleItem
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 from apps.collections.models import Collection
 from apps.collections.services import compute_membership
 from apps.promotions.models import Coupon, CouponRedemption, Discount
@@ -64,7 +64,9 @@ def _login(client, email="manager@example.com", password="ManagerPass123!"):
 
 
 def _make_product(name="Kettle", slug="kettle", sku="KTL-1", price="5000.00", **kwargs):
-    """Create a product with a default active variant, ensuring unique keys."""
+    """Create a product with a unique slug and sku, carrying its own price."""
+    from decimal import Decimal
+
     _SEQ[0] += 1
     n = _SEQ[0]
     category = (
@@ -83,20 +85,14 @@ def _make_product(name="Kettle", slug="kettle", sku="KTL-1", price="5000.00", **
         description="A test product.",
         category=category,
         brand=brand,
+        price=Decimal(price),
         is_active=True,
     )
-    variant = ProductVariant.objects.create(
-        product=product,
-        sku=f"{unique_sku}-V",
-        attributes={"color": "Silver"},
-        price=price,
-        is_active=True,
-    )
-    return product, variant
+    return product
 
 
-def _make_bundle(variant_a, variant_b, discount_type="percent", discount_value="0.00"):
-    """Create a bundle of two variants with an optional discount."""
+def _make_bundle(product_a, product_b, discount_type="percent", discount_value="0.00"):
+    """Create a bundle of two products with an optional discount."""
     bundle = Bundle.objects.create(
         name=f"Bundle {_SEQ[0]}",
         slug=f"bundle-{_SEQ[0]}-{_SEQ[0]}",
@@ -104,12 +100,8 @@ def _make_bundle(variant_a, variant_b, discount_type="percent", discount_value="
         discount_value=discount_value,
         is_active=True,
     )
-    BundleItem.objects.create(
-        bundle=bundle, product=variant_a.product, variant=variant_a
-    )
-    BundleItem.objects.create(
-        bundle=bundle, product=variant_b.product, variant=variant_b
-    )
+    BundleItem.objects.create(bundle=bundle, product=product_a)
+    BundleItem.objects.create(bundle=bundle, product=product_b)
     return bundle
 
 
@@ -141,16 +133,17 @@ class EffectivePriceServiceTests(APITestCase):
 
     def test_percent_discount(self):
         """A percent discount reduces the base price proportionally."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         create_discount(
             name="Spring Sale",
-            scope="variant",
+            scope="product",
             discount_type="percent",
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
-            variants=[variant.pk],
+            products=[product.pk],
         )
-        data = get_effective_price(variant)
+        data = get_effective_price(product)
+        self.assertEqual(data["product"], product.pk)
         self.assertEqual(data["base_price"], "5000.00")
         self.assertEqual(data["price"], "4500.00")
         self.assertEqual(data["discount"], "500.00")
@@ -158,23 +151,22 @@ class EffectivePriceServiceTests(APITestCase):
 
     def test_fixed_discount_capped_at_zero(self):
         """A fixed discount larger than the price never yields a negative price."""
-        _, variant = _make_product(price="2000.00")
+        product = _make_product(price="2000.00")
         create_discount(
             name="Flat",
-            scope="variant",
+            scope="product",
             discount_type="fixed",
             value="9999.00",
             starts_at=timezone.now() - timedelta(days=1),
-            variants=[variant.pk],
+            products=[product.pk],
         )
-        data = get_effective_price(variant)
+        data = get_effective_price(product)
         self.assertEqual(data["price"], "0.00")
         self.assertEqual(data["discount"], "2000.00")
 
     def test_higher_priority_wins(self):
         """The highest-priority discount is selected even when a lower one is cheaper."""
-        _, variant = _make_product(price="5000.00")
-        product = variant.product
+        product = _make_product(price="5000.00")
         create_discount(
             name="Small",
             scope="product",
@@ -192,14 +184,13 @@ class EffectivePriceServiceTests(APITestCase):
             starts_at=timezone.now() - timedelta(days=1),
             priority=10,
         )
-        data = get_effective_price(variant)
+        data = get_effective_price(product)
         self.assertEqual(data["discount_name"], "Small")
         self.assertEqual(data["price"], "3500.00")
 
     def test_equal_priority_chooses_lowest_price(self):
         """Ties in priority go to the discount yielding the lowest price."""
-        _, variant = _make_product(price="5000.00")
-        product = variant.product
+        product = _make_product(price="5000.00")
         create_discount(
             name="Percent",
             scope="product",
@@ -215,13 +206,13 @@ class EffectivePriceServiceTests(APITestCase):
             value="600.00",
             starts_at=timezone.now() - timedelta(days=1),
         )
-        data = get_effective_price(variant)
+        data = get_effective_price(product)
         self.assertEqual(data["discount_name"], "Fixed")
         self.assertEqual(data["price"], "4400.00")
 
-    def test_sitewide_scope_applies_to_every_variant(self):
-        """A sitewide discount reduces any variant's price."""
-        _, variant = _make_product(price="10000.00")
+    def test_sitewide_scope_applies_to_every_product(self):
+        """A sitewide discount reduces any product's price."""
+        product = _make_product(price="10000.00")
         create_discount(
             name="Sitewide",
             scope="sitewide",
@@ -229,20 +220,20 @@ class EffectivePriceServiceTests(APITestCase):
             value="5.00",
             starts_at=timezone.now() - timedelta(days=1),
         )
-        self.assertEqual(get_effective_price(variant)["price"], "9500.00")
+        self.assertEqual(get_effective_price(product)["price"], "9500.00")
 
     def test_category_and_brand_scopes(self):
         """Category and brand discounts match products through their relations."""
-        _, variant = _make_product(price="10000.00")
+        product = _make_product(price="10000.00")
         create_discount(
             name="Category",
             scope="category",
             discount_type="percent",
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
-            categories=[variant.product.category_id],
+            categories=[product.category_id],
         )
-        data = get_effective_price(variant)
+        data = get_effective_price(product)
         self.assertEqual(data["price"], "9000.00")
 
         create_discount(
@@ -252,24 +243,24 @@ class EffectivePriceServiceTests(APITestCase):
             value="5.00",
             starts_at=timezone.now() - timedelta(days=1),
             priority=5,
-            brands=[variant.product.brand_id],
+            brands=[product.brand_id],
         )
         # Only the best single discount applies; the brand discount wins by
         # priority, so 5% off 10000 leaves 9500.
-        data = get_effective_price(variant)
+        data = get_effective_price(product)
         self.assertEqual(data["price"], "9500.00")
 
     def test_no_discount_returns_base_price(self):
         """Without a discount the effective price equals the base price."""
-        _, variant = _make_product(price="3000.00")
-        data = get_effective_price(variant)
+        product = _make_product(price="3000.00")
+        data = get_effective_price(product)
         self.assertEqual(data["price"], "3000.00")
         self.assertEqual(data["discount_type"], None)
         self.assertEqual(data["discount"], "0.00")
 
     def test_discount_with_exhausted_budget_is_not_applied(self):
         """A discount with no redemption budget left is ignored."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         create_discount(
             name="Used Up",
             scope="sitewide",
@@ -279,11 +270,11 @@ class EffectivePriceServiceTests(APITestCase):
             max_redemptions=5,
             redemption_count=5,
         )
-        self.assertEqual(get_effective_price(variant)["price"], "5000.00")
+        self.assertEqual(get_effective_price(product)["price"], "5000.00")
 
     def test_out_of_window_discount_is_not_applied(self):
         """A discount past its end date does not reduce the price."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         create_discount(
             name="Past",
             scope="sitewide",
@@ -292,11 +283,11 @@ class EffectivePriceServiceTests(APITestCase):
             starts_at=timezone.now() - timedelta(days=3),
             ends_at=timezone.now() - timedelta(days=1),
         )
-        self.assertEqual(get_effective_price(variant)["price"], "5000.00")
+        self.assertEqual(get_effective_price(product)["price"], "5000.00")
 
     def test_inactive_discount_is_not_applied(self):
         """An inactive discount does not reduce the price."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         create_discount(
             name="Off",
             scope="sitewide",
@@ -305,11 +296,11 @@ class EffectivePriceServiceTests(APITestCase):
             starts_at=timezone.now() - timedelta(days=1),
             is_active=False,
         )
-        self.assertEqual(get_effective_price(variant)["price"], "5000.00")
+        self.assertEqual(get_effective_price(product)["price"], "5000.00")
 
     def test_within_bundle_excludes_non_opt_in_discount(self):
         """Inside a bundle, only discounts opting in via applies_within_bundles apply."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         create_discount(
             name="Item Only",
             scope="sitewide",
@@ -318,14 +309,14 @@ class EffectivePriceServiceTests(APITestCase):
             starts_at=timezone.now() - timedelta(days=1),
             applies_within_bundles=False,
         )
-        outside = get_effective_price(variant, within_bundle=False)
-        inside = get_effective_price(variant, within_bundle=True)
+        outside = get_effective_price(product, within_bundle=False)
+        inside = get_effective_price(product, within_bundle=True)
         self.assertEqual(outside["price"], "4500.00")
         self.assertEqual(inside["price"], "5000.00")
 
     def test_within_bundle_applies_opt_in_discount(self):
         """A discount marked applies_within_bundles applies inside a bundle."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         create_discount(
             name="Bundle Friendly",
             scope="sitewide",
@@ -334,12 +325,12 @@ class EffectivePriceServiceTests(APITestCase):
             starts_at=timezone.now() - timedelta(days=1),
             applies_within_bundles=True,
         )
-        inside = get_effective_price(variant, within_bundle=True)
+        inside = get_effective_price(product, within_bundle=True)
         self.assertEqual(inside["price"], "4500.00")
 
     def test_result_is_cached(self):
         """A second read of an unchanged price hits the cache."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         create_discount(
             name="Cached",
             scope="sitewide",
@@ -348,16 +339,16 @@ class EffectivePriceServiceTests(APITestCase):
             starts_at=timezone.now() - timedelta(days=1),
         )
         with CaptureQueriesContext(connection) as ctx:
-            get_effective_price(variant)
+            get_effective_price(product)
             cold = len(ctx.captured_queries)
         with CaptureQueriesContext(connection) as ctx:
-            get_effective_price(variant)
+            get_effective_price(product)
             warm = len(ctx.captured_queries)
         self.assertLess(warm, cold)
 
     def test_price_refreshes_after_discount_change(self):
         """Editing a discount invalidates cached effective prices."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         discount = create_discount(
             name="Malleable",
             scope="sitewide",
@@ -365,14 +356,14 @@ class EffectivePriceServiceTests(APITestCase):
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
         )
-        self.assertEqual(get_effective_price(variant)["price"], "4500.00")
+        self.assertEqual(get_effective_price(product)["price"], "4500.00")
         discount.value = Decimal("20.00")
         discount.save()
-        self.assertEqual(get_effective_price(variant)["price"], "4000.00")
+        self.assertEqual(get_effective_price(product)["price"], "4000.00")
 
-    def test_price_refreshes_after_variant_price_change(self):
-        """Editing a variant's price invalidates cached effective prices."""
-        _, variant = _make_product(price="5000.00")
+    def test_price_refreshes_after_product_price_change(self):
+        """Editing a product's price invalidates cached effective prices."""
+        product = _make_product(price="5000.00")
         create_discount(
             name="On",
             scope="sitewide",
@@ -380,10 +371,10 @@ class EffectivePriceServiceTests(APITestCase):
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
         )
-        self.assertEqual(get_effective_price(variant)["price"], "4500.00")
-        variant.price = Decimal("6000.00")
-        variant.save()
-        data = get_effective_price(variant)
+        self.assertEqual(get_effective_price(product)["price"], "4500.00")
+        product.price = Decimal("6000.00")
+        product.save()
+        data = get_effective_price(product)
         self.assertEqual(data["base_price"], "6000.00")
         self.assertEqual(data["price"], "5400.00")
 
@@ -441,16 +432,16 @@ class BundleDiscountIntegrationTests(APITestCase):
 
             return get_bundle_price(bundle)
 
-        _, variant_a = _make_product(name="A", slug="a", sku="A-1", price="5000.00")
-        _, variant_b = _make_product(name="B", slug="b", sku="B-1", price="7000.00")
-        bundle = _make_bundle(variant_a, variant_b)
+        product_a = _make_product(name="A", slug="a", sku="A-1", price="5000.00")
+        product_b = _make_product(name="B", slug="b", sku="B-1", price="7000.00")
+        bundle = _make_bundle(product_a, product_b)
         create_discount(
             name="Bundle Item",
-            scope="variant",
+            scope="product",
             discount_type="percent",
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
-            variants=[variant_a.pk, variant_b.pk],
+            products=[product_a.pk, product_b.pk],
             applies_within_bundles=True,
         )
         price = new_bundle_price(bundle)
@@ -461,16 +452,16 @@ class BundleDiscountIntegrationTests(APITestCase):
         """A non-opt-in item discount does not raise a bundle's regular price."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a = _make_product(name="A", slug="a-2", sku="A-2", price="5000.00")
-        _, variant_b = _make_product(name="B", slug="b-2", sku="B-2", price="7000.00")
-        bundle = _make_bundle(variant_a, variant_b)
+        product_a = _make_product(name="A", slug="a-2", sku="A-2", price="5000.00")
+        product_b = _make_product(name="B", slug="b-2", sku="B-2", price="7000.00")
+        bundle = _make_bundle(product_a, product_b)
         create_discount(
             name="Item Only",
-            scope="variant",
+            scope="product",
             discount_type="percent",
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
-            variants=[variant_a.pk],
+            products=[product_a.pk],
             applies_within_bundles=False,
         )
         price = get_bundle_price(bundle)
@@ -481,17 +472,17 @@ class BundleDiscountIntegrationTests(APITestCase):
         """Creating a within-bundle discount refreshes a cached bundle price."""
         from apps.bundles.services import get_bundle_price
 
-        _, variant_a = _make_product(name="A", slug="a-3", sku="A-3", price="5000.00")
-        _, variant_b = _make_product(name="B", slug="b-3", sku="B-3", price="7000.00")
-        bundle = _make_bundle(variant_a, variant_b)
+        product_a = _make_product(name="A", slug="a-3", sku="A-3", price="5000.00")
+        product_b = _make_product(name="B", slug="b-3", sku="B-3", price="7000.00")
+        bundle = _make_bundle(product_a, product_b)
         self.assertEqual(get_bundle_price(bundle)["regular_price"], "12000.00")
         create_discount(
             name="Later",
-            scope="variant",
+            scope="product",
             discount_type="percent",
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
-            variants=[variant_a.pk, variant_b.pk],
+            products=[product_a.pk, product_b.pk],
             applies_within_bundles=True,
         )
         price = get_bundle_price(bundle)
@@ -564,7 +555,7 @@ class CouponServiceTests(APITestCase):
 
     def test_coupon_stacking_rule(self):
         """A coupon does not stack over a discount unless marked stackable."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         create_discount(
             name="Sale",
             scope="sitewide",
@@ -573,34 +564,34 @@ class CouponServiceTests(APITestCase):
             starts_at=timezone.now() - timedelta(days=1),
         )
         coupon = _make_coupon(code="STACK", discount_type="percent", value="10.00")
-        data = get_effective_price(variant, coupon=coupon)
+        data = get_effective_price(product, coupon=coupon)
         self.assertEqual(data["price"], "4500.00")
         self.assertEqual(data["coupon_discount"], "0.00")
 
         coupon.stackable_with_discounts = True
         coupon.save()
-        data = get_effective_price(variant, coupon=coupon)
+        data = get_effective_price(product, coupon=coupon)
         self.assertEqual(data["price"], "4050.00")
         self.assertEqual(data["coupon_discount"], "450.00")
 
     def test_coupon_applies_without_discount(self):
         """A coupon reduces the price when no automatic discount applies."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         coupon = _make_coupon(code="ONLY", discount_type="percent", value="10.00")
-        data = get_effective_price(variant, coupon=coupon)
+        data = get_effective_price(product, coupon=coupon)
         self.assertEqual(data["price"], "4500.00")
         self.assertEqual(data["coupon_discount"], "500.00")
 
     def test_expired_coupon_contributes_nothing(self):
         """An expired coupon contributes no reduction to the price."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         coupon = _make_coupon(
             code="LATE",
             discount_type="percent",
             value="10.00",
             ends_at=timezone.now() - timedelta(days=1),
         )
-        data = get_effective_price(variant, coupon=coupon)
+        data = get_effective_price(product, coupon=coupon)
         self.assertEqual(data["price"], "5000.00")
         self.assertEqual(data["coupon_discount"], "0.00")
 
@@ -626,20 +617,20 @@ class CouponServiceTests(APITestCase):
 
     def test_coupon_product_restriction_only_discounts_match(self):
         """A product-restricted coupon discounts only that product."""
-        _, variant_a = _make_product(
+        product_a = _make_product(
             name="Kettle A", slug="kettle-a", sku="KTL-A", price="5000.00"
         )
-        _, variant_b = _make_product(
+        product_b = _make_product(
             name="Iron B", slug="iron-b", sku="IRN-B", price="4000.00"
         )
         coupon = _make_coupon(
             code="PROD",
             discount_type="percent",
             value="10.00",
-            applies_to_products=[variant_a.product],
+            applies_to_products=[product_a],
         )
-        data_a = get_effective_price(variant_a, coupon=coupon)
-        data_b = get_effective_price(variant_b, coupon=coupon)
+        data_a = get_effective_price(product_a, coupon=coupon)
+        data_b = get_effective_price(product_b, coupon=coupon)
         self.assertEqual(data_a["coupon_discount"], "500.00")
         self.assertEqual(data_b["coupon_discount"], "0.00")
         self.assertEqual(data_b["price"], "4000.00")
@@ -649,10 +640,10 @@ class CouponServiceTests(APITestCase):
         other_cat, _ = Category.objects.get_or_create(
             name="Small Appliances", slug="small-appliances"
         )
-        _, variant_a = _make_product(
+        product_a = _make_product(
             name="Kettle C", slug="kettle-c", sku="KTL-C", price="5000.00"
         )
-        _, variant_b = _make_product(
+        product_b = _make_product(
             name="Fryer",
             slug="fryer-c",
             sku="FRY-C",
@@ -663,16 +654,16 @@ class CouponServiceTests(APITestCase):
             code="CAT",
             discount_type="percent",
             value="10.00",
-            applies_to_categories=[variant_a.product.category],
+            applies_to_categories=[product_a.category],
         )
-        data_a = get_effective_price(variant_a, coupon=coupon)
-        data_b = get_effective_price(variant_b, coupon=coupon)
+        data_a = get_effective_price(product_a, coupon=coupon)
+        data_b = get_effective_price(product_b, coupon=coupon)
         self.assertEqual(data_a["coupon_discount"], "500.00")
         self.assertEqual(data_b["coupon_discount"], "0.00")
 
     def test_coupon_code_normalized_to_uppercase(self):
         """Submitting a lowercase, padded coupon code is normalized on save."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         self.client.force_authenticate(user=_make_admin())
         response = self.client.post(
             URLS["admin_coupons"],
@@ -686,7 +677,7 @@ class CouponServiceTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["code"], "ELF20")
-        result = get_effective_price(variant, coupon=Coupon.objects.get(code="ELF20"))
+        result = get_effective_price(product, coupon=Coupon.objects.get(code="ELF20"))
         self.assertEqual(result["coupon_discount"], "1000.00")
 
     def test_coupon_code_case_insensitive_uniqueness(self):
@@ -729,19 +720,15 @@ class OnSaleCollectionTests(APITestCase):
 
     def test_matches_products_with_active_discount(self):
         """Products with an active discount appear in an on-sale collection."""
-        product_a, variant_a = _make_product(
-            name="A", slug="os-a", sku="OS-A", price="5000.00"
-        )
-        product_b, variant_b = _make_product(
-            name="B", slug="os-b", sku="OS-B", price="7000.00"
-        )
+        product_a = _make_product(name="A", slug="os-a", sku="OS-A", price="5000.00")
+        product_b = _make_product(name="B", slug="os-b", sku="OS-B", price="7000.00")
         create_discount(
             name="On A",
-            scope="variant",
+            scope="product",
             discount_type="percent",
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
-            variants=[variant_a.pk],
+            products=[product_a.pk],
         )
         collection = self._smart_on_sale()
         pks = compute_membership(collection)
@@ -750,13 +737,9 @@ class OnSaleCollectionTests(APITestCase):
 
     def test_excludes_bundle_scoped_discounts(self):
         """A bundle discount does not mark individual products on sale."""
-        _, variant_a = _make_product(
-            name="A", slug="osb-a", sku="OSB-A", price="5000.00"
-        )
-        _, variant_b = _make_product(
-            name="B", slug="osb-b", sku="OSB-B", price="7000.00"
-        )
-        bundle = _make_bundle(variant_a, variant_b)
+        product_a = _make_product(name="A", slug="osb-a", sku="OSB-A", price="5000.00")
+        product_b = _make_product(name="B", slug="osb-b", sku="OSB-B", price="7000.00")
+        bundle = _make_bundle(product_a, product_b)
         create_discount(
             name="Bundle",
             scope="bundle",
@@ -903,14 +886,14 @@ class PromotionAdminApiTests(APITestCase):
     def test_admin_can_delete_discount(self):
         """An admin can delete a discount."""
         _login(self.client)
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         discount = create_discount(
             name="Gone",
-            scope="variant",
+            scope="product",
             discount_type="percent",
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
-            variants=[variant.pk],
+            products=[product.pk],
         )
         url = reverse("api:promotions:admin-discount-detail", args=[discount.pk])
         response = self.client.delete(url)
@@ -925,8 +908,8 @@ class PublicApiTests(APITestCase):
         cache.clear()
 
     def test_effective_price_endpoint_returns_discount(self):
-        """The effective-price endpoint returns the discounted figure."""
-        _, variant = _make_product(price="5000.00")
+        """The product-price endpoint returns the discounted figure."""
+        product = _make_product(price="5000.00")
         create_discount(
             name="Sale",
             scope="sitewide",
@@ -934,24 +917,25 @@ class PublicApiTests(APITestCase):
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
         )
-        url = reverse("api:promotions:variant-effective-price", args=[variant.pk])
+        url = reverse("api:catalog:product-price", args=[product.slug])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["price"], "4500.00")
-        self.assertEqual(response.data["discount_name"], "Sale")
+        self.assertEqual(response.data["product_slug"], product.slug)
+        self.assertEqual(response.data["product"]["price"], "4500.00")
+        self.assertEqual(response.data["product"]["base_price"], "5000.00")
 
-    def test_effective_price_endpoint_404_for_unknown_variant(self):
-        """An unknown variant pk returns 404."""
-        url = reverse("api:promotions:variant-effective-price", args=[999999])
+    def test_effective_price_endpoint_404_for_unknown_product(self):
+        """An unknown product slug returns 404."""
+        url = reverse("api:catalog:product-price", args=["no-such-product"])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_effective_price_endpoint_404_for_inactive_variant(self):
-        """An inactive (hidden) variant returns 404 rather than a price."""
-        _, variant = _make_product(price="5000.00")
-        variant.is_active = False
-        variant.save()
-        url = reverse("api:promotions:variant-effective-price", args=[variant.pk])
+    def test_effective_price_endpoint_404_for_inactive_product(self):
+        """An inactive (hidden) product returns 404 rather than a price."""
+        product = _make_product(price="5000.00")
+        product.is_active = False
+        product.save()
+        url = reverse("api:catalog:product-price", args=[product.slug])
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 

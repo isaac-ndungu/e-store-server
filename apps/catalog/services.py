@@ -1,7 +1,7 @@
 """Business logic for the catalog app.
 
 CRUD operations, slug generation, facet aggregation, and query-param
-validation for the faceted product search. Views stay thin — all write
+validation for the faceted product search. Views stay thin  -  all write
 logic and non-trivial read computation lives here.
 
 Facet aggregation runs one aggregate query per active ``FacetDefinition``
@@ -28,7 +28,6 @@ from apps.catalog.models import (
     PricingTier,
     Product,
     ProductImage,
-    ProductVariant,
     RelatedProduct,
 )
 
@@ -159,7 +158,7 @@ def create_product(
     name,
     slug=None,
     sku,
-    variants=None,
+    price,
     images=None,
     related_products=None,
     pricing_tiers=None,
@@ -168,14 +167,14 @@ def create_product(
     """Create a product with its nested children atomically.
 
     Wraps the full creation in ``transaction.atomic()`` so that a failure
-    partway through (e.g. a variant with a duplicate SKU) rolls back the
-    product and any already-created children, preventing orphaned rows.
+    partway through (e.g. a duplicate SKU) rolls back the product and any
+    already-created children, preventing orphaned rows.
 
     Args:
         name (str): the product name.
         slug (str | None): explicit slug, or None to auto-generate.
-        sku (str): the product-level SKU (must be unique).
-        variants (list[dict] | None): variant data dicts to create.
+        sku (str): the product SKU (must be unique).
+        price (Decimal): the sellable unit price.
         images (list[dict] | None): image data dicts to create.
         related_products (list[dict] | None): related-product data dicts.
         pricing_tiers (list[dict] | None): pricing tier data dicts.
@@ -192,11 +191,9 @@ def create_product(
         slug = generate_unique_slug(Product(name=name), name)
 
     with transaction.atomic():
-        product = Product.objects.create(name=name, slug=slug, sku=sku, **kwargs)
-
-        if variants:
-            for variant_data in variants:
-                ProductVariant.objects.create(product=product, **variant_data)
+        product = Product.objects.create(
+            name=name, slug=slug, sku=sku, price=price, **kwargs
+        )
 
         if images:
             primary_claimed = False
@@ -223,7 +220,7 @@ def create_product(
 
         if pricing_tiers:
             for tier_data in pricing_tiers:
-                PricingTier.objects.create(**tier_data)
+                PricingTier.objects.create(product=product, **tier_data)
 
     return product
 
@@ -318,35 +315,10 @@ def _choice_counts_for_facet(queryset, facet):
             if value is not None:
                 counts[str(value)] = count
 
-    elif facet.source_field == "variant_attributes" and facet.key:
-        rows = (
-            ProductVariant.objects.filter(product__in=queryset)
-            .exclude(**{f"attributes__{facet.key}": None})
-            .values(f"attributes__{facet.key}")
-            .annotate(count=Count("id"))
-            .values_list(f"attributes__{facet.key}", "count")
-        )
-        for value, count in rows:
-            if value is not None:
-                counts[str(value)] = count
-
     elif facet.source_field == "product_field" and facet.field_name:
         if facet.field_name in FacetDefinition.FACETABLE_PRODUCT_FIELDS:
             rows = (
                 queryset.exclude(**{facet.field_name: None})
-                .values(facet.field_name)
-                .annotate(count=Count("id"))
-                .values_list(facet.field_name, "count")
-            )
-            for value, count in rows:
-                if value not in (None, ""):
-                    counts[str(value)] = count
-
-    elif facet.source_field == "variant_field" and facet.field_name:
-        if facet.field_name in FacetDefinition.FACETABLE_VARIANT_FIELDS:
-            rows = (
-                ProductVariant.objects.filter(product__in=queryset)
-                .exclude(**{facet.field_name: None})
                 .values(facet.field_name)
                 .annotate(count=Count("id"))
                 .values_list(facet.field_name, "count")
@@ -380,25 +352,10 @@ def _range_stats_for_facet(queryset, facet):
             .values_list(f"specs__{facet.key}", flat=True)
             .distinct()
         )
-    elif facet.source_field == "variant_attributes" and facet.key:
-        values = (
-            ProductVariant.objects.filter(product__in=queryset)
-            .exclude(**{f"attributes__{facet.key}": None})
-            .values_list(f"attributes__{facet.key}", flat=True)
-            .distinct()
-        )
     elif facet.source_field == "product_field" and facet.field_name:
         if facet.field_name in FacetDefinition.FACETABLE_PRODUCT_FIELDS:
             values = (
                 queryset.exclude(**{facet.field_name: None})
-                .values_list(facet.field_name, flat=True)
-                .distinct()
-            )
-    elif facet.source_field == "variant_field" and facet.field_name:
-        if facet.field_name in FacetDefinition.FACETABLE_VARIANT_FIELDS:
-            values = (
-                ProductVariant.objects.filter(product__in=queryset)
-                .exclude(**{facet.field_name: None})
                 .values_list(facet.field_name, flat=True)
                 .distinct()
             )
@@ -444,8 +401,8 @@ def validate_facet_params(query_params):
     """Build a Q filter from valid facet params against active facets.
 
     Choice facets match the param with an exact lookup. Because JSONB is
-    type sensitive — an integer ``200`` stored in ``specs`` is not equal to
-    the string ``"200"`` — numeric-looking values also match their typed
+    type sensitive  -  an integer ``200`` stored in ``specs`` is not equal to
+    the string ``"200"``  -  numeric-looking values also match their typed
     equivalent. Range facets accept ``<key>_min`` / ``<key>_max`` params and
     apply ``__gte`` / ``__lte`` lookups. Unknown params are silently
     ignored.
@@ -462,12 +419,8 @@ def validate_facet_params(query_params):
     for facet in facets:
         if facet.source_field == "product_specs" and facet.key:
             param_key, lookup = facet.key, f"specs__{facet.key}"
-        elif facet.source_field == "variant_attributes" and facet.key:
-            param_key, lookup = facet.key, f"variants__attributes__{facet.key}"
         elif facet.source_field == "product_field" and facet.field_name:
             param_key, lookup = facet.field_name, facet.field_name
-        elif facet.source_field == "variant_field" and facet.field_name:
-            param_key, lookup = facet.field_name, f"variants__{facet.field_name}"
         else:
             continue
 

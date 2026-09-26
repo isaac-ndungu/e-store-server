@@ -9,7 +9,6 @@ from apps.catalog.models import (
     PricingTier,
     Product,
     ProductImage,
-    ProductVariant,
     RelatedProduct,
 )
 
@@ -88,7 +87,7 @@ class CategoryDetailSerializer(serializers.ModelSerializer):
 class CategoryWriteSerializer(serializers.ModelSerializer):
     """Writable fields for creating/updating a category (admin only).
 
-    ``slug`` is optional on create — if omitted it is auto-generated from
+    ``slug`` is optional on create  -  if omitted it is auto-generated from
     ``name``.
     """
 
@@ -245,7 +244,7 @@ class BrandDetailSerializer(serializers.ModelSerializer):
 class BrandWriteSerializer(serializers.ModelSerializer):
     """Writable fields for creating/updating a brand (admin only).
 
-    ``slug`` is optional on create — if omitted it is auto-generated from
+    ``slug`` is optional on create  -  if omitted it is auto-generated from
     ``name``.
     """
 
@@ -381,126 +380,25 @@ class PricingTierSerializer(serializers.ModelSerializer):
         model = PricingTier
         fields = [
             "id",
-            "variant",
+            "product",
             "min_quantity",
             "unit_price",
         ]
-        read_only_fields = ["id"]
+        read_only_fields = ["id", "product"]
 
 
 class PricingTierWriteSerializer(serializers.ModelSerializer):
     """Writable serializer for tiers nested under a product.
 
-    ``variant`` is validated to belong to the product scoping the request when
-    the view supplies the parent product in the serializer context.
+    ``product`` is set from the URL, not the request body.
     """
 
     class Meta:
         model = PricingTier
         fields = [
             "id",
-            "variant",
             "min_quantity",
             "unit_price",
-        ]
-        read_only_fields = ["id"]
-
-    def validate(self, attrs):
-        """Check the variant belongs to the product scoping the request.
-
-        Args:
-            attrs (dict): the validated data (partial on PATCH).
-
-        Returns:
-            dict: the validated data.
-
-        Raises:
-            ValidationError: if the variant belongs to another product.
-        """
-        parent_product = self.context.get("parent_product")
-        variant = attrs.get("variant", getattr(self.instance, "variant", None))
-        if (
-            parent_product is not None
-            and variant is not None
-            and variant.product_id != parent_product.pk
-        ):
-            raise serializers.ValidationError(
-                {"variant": "This variant does not belong to the specified product."}
-            )
-        return attrs
-
-
-class ProductVariantListSerializer(serializers.ModelSerializer):
-    """Slim variant representation for product list endpoints."""
-
-    class Meta:
-        model = ProductVariant
-        fields = [
-            "id",
-            "sku",
-            "attributes",
-            "price",
-            "compare_at_price",
-            "stock_status",
-            "is_active",
-        ]
-        read_only_fields = ["id", "sku", "attributes", "price", "compare_at_price"]
-
-
-class ProductVariantDetailSerializer(serializers.ModelSerializer):
-    """Full variant representation including pricing tiers."""
-
-    pricing_tiers = PricingTierSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = ProductVariant
-        fields = [
-            "id",
-            "product",
-            "sku",
-            "supplier_sku",
-            "attributes",
-            "price",
-            "compare_at_price",
-            "cost_price",
-            "barcode",
-            "weight",
-            "dimensions",
-            "package_weight",
-            "package_dimensions",
-            "pieces_per_unit",
-            "stock_status",
-            "expected_restock_date",
-            "is_active",
-            "pricing_tiers",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at"]
-
-
-class ProductVariantWriteSerializer(serializers.ModelSerializer):
-    """Writable fields for creating/updating a variant (admin only)."""
-
-    class Meta:
-        model = ProductVariant
-        fields = [
-            "id",
-            "sku",
-            "supplier_sku",
-            "attributes",
-            "price",
-            "compare_at_price",
-            "cost_price",
-            "barcode",
-            "weight",
-            "dimensions",
-            "package_weight",
-            "package_dimensions",
-            "pieces_per_unit",
-            "stock_status",
-            "expected_restock_date",
-            "is_active",
         ]
         read_only_fields = ["id"]
 
@@ -584,7 +482,10 @@ class RelatedProductWriteSerializer(serializers.ModelSerializer):
 class ProductListSerializer(serializers.ModelSerializer):
     """Slim product representation for list/search endpoints.
 
-    Omits heavy nested data (variants, images) to keep list payloads small.
+    Carries the sellable fields the catalog cards render directly (price,
+    availability) but omits heavy nested data (pricing tiers, images beyond
+    the primary) to keep list payloads small. Discounted amounts still come
+    from the price endpoint, never from local math.
     """
 
     category_name = serializers.CharField(
@@ -602,6 +503,9 @@ class ProductListSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "sku",
+            "price",
+            "compare_at_price",
+            "stock_status",
             "short_description",
             "product_type",
             "category",
@@ -683,11 +587,11 @@ class ProductDetailBrandSerializer(serializers.ModelSerializer):
 
 
 class ProductDetailSerializer(serializers.ModelSerializer):
-    """Full product representation with nested variants and images."""
+    """Full product representation with nested pricing tiers and images."""
 
     category = ProductDetailCategorySerializer(read_only=True)
     brand = ProductDetailBrandSerializer(read_only=True)
-    variants = ProductVariantListSerializer(many=True, read_only=True)
+    pricing_tiers = PricingTierSerializer(many=True, read_only=True)
     images = ProductImageSerializer(many=True, read_only=True)
     replacement_product_name = serializers.CharField(
         source="replacement_product.name", read_only=True, default=None
@@ -703,6 +607,18 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "sku",
+            "supplier_sku",
+            "price",
+            "compare_at_price",
+            "cost_price",
+            "barcode",
+            "weight",
+            "dimensions",
+            "package_weight",
+            "package_dimensions",
+            "pieces_per_unit",
+            "stock_status",
+            "expected_restock_date",
             "short_description",
             "description",
             "specs",
@@ -739,7 +655,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "meta_title",
             "meta_description",
             "gtin",
-            "variants",
+            "pricing_tiers",
             "images",
             "created_at",
             "updated_at",
@@ -756,7 +672,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
 class ProductWriteSerializer(serializers.ModelSerializer):
     """Writable fields for creating/updating a product (admin only).
 
-    ``slug`` is optional on create — if omitted it is auto-generated from
+    ``slug`` is optional on create  -  if omitted it is auto-generated from
     ``name``.
     """
 
@@ -810,6 +726,18 @@ class ProductWriteSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "sku",
+            "supplier_sku",
+            "price",
+            "compare_at_price",
+            "cost_price",
+            "barcode",
+            "weight",
+            "dimensions",
+            "package_weight",
+            "package_dimensions",
+            "pieces_per_unit",
+            "stock_status",
+            "expected_restock_date",
             "short_description",
             "description",
             "specs",
@@ -904,7 +832,7 @@ class FacetDefinitionSerializer(serializers.ModelSerializer):
         key = data.get("key", getattr(self.instance, "key", ""))
         field_name = data.get("field_name", getattr(self.instance, "field_name", ""))
 
-        json_sources = {"product_specs", "variant_attributes"}
+        json_sources = {"product_specs"}
 
         if source in json_sources and not key:
             raise serializers.ValidationError(
@@ -921,20 +849,6 @@ class FacetDefinitionSerializer(serializers.ModelSerializer):
                         "field_name": (
                             f"'{field_name}' is not in the allowlist of "
                             "facetable product fields."
-                        )
-                    }
-                )
-        if source == "variant_field":
-            if not field_name:
-                raise serializers.ValidationError(
-                    {"field_name": "'field_name' is required for this source."}
-                )
-            if field_name not in FacetDefinition.FACETABLE_VARIANT_FIELDS:
-                raise serializers.ValidationError(
-                    {
-                        "field_name": (
-                            f"'{field_name}' is not in the allowlist of "
-                            "facetable variant fields."
                         )
                     }
                 )

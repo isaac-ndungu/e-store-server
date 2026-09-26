@@ -1,8 +1,8 @@
 """Read-only aggregation helpers for the analytics app.
 
-Every report here aggregates from the platform's source-of-truth tables —
+Every report here aggregates from the platform's source-of-truth tables  -
 orders, returns, promotions, support, reviews, social proof, and
-notifications — so a dashboard figure always reconciles against the
+notifications  -  so a dashboard figure always reconciles against the
 underlying rows. Aggregations that sum money use ``Decimal`` exclusively (never
 ``float``) and time-series grouping is pushed into the database with Django's
 ``Trunc`` functions so a large table never fans out into one query per row.
@@ -27,7 +27,7 @@ from django.db.models.functions import Coalesce, TruncDate, TruncMonth, TruncWee
 from django.utils import timezone
 
 from apps.bundles.models import Bundle
-from apps.catalog.models import Product, ProductVariant
+from apps.catalog.models import Product
 from apps.inquiries.models import Inquiry
 from apps.notifications.models import NotificationLog
 from apps.orders.models import Order, OrderItem
@@ -88,7 +88,7 @@ def sales_summary(from_time=None, to_time=None):
 
     ``order_value`` sums the grand total of every non-cancelled, non-refunded
     order in the period; ``tax_collected`` adds order VAT to delivery VAT;
-    ``collected`` equals order value — payment is arranged by staff before an
+    ``collected`` equals order value  -  payment is arranged by staff before an
     order is created, so kept orders count as received; ``refund_outflow``
     sums the recorded refund amounts on cancelled/refunded orders; and
     ``net`` is collected minus refunds. Figures are ``Decimal``.
@@ -350,16 +350,16 @@ def sales_timeseries(from_time=None, to_time=None, group_by="day"):
 def stock_snapshot():
     """Return a current availability snapshot by staff-set stock status.
 
-    Availability is a manual flag on each variant, not a counted quantity:
-    the snapshot counts active variants per ``stock_status`` value, so staff
+    Availability is a manual flag on each product, not a counted quantity:
+    the snapshot counts active products per ``stock_status`` value, so staff
     see at a glance how much of the catalogue is sellable, running low, or
     off sale.
 
     Returns:
-        dict: variant counts per stock status plus the active-variant total.
+        dict: product counts per stock status plus the active-product total.
     """
     counts = (
-        ProductVariant.objects.filter(is_active=True, product__is_active=True)
+        Product.objects.filter(is_active=True)
         .values("stock_status")
         .annotate(count=Count("pk"))
     )
@@ -371,7 +371,7 @@ def stock_snapshot():
         "in_stock": in_stock,
         "low_stock": low_stock,
         "out_of_stock": out_of_stock,
-        "variants": in_stock + low_stock + out_of_stock,
+        "products": in_stock + low_stock + out_of_stock,
     }
 
 
@@ -397,7 +397,7 @@ def product_performance(from_time=None, to_time=None, limit=10):
     )
     queryset = (
         OrderItem.objects.filter(order__in=item_orders)
-        .values("product", "product_name", "variant_sku")
+        .values("product", "product_name", "product_sku")
         .annotate(
             revenue=Coalesce(
                 Sum(
@@ -415,7 +415,7 @@ def product_performance(from_time=None, to_time=None, limit=10):
         {
             "product_id": row["product"],
             "name": row["product_name"],
-            "variant_sku": row["variant_sku"],
+            "product_sku": row["product_sku"],
             "units": row["units"] or 0,
             "revenue": row["revenue"],
             "order_count": row["order_count"],
@@ -606,11 +606,10 @@ def catalogue_summary():
     """Return a current catalogue-size summary.
 
     Returns:
-        dict: product, variant, and bundle counts.
+        dict: product and bundle counts.
     """
     return {
         "products": Product.objects.count(),
-        "variants": ProductVariant.objects.count(),
         "bundles": Bundle.objects.filter(is_active=True).count(),
     }
 

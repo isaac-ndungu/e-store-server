@@ -24,7 +24,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.catalog.models import Category, Product, ProductVariant
+from apps.catalog.models import Category, Product
 from apps.core.models import SiteConfig
 from apps.orders.services import create_staff_order
 from apps.reviews.cache import invalidate_feature_enabled
@@ -80,32 +80,24 @@ def _login(client, email="buyer@example.com", password="StrongPass123!"):
 
 
 def _make_product(price="5000.00", **kwargs):
-    """Create an active product with a default active variant."""
+    """Create an active product."""
     _SEQ[0] += 1
     n = _SEQ[0]
     category = Category.objects.get_or_create(name="Appliances", slug="appliances")[0]
-    product = Product.objects.create(
+    return Product.objects.create(
         name=f"Kettle {n}",
         slug=f"kettle-{n}",
         sku=f"KTL-{n}",
         description="A test product.",
         category=category,
         is_active=True,
+        price=price,
         **kwargs,
     )
-    variant = ProductVariant.objects.create(
-        product=product,
-        sku=f"KTL-{n}-V",
-        attributes={"color": "Silver"},
-        price=price,
-        package_weight="2.00",
-        is_active=True,
-    )
-    return product, variant
 
 
-def _place_cod_order(variant, phone="+254712345678", quantity=1):
-    """Create a confirmed intake order for a variant."""
+def _place_cod_order(product, phone="+254712345678", quantity=1):
+    """Create a confirmed intake order for a product."""
     _SEQ[0] += 1
     staff = User.objects.create_user(
         email=f"reviewstaff{_SEQ[0]}@example.com",
@@ -117,7 +109,7 @@ def _place_cod_order(variant, phone="+254712345678", quantity=1):
     return create_staff_order(
         staff_user=staff,
         phone=phone,
-        lines=[{"variant_id": variant.pk, "quantity": quantity}],
+        lines=[{"product_id": product.pk, "quantity": quantity}],
         order_source="whatsapp",
         payment_method="cod",
     )
@@ -148,7 +140,7 @@ class ReviewRatingServiceTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.product, self.variant = _make_product()
+        self.product = _make_product()
 
     def test_new_review_starts_hidden(self):
         """A fresh submission is unapproved and moves no aggregate."""
@@ -243,7 +235,7 @@ class ReviewRatingServiceTests(APITestCase):
 
     def test_verified_purchase_accepts_matching_phone(self):
         """A line from a confirmed order with the same phone verifies."""
-        order = _place_cod_order(self.variant, phone="+254712345678")
+        order = _place_cod_order(self.product, phone="+254712345678")
         order_item = order.items.first()
         review = create_review(
             product=self.product,
@@ -255,7 +247,7 @@ class ReviewRatingServiceTests(APITestCase):
 
     def test_verified_purchase_rejects_contact_mismatch(self):
         """An order line for another contact never verifies a review."""
-        order = _place_cod_order(self.variant, phone="+254700000009")
+        order = _place_cod_order(self.product, phone="+254700000009")
         with self.assertRaisesMessage(ValidationError, "does not qualify"):
             create_review(
                 product=self.product,
@@ -269,7 +261,7 @@ class ReviewRatingServiceTests(APITestCase):
         """A cancelled order line does not prove a purchase."""
         from apps.orders.services import transition_order
 
-        order = _place_cod_order(self.variant, phone="+254712345678")
+        order = _place_cod_order(self.product, phone="+254712345678")
         transition_order(order, "cancelled")
         with self.assertRaisesMessage(ValidationError, "does not qualify"):
             create_review(
@@ -281,8 +273,8 @@ class ReviewRatingServiceTests(APITestCase):
 
     def test_verified_purchase_rejects_wrong_product_line(self):
         """A verified line must reference the product actually reviewed."""
-        other_product, other_variant = _make_product(price="8000.00")
-        order = _place_cod_order(other_variant, phone="+254712345678")
+        other_product = _make_product(price="8000.00")
+        order = _place_cod_order(other_product, phone="+254712345678")
         with self.assertRaisesMessage(ValidationError, "does not qualify"):
             create_review(
                 product=self.product,
@@ -290,11 +282,10 @@ class ReviewRatingServiceTests(APITestCase):
                 order_item_id=order.items.first().pk,
                 **SUBMITTER,
             )
-        _ = other_product
 
     def test_verified_purchase_line_can_be_claimed_only_once(self):
         """One purchase verifies only one review, guarded inside the service."""
-        order = _place_cod_order(self.variant, phone="+254712345678", quantity=2)
+        order = _place_cod_order(self.product, phone="+254712345678", quantity=2)
         order_item = order.items.first()
         create_review(
             product=self.product,
@@ -315,7 +306,7 @@ class ReviewEndpointTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.product, self.variant = _make_product()
+        self.product = _make_product()
         self.review_url = reverse(
             "api:reviews:product-reviews", kwargs={"slug": self.product.slug}
         )
@@ -352,7 +343,7 @@ class ReviewEndpointTests(APITestCase):
 
     def test_posting_review_with_verified_order_item(self):
         """A completed purchase matching the contact surfaces the badge."""
-        order = _place_cod_order(self.variant, phone="+254712345678")
+        order = _place_cod_order(self.product, phone="+254712345678")
         response = self.client.post(
             self.review_url,
             {"rating": 5, "order_item_id": order.items.first().pk, **SUBMITTER},
@@ -363,7 +354,7 @@ class ReviewEndpointTests(APITestCase):
 
     def test_posting_review_with_mismatched_order_item_returns_400(self):
         """Another contact's order line collapses into a plain 400, no leak."""
-        order = _place_cod_order(self.variant, phone="+254700000009")
+        order = _place_cod_order(self.product, phone="+254700000009")
         response = self.client.post(
             self.review_url,
             {"rating": 5, "order_item_id": order.items.first().pk, **SUBMITTER},
@@ -407,7 +398,7 @@ class QuestionEndpointTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.staff = _make_staff()
-        self.product, _ = _make_product()
+        self.product = _make_product()
         self.question_url = reverse(
             "api:reviews:product-questions", kwargs={"slug": self.product.slug}
         )
@@ -487,7 +478,7 @@ class ModerationEndpointTests(APITestCase):
         self.manager = _make_staff(email="manager@example.com", role="manager")
         self.support = _make_staff(email="support@example.com", role="support")
         self.analyst = _make_staff(email="analyst@example.com", role="analyst")
-        self.product, self.variant = _make_product()
+        self.product = _make_product()
         self.review = create_review(product=self.product, rating=2, **SUBMITTER)
         self.question = create_product_question(
             product=self.product, question="Is it in stock?", **SUBMITTER
@@ -574,7 +565,7 @@ class FeatureFlagTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.product, _ = _make_product()
+        self.product = _make_product()
         self.review_url = reverse(
             "api:reviews:product-reviews", kwargs={"slug": self.product.slug}
         )
@@ -816,7 +807,7 @@ class ReviewPhotoDeleteTests(APITestCase):
         """A photo already on a review is published content and stays put."""
         upload = self._upload("photo-del-4")
         session_key = ReviewPhoto.objects.get(pk=upload.data["id"]).session_key
-        product, _ = _make_product()
+        product = _make_product()
         review = create_review(product=product, rating=4, **SUBMITTER)
         attached = ReviewPhoto.objects.create(
             review=review,
@@ -834,7 +825,7 @@ class RatingIntegrityTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.product, _ = _make_product()
+        self.product = _make_product()
 
     def test_deleting_review_recomputes_product_rating(self):
         """Deleting a review with the ORM keeps the aggregate right."""
@@ -890,8 +881,8 @@ class ReviewPhotoClaimTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.product, self.variant = _make_product()
-        self.other_product, _ = _make_product(price="9000.00")
+        self.product = _make_product()
+        self.other_product = _make_product(price="9000.00")
         self.review_url = reverse(
             "api:reviews:product-reviews", kwargs={"slug": self.product.slug}
         )
@@ -997,7 +988,7 @@ class OrphanPhotoSweepTests(APITestCase):
 
     def setUp(self):
         cache.clear()
-        self.product, _ = _make_product()
+        self.product = _make_product()
         self.orphan = _make_unattached_photo("orphan.png")
 
     def test_sweep_removes_only_expired_orphans(self):

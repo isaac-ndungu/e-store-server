@@ -1,7 +1,7 @@
 """Data models for the cart app.
 
 A ``Cart`` is an anonymous, server-persisted shopping cart identified by a
-long-lived ``HttpOnly`` cookie carrying its ``anonymous_id`` — no login is
+long-lived ``HttpOnly`` cookie carrying its ``anonymous_id``  -  no login is
 involved anywhere. The cookie survives page reloads, browser restarts, and
 client-side storage wipes; it does not survive a device or browser switch,
 since there is no account to tie it to.
@@ -21,7 +21,7 @@ class Cart(models.Model):
     """An anonymous visitor's server-side cart.
 
     ``anonymous_id`` is the value stored in the visitor's cookie and is the
-    only lookup key — carts are never tied to a user account. ``created_at``
+    only lookup key  -  carts are never tied to a user account. ``created_at``
     supports future abandonment analysis; ``updated_at`` refreshes on every
     line change.
     """
@@ -44,15 +44,15 @@ class Cart(models.Model):
 class CartItem(models.Model):
     """One line in an anonymous cart.
 
-    ``variant`` is the purchasable configuration and is always set.
-    ``bundle`` is set only when the line was added as part of a bundle offer,
-    so intake can expand bundle pricing; it never changes what the line
-    points at. ``quantity`` is capped at 999 to match the intake limit.
+    ``product`` is the purchasable unit and is always set. ``bundle`` is
+    set only when the line was added as part of a bundle offer, so intake
+    can expand bundle pricing; it never changes what the line points at.
+    ``quantity`` is capped at 999 to match the intake limit.
     """
 
     cart = models.ForeignKey(Cart, related_name="items", on_delete=models.CASCADE)
-    variant = models.ForeignKey(
-        "catalog.ProductVariant", on_delete=models.CASCADE, related_name="cart_items"
+    product = models.ForeignKey(
+        "catalog.Product", on_delete=models.CASCADE, related_name="cart_items"
     )
     bundle = models.ForeignKey(
         "bundles.Bundle",
@@ -68,7 +68,7 @@ class CartItem(models.Model):
         ordering = ["pk"]
         indexes = [
             models.Index(fields=["cart"], name="cartitem_cart_idx"),
-            models.Index(fields=["variant"], name="cartitem_variant_idx"),
+            models.Index(fields=["product"], name="cartitem_product_idx"),
         ]
         constraints = [
             models.CheckConstraint(
@@ -79,4 +79,4 @@ class CartItem(models.Model):
 
     def __str__(self):
         """Return a compact label identifying the line."""
-        return f"Cart {self.cart_id}: variant {self.variant_id} x{self.quantity}"
+        return f"Cart {self.cart_id}: product {self.product_id} x{self.quantity}"

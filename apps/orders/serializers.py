@@ -5,7 +5,7 @@ the order-intake endpoint. Read serializers shape the order response:
 server-computed money as decimal strings, per-line item detail, and the
 status audit trail.
 
-No client-supplied price, total, or discount amount is ever read — the order
+No client-supplied price, total, or discount amount is ever read  -  the order
 money fields are computed by the service layer from live catalogue prices.
 The one exception is ``delivery_fee``: no system source exists for it, so
 staff type in the quoted amount and it is validated non-negative here.
@@ -25,14 +25,14 @@ from apps.orders.models import (
 class StaffOrderIntakeItemSerializer(serializers.Serializer):
     """One staff-entered intake line."""
 
-    variant_id = serializers.IntegerField(min_value=1)
+    product_id = serializers.IntegerField(min_value=1)
     quantity = serializers.IntegerField(min_value=1, max_value=999)
 
 
 class StaffOrderIntakeSerializer(serializers.Serializer):
     """Input for the staff order-intake endpoint.
 
-    Prices are never accepted here — every line is repriced server-side from
+    Prices are never accepted here  -  every line is repriced server-side from
     the current catalogue/promotion state. The exception is ``delivery_fee``:
     no system source exists for it, so staff type in the amount they quoted
     the customer. ``inquiry_id`` optionally links the created order back to
@@ -82,9 +82,8 @@ class OrderItemSerializer(serializers.ModelSerializer):
             "product",
             "bundle",
             "bundle_group_id",
-            "variant_sku",
+            "product_sku",
             "product_name",
-            "variant_attributes",
             "unit_price",
             "quantity",
             "total_price",

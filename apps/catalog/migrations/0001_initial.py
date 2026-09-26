@@ -88,7 +88,7 @@ class Migration(migrations.Migration):
                     "key",
                     models.CharField(
                         blank=True,
-                        help_text="JSON key path — required when source is product_specs or variant_attributes.",
+                        help_text="JSON key path  -  required when source is product_specs.",
                         max_length=100,
                     ),
                 ),
@@ -96,7 +96,7 @@ class Migration(migrations.Migration):
                     "field_name",
                     models.CharField(
                         blank=True,
-                        help_text="Model field name — required when source is product_field or variant_field.",
+                        help_text="Model field name  -  required when source is product_field.",
                         max_length=100,
                     ),
                 ),
@@ -105,9 +105,7 @@ class Migration(migrations.Migration):
                     models.CharField(
                         choices=[
                             ("product_specs", "Product.specs (JSON)"),
-                            ("variant_attributes", "ProductVariant.attributes (JSON)"),
                             ("product_field", "Direct Product field"),
-                            ("variant_field", "Direct ProductVariant field"),
                         ],
                         max_length=20,
                     ),
@@ -157,6 +155,50 @@ class Migration(migrations.Migration):
                 ("name", models.CharField(max_length=255)),
                 ("slug", models.SlugField(unique=True)),
                 ("sku", models.CharField(max_length=100, unique=True)),
+                ("supplier_sku", models.CharField(blank=True, max_length=100)),
+                ("price", models.DecimalField(decimal_places=2, max_digits=12)),
+                (
+                    "compare_at_price",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=12, null=True
+                    ),
+                ),
+                (
+                    "cost_price",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=12, null=True
+                    ),
+                ),
+                ("barcode", models.CharField(blank=True, max_length=100)),
+                (
+                    "weight",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=10, null=True
+                    ),
+                ),
+                ("dimensions", models.JSONField(blank=True, default=dict)),
+                (
+                    "package_weight",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=10, null=True
+                    ),
+                ),
+                ("package_dimensions", models.JSONField(blank=True, default=dict)),
+                ("pieces_per_unit", models.PositiveIntegerField(default=1)),
+                (
+                    "stock_status",
+                    models.CharField(
+                        choices=[
+                            ("in_stock", "In Stock"),
+                            ("low_stock", "Low Stock"),
+                            ("out_of_stock", "Out of Stock"),
+                        ],
+                        default="in_stock",
+                        help_text="Staff-set availability. No quantity is tracked behind it.",
+                        max_length=20,
+                    ),
+                ),
+                ("expected_restock_date", models.DateField(blank=True, null=True)),
                 ("short_description", models.CharField(blank=True, max_length=500)),
                 ("description", models.TextField()),
                 ("specs", models.JSONField(blank=True, default=dict)),

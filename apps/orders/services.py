@@ -3,8 +3,8 @@
 The order service is the only layer that creates or mutates ``Order`` rows.
 Staff create confirmed orders through ``create_staff_order`` after a
 WhatsApp/email sale: lines are repriced server-side and the order lands in
-``confirmed`` with its audit row. There is no stock tracking — staff keep
-variant availability current by hand — and delivery cost is the amount
+``confirmed`` with its audit row. There is no stock tracking  -  staff keep
+product availability current by hand  -  and delivery cost is the amount
 staff quoted the customer, typed in at intake.
 
 Invariants upheld here:
@@ -12,7 +12,7 @@ Invariants upheld here:
 - ``Order.status`` only ever changes through ``transition_order``, which writes
   a matching ``OrderStatusHistory`` row.
 - All pricing is recomputed server-side from the current catalogue/effective
-  price services — a client-supplied amount is display data, never charged.
+  price services  -  a client-supplied amount is display data, never charged.
   The one exception is ``delivery_fee``, which has no system source and is
   therefore staff-entered, validated non-negative, and stored as given.
 """
@@ -50,7 +50,7 @@ def _validate_payment_method(payment_method):
     """Reject a payment method that is not enabled for the store.
 
     Payment is arranged between staff and the customer outside the system,
-    so availability is purely the site's enabled-methods list — there is no
+    so availability is purely the site's enabled-methods list  -  there is no
     gateway to probe.
 
     Args:
@@ -116,7 +116,7 @@ def _normalize_phone(value):
 def transition_order(order, to_status, *, changed_by=None, note=""):
     """Change an order's status and log the transition.
 
-    The status field may only change through this function — a direct write in
+    The status field may only change through this function  -  a direct write in
     a view or task is a bug. The transition is validated against the allowed
     graph and a ``OrderStatusHistory`` row is written in the same transaction
     as the status field, so the audit trail can never drift from the column.
@@ -186,18 +186,18 @@ def apply_staff_status(order, to_status, *, changed_by, note=""):
     return transition_order(order, to_status, changed_by=changed_by, note=note)
 
 
-def _component_tax_rate(variant):
+def _component_tax_rate(product):
     """Return the VAT rate for a component's product tax class.
 
     Args:
-        variant (ProductVariant): the component variant.
+        product (Product): the component product.
 
     Returns:
         Decimal: the VAT rate as a percentage (``0`` for zero-rated/exempt).
     """
     from apps.core.models import SiteConfig
 
-    tax_class = variant.product.tax_class
+    tax_class = product.tax_class
     if tax_class == "standard":
         return _money(SiteConfig.load().standard_vat_rate)
     return Decimal("0.00")
@@ -221,18 +221,18 @@ def create_staff_order(
     """Create a confirmed order from a staff-assisted sale.
 
     Used after a WhatsApp/email conversation concludes: staff enter what the
-    customer agreed to, and the order is created already ``confirmed`` — there
+    customer agreed to, and the order is created already ``confirmed``  -  there
     is no pending-payment window because payment was arranged with the human
     in the loop. Every line price is recomputed server-side from the current
     catalogue/promotion state; client figures are never charged. The delivery
     fee is the amount staff quoted the customer in the conversation, typed in
-    directly — no fee table stands behind it. No stock is touched: staff keep
-    variant availability current by hand.
+    directly  -  no fee table stands behind it. No stock is touched: staff keep
+    product availability current by hand.
 
     Args:
         staff_user (User): the staff member creating the order.
         phone (str): the customer contact phone.
-        lines (list): ``[{"variant_id": int, "quantity": int}]`` staff-entered
+        lines (list): ``[{"product_id": int, "quantity": int}]`` staff-entered
             lines. At least one is required.
         order_source (str): ``whatsapp``, ``email``, or ``admin_manual``.
         payment_method (str): must be enabled in site settings.
@@ -249,10 +249,10 @@ def create_staff_order(
 
     Raises:
         ValidationError: on bad input, disabled payment method, unknown or
-            inactive variant, a variant marked out of stock, a negative
+            inactive product, a product marked out of stock, a negative
             delivery fee, or an unknown delivery area.
     """
-    from apps.catalog.models import ProductVariant
+    from apps.catalog.models import Product
     from apps.promotions.services import get_effective_price
 
     if order_source not in dict(Order.ORDER_SOURCE_CHOICES):
@@ -268,42 +268,41 @@ def create_staff_order(
     cleaned = []
     for entry in lines:
         try:
-            variant_id = int(entry.get("variant_id"))
+            product_id = int(entry.get("product_id"))
             quantity = int(entry.get("quantity"))
         except AttributeError, TypeError, ValueError:
             raise ValidationError(
-                "Each line needs a variant_id and quantity."
+                "Each line needs a product_id and quantity."
             ) from None
         if quantity < 1 or quantity > 999:
             raise ValidationError("Line quantity must be between 1 and 999.")
-        cleaned.append({"variant_id": variant_id, "quantity": quantity})
+        cleaned.append({"product_id": product_id, "quantity": quantity})
 
-    variants = {
-        variant.pk: variant
-        for variant in ProductVariant.objects.select_related("product").filter(
-            pk__in=[entry["variant_id"] for entry in cleaned],
+    products = {
+        product.pk: product
+        for product in Product.objects.filter(
+            pk__in=[entry["product_id"] for entry in cleaned],
             is_active=True,
-            product__is_active=True,
         )
     }
     priced = []
     for entry in cleaned:
-        variant = variants.get(entry["variant_id"])
-        if variant is None:
-            raise ValidationError(f"Variant {entry['variant_id']} is not available.")
-        if variant.stock_status == "out_of_stock":
-            raise ValidationError(f"Variant {variant.sku} is marked out of stock.")
-        effective = get_effective_price(variant)
+        product = products.get(entry["product_id"])
+        if product is None:
+            raise ValidationError(f"Product {entry['product_id']} is not available.")
+        if product.stock_status == "out_of_stock":
+            raise ValidationError(f"Product {product.sku} is marked out of stock.")
+        effective = get_effective_price(product)
         unit_price = _money(effective["price"]).quantize(_PENNY, rounding=ROUND_HALF_UP)
         quantity = entry["quantity"]
         total_price = (unit_price * quantity).quantize(_PENNY, rounding=ROUND_HALF_UP)
-        tax_rate = _component_tax_rate(variant)
+        tax_rate = _component_tax_rate(product)
         tax = (total_price * tax_rate / Decimal("100")).quantize(
             _PENNY, rounding=ROUND_HALF_UP
         )
         priced.append(
             {
-                "variant": variant,
+                "product": product,
                 "quantity": quantity,
                 "unit_price": unit_price,
                 "total_price": total_price,
@@ -381,10 +380,9 @@ def create_staff_order(
         for line in priced:
             OrderItem.objects.create(
                 order=order,
-                product=line["variant"].product,
-                variant_sku=line["variant"].sku,
-                product_name=line["variant"].product.name,
-                variant_attributes=line["variant"].attributes,
+                product=line["product"],
+                product_sku=line["product"].sku,
+                product_name=line["product"].name,
                 unit_price=line["unit_price"],
                 quantity=line["quantity"],
                 total_price=line["total_price"],

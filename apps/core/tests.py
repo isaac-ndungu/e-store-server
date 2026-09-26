@@ -14,7 +14,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.catalog.models import Product, ProductVariant
+from apps.catalog.models import Product
 from apps.core.admin import SiteConfigAdmin
 from apps.core.models import SiteConfig
 from apps.orders.models import Order, OrderItem
@@ -142,12 +142,10 @@ class SeedLoadTestDataTests(APITestCase):
         self.assertEqual(
             Product.objects.filter(slug__startswith="loadtest-").count(), 20
         )
-        self.assertEqual(
-            ProductVariant.objects.filter(sku__startswith="LT-").count(), 20
-        )
+        self.assertEqual(Product.objects.filter(sku__startswith="LT-").count(), 20)
         self.assertEqual(Order.objects.filter(phone__startswith="+25480").count(), 50)
         self.assertEqual(
-            OrderItem.objects.filter(variant_sku__startswith="LT-").count() > 0,
+            OrderItem.objects.filter(product_sku__startswith="LT-").count() > 0,
             True,
         )
         self.assertEqual(
@@ -175,9 +173,7 @@ class SeedLoadTestDataTests(APITestCase):
         self.assertEqual(
             Product.objects.filter(slug__startswith="loadtest-").count(), 0
         )
-        self.assertEqual(
-            ProductVariant.objects.filter(sku__startswith="LT-").count(), 0
-        )
+        self.assertEqual(Product.objects.filter(sku__startswith="LT-").count(), 0)
         self.assertEqual(Order.objects.filter(phone__startswith="+25480").count(), 0)
         self.assertEqual(OrderItem.objects.count(), 0)
         self.assertEqual(

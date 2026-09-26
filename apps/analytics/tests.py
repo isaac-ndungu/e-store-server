@@ -1,8 +1,8 @@
 """Tests for the analytics app.
 
-Covers the security matrix on every report endpoint — anonymous rejection, a
+Covers the security matrix on every report endpoint  -  anonymous rejection, a
 customer token rejection, and staff-role restriction (analyst and manager in,
-support/courier out) — plus the reconciliation contract that makes the feature
+support/courier out)  -  plus the reconciliation contract that makes the feature
 worth shipping: each summary figure is computed from the source-of-truth tables
 and must match hand-seeded rows exactly. Also covers period bounds, time-series
 grouping, the ``limit`` cap, and strict rejection of unknown query parameters.
@@ -20,7 +20,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.catalog.models import Category, Product, ProductVariant
+from apps.catalog.models import Category, Product
 from apps.notifications.models import NotificationLog
 from apps.orders.models import Order, OrderItem
 from apps.promotions.models import Coupon, CouponRedemption, Discount
@@ -201,13 +201,9 @@ class SummaryReconciliationTests(_AnalystClient):
             sku="FRIDGE-1",
             category=category,
             description="Quiet fridge",
+            price=Decimal("30000.00"),
             review_count=1,
             average_rating=Decimal("4.00"),
-        )
-        self.variant = ProductVariant.objects.create(
-            product=self.product,
-            sku="FRIDGE-1-SILVER",
-            price=Decimal("30000.00"),
         )
 
         # Two delivered orders plus one cancelled order.
@@ -248,7 +244,7 @@ class SummaryReconciliationTests(_AnalystClient):
             OrderItem.objects.create(
                 order=order,
                 product=self.product,
-                variant_sku=self.variant.sku,
+                product_sku=self.product.sku,
                 product_name=self.product.name,
                 unit_price=line_total,
                 quantity=1,
@@ -370,10 +366,10 @@ class SummaryReconciliationTests(_AnalystClient):
         self.assertEqual(stock["in_stock"], 1)
         self.assertEqual(stock["low_stock"], 0)
         self.assertEqual(stock["out_of_stock"], 0)
-        self.assertEqual(stock["variants"], 1)
+        self.assertEqual(stock["products"], 1)
 
         self.assertEqual(data["catalogue"]["products"], 1)
-        self.assertEqual(data["catalogue"]["variants"], 1)
+        self.assertEqual(data["catalogue"]["bundles"], 0)
 
         traffic = data["traffic"]
         self.assertEqual(traffic["view_count"], 1)
@@ -507,16 +503,18 @@ class ProductPerformanceTests(_AnalystClient):
         now = timezone.now()
         buyer = _make_user()
         self.first = Product.objects.create(
-            name="First", slug="first", sku="SKU-1", description="d"
+            name="First",
+            slug="first",
+            sku="SKU-1",
+            description="d",
+            price=Decimal("500.00"),
         )
         self.second = Product.objects.create(
-            name="Second", slug="second", sku="SKU-2", description="d"
-        )
-        variant_first = ProductVariant.objects.create(
-            product=self.first, sku="SKU-1-A", price=Decimal("500.00")
-        )
-        variant_second = ProductVariant.objects.create(
-            product=self.second, sku="SKU-2-A", price=Decimal("1000.00")
+            name="Second",
+            slug="second",
+            sku="SKU-2",
+            description="d",
+            price=Decimal("1000.00"),
         )
         order = Order.objects.create(
             user=buyer,
@@ -529,7 +527,7 @@ class ProductPerformanceTests(_AnalystClient):
         OrderItem.objects.create(
             order=order,
             product=self.first,
-            variant_sku=variant_first.sku,
+            product_sku=self.first.sku,
             product_name="First",
             unit_price=Decimal("500.00"),
             quantity=3,
@@ -539,7 +537,7 @@ class ProductPerformanceTests(_AnalystClient):
         OrderItem.objects.create(
             order=order,
             product=self.second,
-            variant_sku=variant_second.sku,
+            product_sku=self.second.sku,
             product_name="Second",
             unit_price=Decimal("1000.00"),
             quantity=1,
@@ -593,20 +591,23 @@ class QueryWhitelistTests(_AnalystClient):
 
 
 class StockSnapshotTests(_AnalystClient):
-    """The stock snapshot counts variants by their staff-set status."""
+    """The stock snapshot counts products by their staff-set status."""
 
-    def test_stock_snapshot_counts_variants_by_status(self):
-        """Active variants are counted under their staff-set status."""
-        product = Product.objects.create(name="P", slug="p", sku="P-1", description="d")
-        ProductVariant.objects.create(
-            product=product,
+    def test_stock_snapshot_counts_products_by_status(self):
+        """Active products are counted under their staff-set status."""
+        Product.objects.create(
+            name="P",
+            slug="p",
             sku="P-1-A",
+            description="d",
             price=Decimal("100.00"),
             stock_status="low_stock",
         )
-        ProductVariant.objects.create(
-            product=product,
+        Product.objects.create(
+            name="Q",
+            slug="q",
             sku="P-1-B",
+            description="d",
             price=Decimal("100.00"),
             stock_status="out_of_stock",
         )
@@ -617,7 +618,7 @@ class StockSnapshotTests(_AnalystClient):
         self.assertEqual(stock["in_stock"], 0)
         self.assertEqual(stock["low_stock"], 1)
         self.assertEqual(stock["out_of_stock"], 1)
-        self.assertEqual(stock["variants"], 2)
+        self.assertEqual(stock["products"], 2)
 
 
 class QueryScaleTests(_AnalystClient):

@@ -46,9 +46,7 @@ def _with_items(queryset):
     return queryset.prefetch_related(
         Prefetch(
             "items",
-            queryset=BundleItem.objects.select_related("product", "variant").order_by(
-                "pk"
-            ),
+            queryset=BundleItem.objects.select_related("product").order_by("pk"),
         )
     )
 

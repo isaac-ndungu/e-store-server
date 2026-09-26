@@ -28,7 +28,7 @@ class ReturnRequestAdmin(admin.ModelAdmin):
         "resolved_at",
     )
     list_filter = ("status", "requested_resolution")
-    search_fields = ("order__phone", "order__id", "order_item__variant_sku")
+    search_fields = ("order__phone", "order__id", "order_item__product_sku")
     readonly_fields = (
         "order",
         "order_item",

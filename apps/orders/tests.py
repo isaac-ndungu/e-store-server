@@ -16,7 +16,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
-from apps.catalog.models import Brand, Category, Product, ProductVariant
+from apps.catalog.models import Brand, Category, Product
 from apps.orders.models import Order
 from apps.orders.services import apply_staff_status, create_staff_order
 
@@ -44,40 +44,33 @@ def _login(client, email="staff@example.com"):
 
 
 def _make_product(price="5000.00", stock_status="in_stock", **kwargs):
-    """Create an active product with a default active variant."""
+    """Create an active product."""
     _SEQ[0] += 1
     n = _SEQ[0]
     category = Category.objects.get_or_create(name="Appliances", slug="appliances")[0]
     brand = Brand.objects.get_or_create(name="Samsung", slug="samsung")[0]
-    product = Product.objects.create(
+    return Product.objects.create(
         name=f"Kettle {n}",
         slug=f"kettle-{n}",
         sku=f"KTL-{n}",
         description="A test product.",
         category=category,
         brand=brand,
+        price=Decimal(price),
+        package_weight=Decimal("2.00"),
+        stock_status=stock_status,
         is_active=True,
         **kwargs,
     )
-    variant = ProductVariant.objects.create(
-        product=product,
-        sku=f"KTL-{n}-V",
-        attributes={"color": "Silver"},
-        price=price,
-        package_weight="2.00",
-        stock_status=stock_status,
-        is_active=True,
-    )
-    return product, variant
 
 
-def _place_intake_order(variant, staff=None, quantity=1, **kwargs):
-    """Create a confirmed intake order for a variant."""
+def _place_intake_order(product, staff=None, quantity=1, **kwargs):
+    """Create a confirmed intake order for a product."""
     staff = staff or _make_staff(email=f"s{_SEQ[0]}@example.com")
     params = {
         "staff_user": staff,
         "phone": "+254712345678",
-        "lines": [{"variant_id": variant.pk, "quantity": quantity}],
+        "lines": [{"product_id": product.pk, "quantity": quantity}],
         "order_source": "whatsapp",
         "payment_method": "cod",
     }
@@ -91,11 +84,11 @@ class IntakeOrderTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.staff = _make_staff()
-        _, self.variant = _make_product()
+        self.product = _make_product()
 
     def test_intake_creates_confirmed_order_with_history(self):
         """A staff intake lands confirmed with a single audit row."""
-        order = _place_intake_order(self.variant, staff=self.staff)
+        order = _place_intake_order(self.product, staff=self.staff)
         self.assertEqual(order.status, "confirmed")
         self.assertEqual(order.staff_created_by, self.staff)
         self.assertEqual(order.status_history.count(), 1)
@@ -105,18 +98,18 @@ class IntakeOrderTests(APITestCase):
 
     def test_intake_snapshots_product_data(self):
         """Order items snapshot catalogue data at creation time."""
-        _, variant = _make_product(price="3000.00")
-        order = _place_intake_order(variant, staff=self.staff, quantity=2)
+        product = _make_product(price="3000.00")
+        order = _place_intake_order(product, staff=self.staff, quantity=2)
         item = order.items.get()
-        self.assertEqual(item.product_name, variant.product.name)
-        self.assertEqual(item.variant_sku, variant.sku)
+        self.assertEqual(item.product_name, product.name)
+        self.assertEqual(item.product_sku, product.sku)
         self.assertEqual(item.unit_price, Decimal("3000.00"))
         self.assertEqual(item.quantity, 2)
         self.assertEqual(item.total_price, Decimal("6000.00"))
 
     def test_intake_applies_active_promotion(self):
         """The charged unit price reflects the current effective price."""
-        _, variant = _make_product(price="5000.00")
+        product = _make_product(price="5000.00")
         from datetime import timedelta
 
         from django.utils import timezone
@@ -125,33 +118,33 @@ class IntakeOrderTests(APITestCase):
 
         create_discount(
             name="Spring Sale",
-            scope="variant",
+            scope="product",
             discount_type="percent",
             value="10.00",
             starts_at=timezone.now() - timedelta(days=1),
-            variants=[variant.pk],
+            products=[product.pk],
         )
-        order = _place_intake_order(variant, staff=self.staff, quantity=2)
+        order = _place_intake_order(product, staff=self.staff, quantity=2)
         item = order.items.get()
         self.assertEqual(item.unit_price, Decimal("4500.00"))
 
     def test_intake_needs_no_stock_rows(self):
-        """Creation succeeds with no stock tracking behind the variant."""
-        order = _place_intake_order(self.variant, staff=self.staff, quantity=3)
+        """Creation succeeds with no stock tracking behind the product."""
+        order = _place_intake_order(self.product, staff=self.staff, quantity=3)
         self.assertEqual(order.status, "confirmed")
         self.assertEqual(order.items.get().quantity, 3)
 
-    def test_intake_rejects_out_of_stock_variant(self):
-        """A variant flagged out of stock fails and creates nothing."""
-        _, variant = _make_product(stock_status="out_of_stock")
+    def test_intake_rejects_out_of_stock_product(self):
+        """A product flagged out of stock fails and creates nothing."""
+        product = _make_product(stock_status="out_of_stock")
         with self.assertRaises(ValidationError):
-            _place_intake_order(variant, staff=self.staff, quantity=1)
+            _place_intake_order(product, staff=self.staff, quantity=1)
         self.assertEqual(Order.objects.count(), 0)
 
     def test_intake_records_quoted_delivery_fee(self):
         """The staff-quoted fee is stored with VAT on top."""
         order = _place_intake_order(
-            self.variant, staff=self.staff, delivery_fee=Decimal("450.00")
+            self.product, staff=self.staff, delivery_fee=Decimal("450.00")
         )
         self.assertEqual(order.delivery_fee, Decimal("450.00"))
         self.assertEqual(order.shipping_tax_amount, Decimal("72.00"))
@@ -160,19 +153,19 @@ class IntakeOrderTests(APITestCase):
         """A negative fee fails and creates nothing."""
         with self.assertRaises(ValidationError):
             _place_intake_order(
-                self.variant, staff=self.staff, delivery_fee=Decimal("-5.00")
+                self.product, staff=self.staff, delivery_fee=Decimal("-5.00")
             )
         self.assertEqual(Order.objects.count(), 0)
 
     def test_intake_rejects_disabled_payment_method(self):
         """A method outside the enabled list is rejected."""
         with self.assertRaises(ValidationError):
-            _place_intake_order(self.variant, staff=self.staff, payment_method="card")
+            _place_intake_order(self.product, staff=self.staff, payment_method="card")
 
     def test_intake_accepts_bank_transfer(self):
         """Bank transfers are a first-class assisted payment method."""
         order = _place_intake_order(
-            self.variant,
+            self.product,
             staff=self.staff,
             payment_method="bank_transfer",
             payment_reference="TRX2026ABC",
@@ -183,7 +176,7 @@ class IntakeOrderTests(APITestCase):
     def test_intake_rejects_unknown_source(self):
         """An order source outside the choices is rejected."""
         with self.assertRaises(ValidationError):
-            _place_intake_order(self.variant, staff=self.staff, order_source="website")
+            _place_intake_order(self.product, staff=self.staff, order_source="website")
 
 
 class StaffOrderStatusTests(APITestCase):
@@ -192,8 +185,8 @@ class StaffOrderStatusTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.staff = _make_staff()
-        _, self.variant = _make_product()
-        self.order = _place_intake_order(self.variant, staff=self.staff)
+        self.product = _make_product()
+        self.order = _place_intake_order(self.product, staff=self.staff)
         self.url = reverse(
             "api:orders:order-status-update", kwargs={"order_id": self.order.pk}
         )
@@ -279,8 +272,8 @@ class PaymentMethodChoicesTests(APITestCase):
         """The service guards the transition graph directly."""
         cache.clear()
         staff = _make_staff(email="svc@example.com")
-        _, variant = _make_product()
-        order = _place_intake_order(variant, staff=staff)
+        product = _make_product()
+        order = _place_intake_order(product, staff=staff)
         with self.assertRaises(ValidationError):
             apply_staff_status(order, "delivered", changed_by=staff)
 
@@ -288,8 +281,8 @@ class PaymentMethodChoicesTests(APITestCase):
         """Cancel/refund/return must go through the cancel/return flow."""
         cache.clear()
         staff = _make_staff(email="money@example.com")
-        _, variant = _make_product()
-        order = _place_intake_order(variant, staff=staff)
+        product = _make_product()
+        order = _place_intake_order(product, staff=staff)
         for target in ("cancelled", "refunded", "returned"):
             with self.assertRaises(ValidationError):
                 apply_staff_status(order, target, changed_by=staff)
@@ -303,8 +296,8 @@ class StaffOrderReadTests(APITestCase):
     def setUp(self):
         cache.clear()
         self.staff = _make_staff()
-        _, self.variant = _make_product()
-        self.order = _place_intake_order(self.variant, staff=self.staff)
+        self.product = _make_product()
+        self.order = _place_intake_order(self.product, staff=self.staff)
         self.list_url = reverse("api:orders:order-staff-list")
         self.detail_url = reverse(
             "api:orders:order-staff-detail", kwargs={"order_id": self.order.pk}
@@ -360,9 +353,7 @@ class StaffOrderReadTests(APITestCase):
     def test_missing_order_detail_is_404(self):
         """An unknown order id is a 404."""
         _login(self.client)
-        url = reverse(
-            "api:orders:order-staff-detail", kwargs={"order_id": 999999}
-        )
+        url = reverse("api:orders:order-staff-detail", kwargs={"order_id": 999999})
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
