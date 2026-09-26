@@ -2,7 +2,7 @@
 
 Both endpoints are read-only and public (the storefront needs site config and
 legal copy before a user is authenticated), so the serializers declare an
-explicit readable field list and mark every field read-only — there are no
+explicit readable field list and mark every field read-only  -  there are no
 writable fields on either endpoint.
 """
 

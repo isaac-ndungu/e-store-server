@@ -2,7 +2,7 @@
 
 ``InquiryCreateView`` is the single write endpoint an anonymous visitor
 touches: public, throttled, no auth. The cart lines are read server-side
-from the visitor's cookie-linked cart — the client never submits them —
+from the visitor's cookie-linked cart  -  the client never submits them  - 
 with a validated client snapshot accepted only when no server cart exists.
 Staff queue views require a fulfilment role and stay paginated.
 """
@@ -32,8 +32,8 @@ class InquiryCreateView(APIView):
     """Capture an anonymous WhatsApp/email hand-off (public).
 
     Fire-and-forget from the storefront: the visitor's WhatsApp/mail link
-    opens regardless of this call's outcome, so the view does the minimum —
-    validate, store, acknowledge — and never blocks on external work.
+    opens regardless of this call's outcome, so the view does the minimum  - 
+    validate, store, acknowledge  -  and never blocks on external work.
     """
 
     permission_classes = [permissions.AllowAny]

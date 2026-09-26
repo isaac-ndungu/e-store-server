@@ -71,7 +71,7 @@ class StaffTicketListQuerySerializer(serializers.Serializer):
 
 
 class StaffAuthorSerializer(serializers.Serializer):
-    """Compact staff/customer identity for the support console — handle only."""
+    """Compact staff/customer identity for the support console  -  handle only."""
 
     id = serializers.IntegerField()
     username = serializers.CharField()

@@ -66,8 +66,8 @@ class BundlePriceView(APIView):
     """Return the authoritative price for a bundle (public).
 
     The storefront calls this to display a bundle's price. The amount is
-    computed server-side from current variant prices and the bundle's own
-    discount — never from a client-supplied value.
+    computed server-side from current product prices and the bundle's own
+    discount  -  never from a client-supplied value.
     """
 
     permission_classes = [permissions.AllowAny]

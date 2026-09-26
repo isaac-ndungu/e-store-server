@@ -136,7 +136,7 @@ def send_password_reset_email(email, request):
     """Send a password-reset link to ``email`` if an account exists.
 
     Uses Django's ``PasswordResetTokenGenerator`` so no separate reset-token
-    table is needed. No result is returned to the caller — an unknown address
+    table is needed. No result is returned to the caller  -  an unknown address
     silently does nothing so the endpoint cannot be used to enumerate accounts.
 
     Args:

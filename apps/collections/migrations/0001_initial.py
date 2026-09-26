@@ -31,8 +31,8 @@ class Migration(migrations.Migration):
                     "collection_type",
                     models.CharField(
                         choices=[
-                            ("manual", "Manual — curated list"),
-                            ("smart", "Smart — rule-based, auto-updating"),
+                            ("manual", "Manual  -  curated list"),
+                            ("smart", "Smart  -  rule-based, auto-updating"),
                         ],
                         default="manual",
                         max_length=10,

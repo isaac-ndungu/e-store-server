@@ -2,7 +2,7 @@
 
 Staff authentication (JWT login/refresh/logout, ``/me/`` profile, password
 change and reset) plus the shared staff ``Address`` directory. There is no
-public registration — accounts exist only for staff/admin access. Address
+public registration  -  accounts exist only for staff/admin access. Address
 list/detail views are staff-wide (manager/support): the directory holds
 repeat-delivery addresses reused across orders, so any staff member can read
 or edit any entry.
@@ -42,7 +42,7 @@ from apps.accounts.services import (
 class LoginView(TokenObtainPairView):
     """Issue a JWT access/refresh pair for a staff account.
 
-    Public (``AllowAny``) by design — login precedes authentication.
+    Public (``AllowAny``) by design  -  login precedes authentication.
     Rate-limited with the dedicated ``auth_login`` scope to blunt brute-force
     guessing of passwords. Only staff-role accounts are served here: with no
     customer storefront login, a customer-role credential has no reachable
@@ -85,7 +85,7 @@ class RefreshView(TokenRefreshView):
     """Return a fresh access token from a valid refresh token.
 
     With refresh rotation enabled this also mints a new refresh token and
-    blacklists the old one. Public (``AllowAny``) by design — the refresh
+    blacklists the old one. Public (``AllowAny``) by design  -  the refresh
     check itself authenticates the request. Rate-limited with the
     ``auth_reauth`` scope to limit token-refresh churn.
     """
@@ -139,7 +139,7 @@ class LogoutView(APIView):
 class RequestPasswordResetView(APIView):
     """Send a password-reset link to the supplied email.
 
-    Public (``AllowAny``) by design — the requested action precedes login. The
+    Public (``AllowAny``) by design  -  the requested action precedes login. The
     response is always the same success message whether or not the email exists,
     so the endpoint cannot be used to enumerate registered accounts. Rate
     limited with the ``auth_reauth`` scope.
@@ -174,7 +174,7 @@ class RequestPasswordResetView(APIView):
 class ConfirmPasswordResetView(APIView):
     """Set a new password using a uid and reset token from the link.
 
-    Public (``AllowAny``) by design — the reset token itself authenticates the
+    Public (``AllowAny``) by design  -  the reset token itself authenticates the
     request. Rate limited with the ``auth_write`` scope.
     """
 
@@ -310,7 +310,7 @@ class AddressListCreateView(generics.ListCreateAPIView):
         return list_addresses()
 
     def perform_create(self, serializer):
-        """Save the entry unlinked — directory rows belong to no account."""
+        """Save the entry unlinked  -  directory rows belong to no account."""
         serializer.save(user=None)
 
 

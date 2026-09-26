@@ -1,6 +1,6 @@
 """Upload validation for support attachments.
 
-A ticket attachment is a receipt, screenshot, or fault photo — either an image
+A ticket attachment is a receipt, screenshot, or fault photo  -  either an image
 or a PDF. The type is verified by content (Pillow decode / PDF magic bytes),
 never by file extension, and the size is capped, so the attachment endpoint
 cannot be used to upload executable content or park oversized files.

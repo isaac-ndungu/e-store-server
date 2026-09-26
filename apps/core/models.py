@@ -45,7 +45,7 @@ class SiteConfig(models.Model):
 
     Exactly one row exists, pinned to ``pk=1`` by ``save()`` and addressed via
     ``load()``. Because the VAT rate and KRA PIN live here, the singleton must
-    never be deleted or duplicated — the ``pk=1`` pin and the admin guards below
+    never be deleted or duplicated  -  the ``pk=1`` pin and the admin guards below
     enforce that.
     """
 

@@ -6,15 +6,9 @@ from apps.promotions.views import (
     AdminDiscountDetailView,
     AdminDiscountListCreateView,
     CouponValidateView,
-    VariantEffectivePriceView,
 )
 
 urlpatterns = [
-    path(
-        "promotions/variants/<int:variant_pk>/price/",
-        VariantEffectivePriceView.as_view(),
-        name="variant-effective-price",
-    ),
     path(
         "promotions/coupons/validate/",
         CouponValidateView.as_view(),

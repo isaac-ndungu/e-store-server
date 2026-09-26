@@ -16,7 +16,7 @@ Invariants upheld here:
   second attempt is rejected with a clean error.
 - A review may reference at most one ``OrderItem`` as proof of purchase. The
   line must be for the same product, sit on a completed order, and match the
-  submitter's contact (order phone or email) — and must not already be
+  submitter's contact (order phone or email)  -  and must not already be
   claimed by an earlier review.
 - Photos attach by ``ReviewPhoto`` id: each id must be an unattached upload
   from the same identity (the authenticated user, or the same guest session
@@ -129,7 +129,7 @@ def _resolve_verified_order_item(submitter_contact, product, order_item_id):
     """Resolve an order line as proof of purchase for a review.
 
     The line must be for the reviewed product, sit on an order in a completed
-    state, and match the submitter's contact — the order's phone (compared
+    state, and match the submitter's contact  -  the order's phone (compared
     after normalization) or email (compared case-insensitively). A line that
     is missing, foreign, for a different product, contact-mismatched, or on a
     not-completed order all collapse into the same opaque error so the
@@ -236,7 +236,7 @@ def create_review(
     review is allowed per contact per product (per account per product when an
     authenticated user submits). A review may verify a purchase by referencing
     an ``OrderItem`` whose order phone/email matches the submitter's contact.
-    Photos are claimed as the review is created — each id must be an
+    Photos are claimed as the review is created  -  each id must be an
     unattached upload from the same identity. The review starts hidden; staff
     approval surfaces it and recomputes the product aggregate.
 

@@ -2,7 +2,7 @@
 
 Collections group products for storefront display. A ``Collection`` is either
 ``manual`` (a curated, staff-maintained list held as ``CollectionMembership``
-rows) or ``smart`` (auto-updating from a rule — new arrivals, recently
+rows) or ``smart`` (auto-updating from a rule  -  new arrivals, recently
 restocked, on sale, best sellers, or almost gone). Smart membership is
 recomputed periodically by a background job and the resulting product list is
 cached per collection slug, so the storefront renders fast and a manual
@@ -30,14 +30,14 @@ class Collection(models.Model):
     staff can tell at a glance whether the automatic refresh is healthy.
     ``starts_at`` / ``ends_at``
     optionally bound when the collection is active, and ``is_active`` is the
-    staff override — an inactive collection is hidden from the storefront even
+    staff override  -  an inactive collection is hidden from the storefront even
     within its window. ``display_location`` and ``sort_order`` are presentation
     hints for where and in what order the collection renders.
     """
 
     COLLECTION_TYPE_CHOICES = (
-        ("manual", "Manual — curated list"),
-        ("smart", "Smart — rule-based, auto-updating"),
+        ("manual", "Manual  -  curated list"),
+        ("smart", "Smart  -  rule-based, auto-updating"),
     )
     SMART_RULE_CHOICES = (
         ("new_arrivals", "New Arrivals"),

@@ -3,7 +3,7 @@
 The area serializer is flat and uses an explicit field list. Writes enforce
 the county and uniqueness invariants so bad or ambiguous service-area data
 never reaches the database. There is deliberately no fee schedule anywhere
-in this app — delivery cost is quoted by staff and entered at order intake.
+in this app  -  delivery cost is quoted by staff and entered at order intake.
 """
 
 from rest_framework import serializers

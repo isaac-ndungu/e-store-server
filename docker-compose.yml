@@ -1,11 +1,11 @@
 # Local dev / orchestration for the e-commerce platform.
 #
 # Services:
-#   db       — PostgreSQL 16 (the platform's production database engine)
-#   redis    — Redis for cache + Celery broker/result backend
-#   web      — Django dev server
-#   worker   — Celery worker
-#   beat     — Celery Beat periodic scheduler
+#   db        -  PostgreSQL 16 (the platform's production database engine)
+#   redis     -  Redis for cache + Celery broker/result backend
+#   web       -  Django dev server
+#   worker    -  Celery worker
+#   beat      -  Celery Beat periodic scheduler
 #
 # Bring everything up with:  docker compose up
 # The backend is reachable at http://localhost:8000

@@ -87,7 +87,7 @@ class ReviewSerializer(serializers.ModelSerializer):
         """Return whether the review is backed by a purchase order line.
 
         The badge simply reflects whether an ``OrderItem`` was claimed and
-        validated at creation — the service guarantees that line matched the
+        validated at creation  -  the service guarantees that line matched the
         submitter's contact on a completed order.
 
         Args:

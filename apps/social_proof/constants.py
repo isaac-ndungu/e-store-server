@@ -6,7 +6,7 @@ in one place rather than scattered across modules.
 """
 
 # First-party cookie carrying the anonymous visitor identity the live-viewer
-# counters key on. It holds no token and no personal data — just a random hex
+# counters key on. It holds no token and no personal data  -  just a random hex
 # identifier distinguishing one browser from another.
 VISITOR_COOKIE = "e_store_visitor"
 

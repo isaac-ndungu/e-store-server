@@ -1,8 +1,8 @@
 """Redis-backed caching of collection membership product lists.
 
 The public collection detail endpoint renders a collection's products. For
-lists that change rarely — curated manual collections, or smart collections
-between their periodic refreshes — recomputing memberships and hitting the
+lists that change rarely  -  curated manual collections, or smart collections
+between their periodic refreshes  -  recomputing memberships and hitting the
 database on every request is wasteful on slow, data-costly connections. The
 product id list for a collection is cached per slug and invalidated
 explicitly (via ``apps.collections.signals``) whenever the collection or its

@@ -1,7 +1,7 @@
 """App configuration for the core app.
 
-Everything downstream — shipping VAT, residency of tax data, feature toggles,
-storefront branding — reads from the core app's ``SiteConfig`` singleton.
+Everything downstream  -  shipping VAT, residency of tax data, feature toggles,
+storefront branding  -  reads from the core app's ``SiteConfig`` singleton.
 """
 
 from django.apps import AppConfig

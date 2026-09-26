@@ -1,8 +1,8 @@
 """Redis-backed caching of bundle price computations.
 
-Bundle prices are derived from live component-variant prices and a bundle-level
+Bundle prices are derived from live component product prices and a bundle-level
 discount. Pricing is read on every storefront bundle page and at checkout, and
-depends only on data that changes rarely — component variants and the bundle's
+depends only on data that changes rarely  -  component products and the bundle's
 own discount fields. Caching the computed price per slug and invalidating it
 explicitly (via ``apps.bundles.signals``) whenever the bundle or its items
 change avoids recomputing on every request without serving a stale price
@@ -72,7 +72,7 @@ def invalidate_bundle_price(slug):
 def invalidate_all_bundle_prices():
     """Drop every cached bundle price.
 
-    Called when a promotion changes in a way that could affect any bundle —
+    Called when a promotion changes in a way that could affect any bundle  -
     a sitewide or category sale can change the discount-aware component price
     of many bundles at once, so it is cheaper and simpler to clear all bundle
     prices than to track which bundles are affected.

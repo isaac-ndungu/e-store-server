@@ -5,7 +5,7 @@ page shape omits ``meta_title``/``meta_description`` (reserved for the detail
 page or SEO layer) while the admin shape includes every editable field.
 
 Write serializers whitelist exactly what a caller may supply. The body is
-sanitised at the service boundary — the serializer enforces length and
+sanitised at the service boundary  -  the serializer enforces length and
 presence constraints only.
 """
 
@@ -67,7 +67,7 @@ class ContentPageCreateSerializer(serializers.Serializer):
 class ContentPageUpdateSerializer(serializers.Serializer):
     """Input for a staff member updating a content page.
 
-    Every field is optional — only supplied fields are applied.
+    Every field is optional  -  only supplied fields are applied.
     """
 
     title = serializers.CharField(max_length=PAGE_TITLE_MAX_LENGTH, required=False)
@@ -160,7 +160,7 @@ class BannerCreateSerializer(serializers.Serializer):
 class BannerUpdateSerializer(serializers.Serializer):
     """Input for a staff member updating a banner.
 
-    Every field is optional — only supplied fields are applied.
+    Every field is optional  -  only supplied fields are applied.
     """
 
     title = serializers.CharField(

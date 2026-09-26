@@ -2,9 +2,9 @@
 
 Analytics is read-only, so there are no write serializers and no writable
 fields. ``AnalyticsQuerySerializer`` whitelists the period parameters every
-report accepts — an optional ISO date/datetime ``start``/``end`` pair (exposed
+report accepts  -  an optional ISO date/datetime ``start``/``end`` pair (exposed
 on the wire as ``from``/``to``) and an optional ``group_by`` / ``limit`` where a
-report supports them — and rejects everything else. Non-aggregate output is
+report supports them  -  and rejects everything else. Non-aggregate output is
 shaped by hand rather than through ``ModelSerializer`` because every payload
 is a computed dict, not a row.
 """
@@ -54,7 +54,7 @@ class AnalyticsQuerySerializer(serializers.Serializer):
     """Shared period filter for analytics reports.
 
     ``start`` and ``end`` are both optional; omitting them means "all time".
-    The wire parameters are ``from``/``to`` — the view maps them onto these
+    The wire parameters are ``from``/``to``  -  the view maps them onto these
     fields because ``from`` is a reserved word and cannot name a serializer
     field.
     """

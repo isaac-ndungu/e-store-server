@@ -1,6 +1,6 @@
 """API views for the analytics app.
 
-Every endpoint is a staff report gated by the manager/analyst role — the only
+Every endpoint is a staff report gated by the manager/analyst role  -  the only
 roles that may see revenue and internal aggregates. Reports are read-only;
 there is no create/update, so no idempotency or ownership machinery applies
 (the caller either has the role or does not, and there is no per-resource
@@ -55,7 +55,7 @@ class AnalyticsAPIView(APIView):
     def validated_params(self):
         """Return the validated query parameters for this request.
 
-        The wire parameters are mapped onto the serializer's field names —
+        The wire parameters are mapped onto the serializer's field names  - 
         ``from``/``to`` onto ``start``/``end`` (``from`` is a reserved word),
         and any extra filter the subclass serializer declares (``group_by``,
         ``limit``) straight through. Unknown parameters are rejected by the

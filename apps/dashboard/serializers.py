@@ -1,7 +1,7 @@
 """API serializers for the dashboard app.
 
 The dashboard is read-only and every payload is a computed dict, so there are
-no ``ModelSerializer`` outputs — the serializers here exist to whitelist and
+no ``ModelSerializer`` outputs  -  the serializers here exist to whitelist and
 validate query parameters. Each view resolves its query string through one of
 these classes before touching the database, mirroring the analytics app's
 parameter handling: an explicit field list, unknown parameters rejected, and
@@ -52,7 +52,7 @@ class DashboardQuerySerializer(serializers.Serializer):
     """Period filter shared by the period-bound dashboard widgets.
 
     ``start`` and ``end`` are both optional; omitting them means "all time".
-    The wire parameters are ``from``/``to`` — the view maps them onto these
+    The wire parameters are ``from``/``to``  -  the view maps them onto these
     fields because ``from`` is a reserved word and cannot name a serializer
     field.
     """

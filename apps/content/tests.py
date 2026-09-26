@@ -462,7 +462,7 @@ class BannerAdminEndpointTests(APITestCase):
                 format="multipart",
             )
         # ImageField validation depends on the storage backend, so we accept
-        # either a successful create or a rejection of the synthetic upload —
+        # either a successful create or a rejection of the synthetic upload  - 
         # the service-layer path and role gating are covered by other tests.
         self.assertIn(
             response.status_code, (status.HTTP_201_CREATED, status.HTTP_400_BAD_REQUEST)

@@ -2,7 +2,7 @@
 
 The active category list with live product counts is read into every
 storefront navigation, yet it changes only when a category is created,
-edited, or deleted, or when a product's category membership changes — all
+edited, or deleted, or when a product's category membership changes  -  all
 rare operations in steady state. Caching the serialized rows and the
 per-slug detail payload avoids re-annotating the count query on every
 page load.

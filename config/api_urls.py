@@ -1,7 +1,7 @@
 """Top-level API URL configuration.
 
-The DRF DefaultRouter is declared here and individual app routers — catalog,
-orders, payments, etc. — register their viewsets into it as they are
+The DRF DefaultRouter is declared here and individual app routers  -  catalog,
+orders, payments, etc.  -  register their viewsets into it as they are
 built. As a result the /api/v1/ mount point exists from day one and grows app
 by app.
 """

@@ -74,7 +74,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     ``username``, ``phone_number``, ``first_name``, and ``last_name`` are
     writable so the caller can update their own profile via PATCH. ``email``
-    stays read-only — it is the login credential and changing it is handled
+    stays read-only  -  it is the login credential and changing it is handled
     separately. ``phone_number`` is normalized and validated so stored phones
     keep one shape. The writable field list is explicit; no client can set
     ``is_staff``, ``phone_verified``, or any other field.
@@ -131,7 +131,7 @@ class UserSerializer(serializers.ModelSerializer):
 class AddressSerializer(serializers.ModelSerializer):
     """Detail representation of a shared delivery address.
 
-    Staff manage the whole directory — ownership is not enforced here or in
+    Staff manage the whole directory  -  ownership is not enforced here or in
     the view. Setting ``is_default`` to true clears the flag on every other
     entry so intake pre-fill has exactly one default.
     """

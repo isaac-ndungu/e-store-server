@@ -3,7 +3,7 @@
 Hosts the custom ``User`` model and ``Address``. Because ``User`` replaces
 Django's default auth model, this app must be present in ``INSTALLED_APPS`` and
 ``AUTH_USER_MODEL`` must point at it before the first migration of the project
-runs — see settings.
+runs  -  see settings.
 """
 
 from django.apps import AppConfig

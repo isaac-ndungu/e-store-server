@@ -3,7 +3,7 @@
 Business endpoints are gated by the user's ``role`` rather than the coarse
 ``is_staff`` boolean, so a courier token can reach courier actions (e.g.
 recording a COD collection) while a manager sees fulfilment operations and an
-analyst sees revenue — and none of the three spill into the others. Django's
+analyst sees revenue  -  and none of the three spill into the others. Django's
 admin stays gated by ``is_staff``; these classes gate the API.
 
 Each class grants access when the caller is authenticated and their role (or

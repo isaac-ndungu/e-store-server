@@ -2,7 +2,7 @@
 
 Moderation happens through the API's manager/support endpoints or through these
 admin pages; both must land on the service layer so every visibility change
-also refreshes the product's denormalised rating aggregate — a raw
+also refreshes the product's denormalised rating aggregate  -  a raw
 ``.update(is_approved=...)`` in the admin would leave the storefront number
 stale.
 """

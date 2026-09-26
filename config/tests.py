@@ -21,7 +21,7 @@ class HealthEndpointTests(SimpleTestCase):
 
         The DRF API root is authenticated by default (global default permission
         is ``IsAuthenticated``), so an anonymous caller receives 401 rather than
-        404 — proving the mount resolves without exposing anything publicly.
+        404  -  proving the mount resolves without exposing anything publicly.
         """
         response = self.client.get("/api/v1/")
         self.assertEqual(response.status_code, 401)

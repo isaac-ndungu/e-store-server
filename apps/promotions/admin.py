@@ -4,7 +4,6 @@ from django.contrib import admin
 from apps.promotions.models import Coupon, CouponRedemption, Discount
 
 _SCOPE_RELATION = {
-    "variant": "variants",
     "product": "products",
     "category": "categories",
     "brand": "brands",
@@ -62,7 +61,7 @@ class DiscountAdmin(admin.ModelAdmin):
     )
     list_filter = ("scope", "discount_type", "is_active", "applies_within_bundles")
     search_fields = ("name", "badge_text")
-    filter_horizontal = ("variants", "products", "categories", "brands")
+    filter_horizontal = ("products", "categories", "brands")
 
 
 @admin.register(Coupon)

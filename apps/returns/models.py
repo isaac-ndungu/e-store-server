@@ -4,8 +4,8 @@ A ``ReturnRequest`` captures a post-delivery return of one order line (or a
 whole single-line order) from the customer's request through staff approval,
 physical receipt, and refund resolution. ``status`` is the single source of
 truth for where a request is; the returns service layer records every change
-in ``ReturnRequestStatusHistory`` alongside it, so the resolution trail —
-including the amounts computed at approval — is fully reconstructable.
+in ``ReturnRequestStatusHistory`` alongside it, so the resolution trail  - 
+including the amounts computed at approval  -  is fully reconstructable.
 
 A return request may also carry an optional link to the support ticket a
 customer opened about it, so a refund dispute and its conversation stay
@@ -23,14 +23,14 @@ class ReturnRequest(models.Model):
 
     ``order_item`` is nullable because a request may cover a whole single-line
     order; it resolves to a specific delivered line whenever the order has
-    more than one. ``order`` is never nullable — a request is always tied to
+    more than one. ``order`` is never nullable  -  a request is always tied to
     the order it originated from, which is also what refunds route against.
 
     ``refund_amount`` is computed and stored by the service layer at approval
     time, never accepted from a client. ``restocking_fee_applied`` records the
     fee actually deducted so the amount refunded always reconciles against the
     line total. ``refund_method`` is a plain staff description of how the
-    money went back ("M-Pesa - sent manually", "Bank transfer") — no payout
+    money went back ("M-Pesa - sent manually", "Bank transfer")  -  no payout
     integration stands behind it.
     """
 
@@ -77,7 +77,7 @@ class ReturnRequest(models.Model):
     refund_method = models.CharField(
         max_length=100,
         blank=True,
-        help_text="How the refund was sent, in staff words — e.g. "
+        help_text="How the refund was sent, in staff words  -  e.g. "
         "'M-Pesa - sent manually'. Recorded, never executed.",
     )
     ticket = models.ForeignKey(
@@ -106,7 +106,7 @@ class ReturnRequest(models.Model):
                 name="return_money_fields_nonnegative",
             ),
             # A rejected request does not spend the right to return the line;
-            # every other status — including a completed refund — does, so a
+            # every other status  -  including a completed refund  -  does, so a
             # physical line can never carry more than one live-or-resolved
             # request. The service layer enforces the same rule for an
             # understandable error message; this is the race-proof backstop.
@@ -126,7 +126,7 @@ class ReturnRequestStatusHistory(models.Model):
     """An audit entry for one return-request status transition.
 
     Written by the returns service layer every time ``ReturnRequest.status``
-    changes so the resolution trail is fully reconstructable — including the
+    changes so the resolution trail is fully reconstructable  -  including the
     refund method and computed amount recorded at the terminal transition.
     """
 

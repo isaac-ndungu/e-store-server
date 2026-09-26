@@ -1,11 +1,11 @@
 """Business logic for the inquiries app.
 
 Inquiry capture is intentionally dumb: validate, store, return. No pricing,
-no stock, no notifications happen here — the endpoint is fire-and-forget
+no stock, no notifications happen here  -  the endpoint is fire-and-forget
 from the storefront's perspective, and anything slow would punish visitors
 on patchy connections. Queue movement is the only mutation, guarded by a
 small allowed-transition map so an inquiry cannot skip from new to converted
-without staff contact in between — except the direct new-to-abandoned spam
+without staff contact in between  -  except the direct new-to-abandoned spam
 path.
 """
 
@@ -71,7 +71,7 @@ def build_handoff_message(*, cart_snapshot, reference):
     instead of assembling the text itself, so the ``Ref`` line matching the
     chat back to its queue row is always present and always formatted the
     same way. Prices come from the display-time snapshot and are labelled
-    estimates — the intake view reprices everything server-side.
+    estimates  -  the intake view reprices everything server-side.
 
     Args:
         cart_snapshot (list): validated snapshot lines with ``sku``,
@@ -95,10 +95,10 @@ def build_handoff_message(*, cart_snapshot, reference):
             unit_price = Decimal(str(line.get("price", "")))
             line_total = unit_price * quantity
             total += line_total
-            price_part = f" — KES {line_total:,.2f}"
+            price_part = f"  -  KES {line_total:,.2f}"
         except InvalidOperation, ValueError, TypeError:
             total_known = False
-            price_part = " — price to confirm"
+            price_part = "  -  price to confirm"
         item_lines.append(f"- {name} ({sku}) x{quantity}{price_part}")
     parts = ["Hello! I would like to place an order:", ""]
     parts.extend(item_lines)

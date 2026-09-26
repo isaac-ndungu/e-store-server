@@ -2,8 +2,8 @@
 
 Both endpoints are deliberately public and read-only: the storefront fetches
 branding, theme, currency, payment methods and the VAT rate before any user is
-authenticated. No secrets live in ``SiteConfig`` — sensitive values stay in
-``config/settings.py`` / the environment — so exposing this record width is
+authenticated. No secrets live in ``SiteConfig``  -  sensitive values stay in
+``config/settings.py`` / the environment  -  so exposing this record width is
 safe.
 """
 
@@ -20,7 +20,7 @@ from apps.core.serializers import (
 class SiteConfigView(generics.RetrieveAPIView):
     """Return the full public site configuration for the storefront.
 
-    Public (``AllowAny``) by design — the catalog/checkout clients need the
+    Public (``AllowAny``) by design  -  the catalog/checkout clients need the
     currency, payment methods, and feature toggles on first load, before login.
     Rate-limited with the shared ``public`` scope.
     """
@@ -38,7 +38,7 @@ class SiteConfigView(generics.RetrieveAPIView):
 class LegalInformationView(generics.RetrieveAPIView):
     """Return the legal / trust copy (KRA PIN, return policy, physical address).
 
-    Public (``AllowAny``) by design — consumer-law disclosures must be visible
+    Public (``AllowAny``) by design  -  consumer-law disclosures must be visible
     without an account. Rate-limited with the shared ``public`` scope.
     """
 

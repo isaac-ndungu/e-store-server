@@ -2,7 +2,7 @@
 
 One scheduled task keeps the durable view-event table bounded: rows older than
 the retention window are purged on a daily basis. The task is idempotent and
-safe to run twice — deleting rows that no longer exist is a harmless no-op, and
+safe to run twice  -  deleting rows that no longer exist is a harmless no-op, and
 a redelivery merely deletes a (possibly empty) older set.
 """
 

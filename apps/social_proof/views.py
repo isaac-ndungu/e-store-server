@@ -2,8 +2,8 @@
 
 Public storefront endpoints: recording a product view, reading the live-viewer
 count for one product, reading counts for many products at once, and the
-recent-sales feed. All four are ``AllowAny`` deliberately — viewing a product,
-or asking how many people are viewing it, is never gated — and they declare no
+recent-sales feed. All four are ``AllowAny`` deliberately  -  viewing a product,
+or asking how many people are viewing it, is never gated  -  and they declare no
 authentication classes so the common logged-in storefront path never trips the
 session CSRF check for an action that mutates nothing sensitive.
 
@@ -234,7 +234,7 @@ class RecentSalesView(APIView):
     """Return recently completed purchases for the social-proof feed (public).
 
     The feed powers the storefront's "someone just bought X" popups. It
-    exposes only the product, quantity, and purchase time — no customer data.
+    exposes only the product, quantity, and purchase time  -  no customer data.
     """
 
     permission_classes = [permissions.AllowAny]

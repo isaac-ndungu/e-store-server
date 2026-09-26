@@ -16,7 +16,7 @@ def find_orders_by_payment_reference(reference, exclude_pk=None):
 
     A receipt code fat-fingered onto two orders is a reconciliation headache,
     so the intake view warns when the reference being filed already appears
-    elsewhere. Blank references are skipped — most non-M-Pesa orders carry
+    elsewhere. Blank references are skipped  -  most non-M-Pesa orders carry
     none, and warning on those would be pure noise.
 
     Args:

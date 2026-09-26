@@ -31,7 +31,7 @@ def _provider_exceptions():
 
     Africa's Talking raises its own exception type for network and auth
     failures during a send.  This is a real, retryable failure mode, so it
-    must be caught and surfaced as a ``failed`` result — while a bare
+    must be caught and surfaced as a ``failed`` result  -  while a bare
     ``Exception`` continues to be avoided so genuine programming errors
     still break loudly.
 

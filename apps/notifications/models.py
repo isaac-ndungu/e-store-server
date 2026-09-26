@@ -7,7 +7,7 @@ class NotificationLog(models.Model):
 
     Created by the service layer after every successful or failed send so
     the audit trail is complete regardless of provider outcome. The log is
-    append-only — status transitions are recorded as new rows via
+    append-only  -  status transitions are recorded as new rows via
     ``update_status()`` rather than in-place edits, preserving the full
     history of each send attempt.
     """

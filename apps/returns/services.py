@@ -4,18 +4,18 @@ The returns service is the only layer that creates or mutates ``ReturnRequest``
 rows and the only place the post-delivery return and pre-shipment cancellation
 workflows are implemented:
 
-- ``create_return_request`` — a customer opens a request against a delivered
+- ``create_return_request``  -  a customer opens a request against a delivered
   order within the cooling-off window.
-- ``approve_return_request`` — staff fixes how the money goes back (a plain
+- ``approve_return_request``  -  staff fixes how the money goes back (a plain
   description, e.g. "M-Pesa - sent manually") and the server-computed
   amounts for a refund-resolution request.
-- ``record_item_received`` — physical receipt of the returned goods.
-- ``refund_return_request`` — staff records the manual refund: the request is
+- ``record_item_received``  -  physical receipt of the returned goods.
+- ``refund_return_request``  -  staff records the manual refund: the request is
   marked ``refunded`` and the order carries the refund record.
-- ``cancel_confirmed_order`` — the pre-shipment cancellation path: a required
+- ``cancel_confirmed_order``  -  the pre-shipment cancellation path: a required
   staff note plus the manual-refund record, then the order is cancelled.
 
-Refunds are arranged by staff outside the system, so money never moves here —
+Refunds are arranged by staff outside the system, so money never moves here  - 
 these functions record what happened, with the amounts still computed and
 capped server-side from the order snapshots.
 
@@ -71,7 +71,7 @@ def _require_credit_note_if_transmitted(order):
 
     When electronic invoicing lands, reversing a transmitted invoice requires
     a credit note rather than only a status change. Until then there is no
-    invoice store, so this is a no-op — but every money-moving reversal
+    invoice store, so this is a no-op  -  but every money-moving reversal
     (post-delivery refund, pre-shipment cancellation) must call it first so
     the check cannot be bypassed later by adding a new path that forgets it.
 
@@ -114,7 +114,7 @@ def _money(value):
 def transition_return_status(return_request, to_status, *, changed_by=None, note=""):
     """Change a return request's status and log the transition.
 
-    The status field may only change through this function — a direct write in
+    The status field may only change through this function  -  a direct write in
     a view is a bug. The transition is validated against the allowed graph and
     a ``ReturnRequestStatusHistory`` row is written in the same transaction as
     the status field, so the audit trail can never drift from the column. A
@@ -158,7 +158,7 @@ def _returnable_line(order, order_item_id):
     """Resolve the order line a return request applies to.
 
     A request names a specific line when given, otherwise the whole order is
-    covered — which is only unambiguous when the order has a single line, so
+    covered  -  which is only unambiguous when the order has a single line, so
     that line becomes the concrete restock/refund basis either way.
 
     Args:
@@ -200,7 +200,7 @@ def create_return_request(
     window configured on the site (measured in days from placement). A line is
     eligible when its product is still flagged returnable; a product deleted
     since the order is accepted because the flag can no longer be consulted.
-    One request per line ever — open or already resolved — is enforced, so a
+    One request per line ever  -  open or already resolved  -  is enforced, so a
     retried client tap cannot create two requests for the same goods and a
     refunded line cannot be returned a second time.
 
@@ -240,7 +240,7 @@ def create_return_request(
         )
 
     # A rejected request leaves the return right intact; any other prior
-    # request — open or refunded/replaced/closed — spends it. The database
+    # request  -  open or refunded/replaced/closed  -  spends it. The database
     # constraint backs this up against a race.
     if (
         ReturnRequest.objects.filter(order=order, order_item=order_item)
@@ -271,7 +271,7 @@ def _line_refund_base(order_item):
     """Return the money attributable to a returned line.
 
     The base is what the customer paid for the goods on that line plus the VAT
-    charged on it — the line snapshots carry both, so the historical amount is
+    charged on it  -  the line snapshots carry both, so the historical amount is
     used rather than the live catalogue price.
 
     Args:
@@ -326,7 +326,7 @@ def approve_return_request(
     configured fee percentage: the refund never exceeds the line total minus
     the fee, nor the order's grand total. An explicitly supplied fee or amount
     is honored only after the same caps. ``refund_method`` is a plain staff
-    description of how the money will go back — it is recorded, never
+    description of how the money will go back  -  it is recorded, never
     executed.
 
     Args:
@@ -429,7 +429,7 @@ def record_item_received(*, return_request, user=None):
     """Record physical receipt of the returned goods.
 
     Moves the request to ``item_received`` in the same transaction as nothing
-    else — there is no stock ledger to update, so receipt is purely the staff
+    else  -  there is no stock ledger to update, so receipt is purely the staff
     confirmation that the goods are back in hand.
 
     Args:
@@ -468,7 +468,7 @@ def refund_return_request(*, return_request, refund_note, user=None):
     The money only moves by staff hand (status must be ``item_received``), so
     this call records that it happened: the request is stamped ``refunded``
     with the staff note, and the order carries the refund amount and note for
-    reporting. ``refund_note`` is required — an empty record of money going
+    reporting. ``refund_note`` is required  -  an empty record of money going
     back is worse than none.
 
     Idempotent-safe and race-safe: the parent ``ReturnRequest`` row is locked
@@ -494,7 +494,7 @@ def refund_return_request(*, return_request, refund_note, user=None):
     note = _sanitize_plain(refund_note)
     if not note:
         raise ValidationError(
-            "A refund note is required — record how the money went back."
+            "A refund note is required  -  record how the money went back."
         )
 
     with transaction.atomic():
@@ -567,7 +567,7 @@ def close_return_request(*, return_request, note="", user=None):
     """Close a return request without completing a refund or replacement.
 
     Terminal housekeeping for a request that will not reach a money-moving
-    state — e.g. a customer withdraws the request or staff and customer agree
+    state  -  e.g. a customer withdraws the request or staff and customer agree
     to close the file.
 
     Args:
@@ -642,7 +642,7 @@ def cancel_confirmed_order(
 ):
     """Cancel a confirmed-but-undelivered order.
 
-    There is no stock to restock and no automated refund to trigger — this is
+    There is no stock to restock and no automated refund to trigger  -  this is
     a status change to ``cancelled`` plus the record of what happened. ``note``
     is required: it must say what happened and whether/how a refund was
     arranged manually. When money goes back to the customer, ``refund_note``
@@ -651,8 +651,8 @@ def cancel_confirmed_order(
 
     Idempotent-safe and race-safe: the ``Order`` row is locked with
     ``select_for_update`` and the status re-checked under the lock, so a
-    second call — from a retry or a concurrent staff action carrying a
-    different ``Idempotency-Key`` — rejects instead of recording twice.
+    second call  -  from a retry or a concurrent staff action carrying a
+    different ``Idempotency-Key``  -  rejects instead of recording twice.
 
     Args:
         order (Order): the confirmed or processing order.
@@ -673,7 +673,7 @@ def cancel_confirmed_order(
     note = _sanitize_plain(note)
     if not note:
         raise ValidationError(
-            "A cancellation note is required — record what happened and "
+            "A cancellation note is required  -  record what happened and "
             "whether/how a refund was arranged."
         )
     refund_note = _sanitize_plain(refund_note)

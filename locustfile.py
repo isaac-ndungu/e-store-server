@@ -8,7 +8,7 @@ Run against a seeded environment::
 The customer traffic profile is deliberately storefront-shaped: most hits are
 list reads and browsing (categories, brands, products, featured collections),
 a smaller share are detail pages, and search carries the "hot" text lookups.
-Callers are anonymous — checkout and payment paths need authenticated,
+Callers are anonymous  -  checkout and payment paths need authenticated,
 idempotency-keyed traffic and are out of scope for this anonymous profile.
 
 ``on_start`` caches a handful of product and category slugs from the live

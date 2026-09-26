@@ -46,7 +46,7 @@ class Ticket(models.Model):
     ``user`` is nullable and ``SET_NULL`` so a ticket survives the deletion of
     the account that opened it (staff still need the history), and so staff can
     raise a ticket on a customer's behalf. Customer self-service access is
-    nonetheless authenticated and ownership-checked — the model carries no guest
+    nonetheless authenticated and ownership-checked  -  the model carries no guest
     lookup token, so a ticket without a ``user`` is reachable only by staff.
 
     ``order`` and the optional reverse link from ``returns.ReturnRequest.ticket``

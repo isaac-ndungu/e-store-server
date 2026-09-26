@@ -6,8 +6,8 @@ or the flag could serve stale state until the TTL expires.
 
 Deletions bypass the services layer entirely (administrator deletes, user
 cascades, product cascades), so ``post_delete`` handlers keep the things the
-services normally maintain — the product's rating aggregate and the stored
-photo files — consistent on every way a review or photo can disappear.
+services normally maintain  -  the product's rating aggregate and the stored
+photo files  -  consistent on every way a review or photo can disappear.
 """
 
 from django.db.models.signals import post_delete, post_save
@@ -31,8 +31,8 @@ def on_site_config_saved(sender, instance, **kwargs):
 def recompute_rating_on_review_deleted(sender, instance, **kwargs):
     """Keep the product's rating aggregate right when a review is deleted.
 
-    Reviews can disappear outside the services layer — an administrator
-    delete, or a cascade from the reviewer's account or the product — so the
+    Reviews can disappear outside the services layer  -  an administrator
+    delete, or a cascade from the reviewer's account or the product  -  so the
     aggregate is recomputed here. When the product itself is being deleted the
     row is already gone and the recompute is skipped.
     """
@@ -45,7 +45,7 @@ def recompute_rating_on_review_deleted(sender, instance, **kwargs):
 def delete_photo_files(sender, instance, **kwargs):
     """Remove a photo's stored original and processed variants from storage.
 
-    Called on every deletion path — review cascade, moderator photo delete, or
-    the orphan sweep — so no review photo ever leaves orphaned files behind.
+    Called on every deletion path  -  review cascade, moderator photo delete, or
+    the orphan sweep  -  so no review photo ever leaves orphaned files behind.
     """
     delete_image_files(instance.storage_name)

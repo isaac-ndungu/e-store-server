@@ -19,7 +19,7 @@ from apps.reviews.constants import MAX_REVIEW_RATING
 class Review(models.Model):
     """An anonymous rating and written review of a product.
 
-    There are no customer accounts, so anyone may submit — which is why new
+    There are no customer accounts, so anyone may submit  -  which is why new
     reviews stay hidden until staff approve them. ``submitter_name`` is the
     public display handle and ``submitter_contact`` a phone or email; the
     contact doubles as the verified-purchase cross-check (matched against the

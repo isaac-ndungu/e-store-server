@@ -101,4 +101,4 @@ class Address(models.Model):
 
     def __str__(self):
         """Return a short human-readable label for admin/trace output."""
-        return f"{self.recipient_name} — {self.area_name}, {self.county}"
+        return f"{self.recipient_name}  -  {self.area_name}, {self.county}"

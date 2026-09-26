@@ -2,7 +2,7 @@
 
 Split into a public endpoint (``AllowAny``: the delivery-area catalogue for
 the storefront picker) and admin CRUD views (``IsAdminUser``) for the area
-list. There is no quote endpoint — delivery cost is confirmed with the
+list. There is no quote endpoint  -  delivery cost is confirmed with the
 customer by staff and typed into the order at intake. Views stay thin:
 parse input, call a selector, return a response.
 """
@@ -21,7 +21,7 @@ class DeliveryAreaListView(generics.ListAPIView):
     """List the delivery areas offered to the storefront (public).
 
     Only active areas are returned. Supports an optional ``county`` query
-    filter. Each row answers "do we deliver here" — no pricing attached.
+    filter. Each row answers "do we deliver here"  -  no pricing attached.
     """
 
     permission_classes = [permissions.AllowAny]

@@ -17,7 +17,7 @@ class Migration(migrations.Migration):
             name="refund_method",
             field=models.CharField(
                 blank=True,
-                help_text="How the refund was sent, in staff words — e.g. "
+                help_text="How the refund was sent, in staff words  -  e.g. "
                 "'M-Pesa - sent manually'. Recorded, never executed.",
                 max_length=100,
             ),

@@ -2,7 +2,7 @@
 
 Covers the public delivery-area list (anonymous allowed, active-only, county
 filter) and the admin area CRUD (auth + staff gating, county validation,
-uniqueness). There is deliberately no quote endpoint to test — delivery cost
+uniqueness). There is deliberately no quote endpoint to test  -  delivery cost
 is quoted by staff and entered at order intake.
 """
 

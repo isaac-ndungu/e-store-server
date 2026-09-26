@@ -9,7 +9,7 @@ processed under the same key is answered with 409 rather than being run twice.
 A key is bound to the request it first succeeded with: repeating the key
 with a *different* body is answered with 409 instead of replaying the first
 result, so a stale or recycled UUID cannot silently return the wrong order,
-ticket, or refund. Keys live 24 hours; only successful responses are cached —
+ticket, or refund. Keys live 24 hours; only successful responses are cached  - 
 a failed (validation) attempt can be retried with the same key after the
 caller fixes the payload.
 """
@@ -52,7 +52,7 @@ def require_idempotency_key(request):
 def _cache_key(scope, key):
     """Return the storage key for a caller scope + idempotency key pair.
 
-    The scope is any stable string identifying the acting caller — an
+    The scope is any stable string identifying the acting caller  -  an
     authenticated user is ``u<id>`` and an anonymous guest is ``s<session>``.
     Two guests must never share a scope, or one guest's stored response
     (order detail, lookup token) could be replayed to another.

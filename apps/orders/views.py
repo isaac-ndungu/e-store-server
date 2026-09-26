@@ -2,12 +2,12 @@
 
 Staff-only endpoints (manager/support):
 
-- ``StaffOrderIntakeView`` — create a confirmed order from an assisted
+- ``StaffOrderIntakeView``  -  create a confirmed order from an assisted
   WhatsApp/email sale, with idempotency protection.
-- ``StaffOrderListView`` — paginated order queue with status/phone/source and
+- ``StaffOrderListView``  -  paginated order queue with status/phone/source and
   placed-date filtering.
-- ``StaffOrderDetailView`` — one order with items and status history.
-- ``OrderStatusUpdateView`` — advance an order's fulfilment status.
+- ``StaffOrderDetailView``  -  one order with items and status history.
+- ``OrderStatusUpdateView``  -  advance an order's fulfilment status.
 
 All order mutations go through the order service; the status field is never
 written directly in a view.
@@ -128,7 +128,7 @@ class StaffOrderIntakeView(APIView):
                         "code": "duplicate_payment_reference",
                         "detail": (
                             "This payment reference is already used on "
-                            f"order {dup['id']} — confirm it is not a "
+                            f"order {dup['id']}  -  confirm it is not a "
                             "data-entry mistake."
                         ),
                         "order_id": dup["id"],

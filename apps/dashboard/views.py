@@ -1,6 +1,6 @@
 """API views for the dashboard app.
 
-Every endpoint is a staff widget gated by the manager/analyst role — the only
+Every endpoint is a staff widget gated by the manager/analyst role  -  the only
 roles that may see revenue and internal aggregates. Like the analytics app
 these are pure read views: no create/update exists, every payload is a
 computed dict (never a writable model row), and each view resolves its query

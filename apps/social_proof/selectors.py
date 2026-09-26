@@ -19,7 +19,7 @@ def get_active_product_by_slug(slug):
     """Return an active, non-discontinued product by slug, or None.
 
     Uses ``only("pk")`` because the social-proof endpoints touch nothing but
-    the primary key — the wide product row is not loaded.
+    the primary key  -  the wide product row is not loaded.
 
     Args:
         slug (str): the product slug.
@@ -58,8 +58,8 @@ def list_products_by_slugs(slugs):
 def list_recent_sales(limit):
     """Return the most recent completed purchases for the social-proof feed.
 
-    Surfaces only the product, quantity, and purchase time — never the
-    customer's identity — so the storefront can show "someone just bought X"
+    Surfaces only the product, quantity, and purchase time  -  never the
+    customer's identity  -  so the storefront can show "someone just bought X"
     without leaking who. Bundle purchases appear as one row per component,
     matching how they are stored.
 

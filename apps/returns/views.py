@@ -5,7 +5,7 @@ filed by staff after a customer complaint, and the refund-recording and
 pre-shipment cancellation actions require an ``Idempotency-Key`` so a
 retried request cannot record the same refund twice.
 
-Refunds are arranged by staff outside the system — these endpoints record
+Refunds are arranged by staff outside the system  -  these endpoints record
 what happened, they never move money.
 
 All mutations go through the returns service; no view writes a status or
@@ -289,7 +289,7 @@ class ReturnRejectView(APIView):
         """Reject the request.
 
         ``note`` records the staff reason in the audit trail. A request that
-        has already been restocked cannot be rejected — it must be closed,
+        has already been restocked cannot be rejected  -  it must be closed,
         refunded, or replaced.
 
         Args:
@@ -457,7 +457,7 @@ class ReturnRefundView(APIView):
 class OrderPreShipmentCancelView(APIView):
     """Cancel a confirmed-but-undelivered order as staff.
 
-    No stock moves and no money moves automatically — the cancellation is a
+    No stock moves and no money moves automatically  -  the cancellation is a
     status change plus the record of what happened. A staff note is required,
     saying what happened and whether/how a refund was arranged manually.
     Requires an ``Idempotency-Key``.

@@ -19,7 +19,7 @@ class ContentPage(models.Model):
     ``slug`` is used for public storefront retrieval and must be unique.
     ``body`` is stored as raw HTML; staff-supplied markup is sanitised at the
     service boundary before persistence. ``is_published`` gates storefront
-    visibility — drafts are hidden from public reads but visible in the staff
+    visibility  -  drafts are hidden from public reads but visible in the staff
     moderation list.
     """
 
@@ -52,7 +52,7 @@ class Banner(models.Model):
     (e.g. ``"homepage_hero"``, ``"category_top"``, ``"cart_upsell"``). The
     storefront queries banners by active status, placement, and sort order.
 
-    ``image`` is required — banners without a visual asset are not useful.
+    ``image`` is required  -  banners without a visual asset are not useful.
     ``link_url`` is optional: when present it drives the click-through
     destination; when absent the banner is purely decorative.
 

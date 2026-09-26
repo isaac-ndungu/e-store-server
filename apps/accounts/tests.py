@@ -4,7 +4,7 @@ Covers staff JWT login/refresh/rotation/logout, password reset (request +
 confirm), password change, the ``/me/`` retrieve/update endpoint, the shared
 staff Address directory (any manager/support staff reads every entry;
 customer-role tokens are rejected), and the ``auth_login`` / ``auth_write``
-throttle scopes. Public registration is gone — posting to the retired path
+throttle scopes. Public registration is gone  -  posting to the retired path
 returns 404 and creates nothing.
 """
 

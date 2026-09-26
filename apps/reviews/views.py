@@ -1,9 +1,9 @@
 """API views for the reviews app.
 
 Storefront paths are fully public: listing reviews/Q&A and submitting a
-review, a question, or a photo needs no account — the submitter's name and
+review, a question, or a photo needs no account  -  the submitter's name and
 contact travel in the body, and uploads are bound to the server-issued guest
-session. Moderation — approving/rejecting content and answering questions —
+session. Moderation  -  approving/rejecting content and answering questions  - 
 is gated behind the manager/support role.
 
 Ownership: the only caller-supplied references to other resources are a
@@ -243,7 +243,7 @@ def _staff_question_or_404(question_id):
 class ProductReviewsView(APIView):
     """List a product's reviews or submit one anonymously.
 
-    Fully public by design — the storefront renders and collects reviews
+    Fully public by design  -  the storefront renders and collects reviews
     outside any login wall. Submissions start hidden pending staff approval.
     Read and write rate scopes differ, so ``throttle_scope`` resolves per
     method.

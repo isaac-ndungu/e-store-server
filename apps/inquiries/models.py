@@ -15,7 +15,7 @@ from django.db import models
 class Inquiry(models.Model):
     """A captured WhatsApp/email hand-off from the anonymous storefront.
 
-    ``cart_snapshot`` is staff reference data only — products, quantities,
+    ``cart_snapshot`` is staff reference data only  -  products, quantities,
     and displayed prices at click time, copied from the server-side cart.
     Prices are never re-charged from it; the staff intake view reprices
     everything server-side. ``contact_hint``

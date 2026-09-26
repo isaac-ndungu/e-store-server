@@ -5,7 +5,7 @@ created, updated, or deleted. All free-form text is sanitised with ``bleach``
 at this boundary, so embedded scripts, iframes, and inline event handlers are
 stripped before the content is stored and rendered on the storefront.
 
-No feature flag gates content creation — unlike reviews or social proof,
+No feature flag gates content creation  -  unlike reviews or social proof,
 content management is a core staff capability that is always enabled.
 """
 

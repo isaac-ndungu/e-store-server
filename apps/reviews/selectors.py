@@ -16,7 +16,7 @@ def get_active_product_by_slug(slug):
     """Return an active, non-discontinued product by slug, or None.
 
     Uses ``only("pk")`` because the storefront review/question endpoints touch
-    nothing but the primary key — the wide product row is not loaded.
+    nothing but the primary key  -  the wide product row is not loaded.
 
     Args:
         slug (str): the product slug.

@@ -63,7 +63,7 @@ class _SenderSerializer(serializers.Serializer):
 class NotificationLogSerializer(serializers.ModelSerializer):
     """Read-only representation of a ``NotificationLog`` for audit queries.
 
-    ``provider_response`` is intentionally omitted from ``fields`` — raw
+    ``provider_response`` is intentionally omitted from ``fields``  -  raw
     provider payloads may contain sensitive infrastructure details (API
     keys in request echoes, internal IDs).  Ops staff can inspect them
     through the Django admin where the field is exposed as read-only.

@@ -1,8 +1,8 @@
 """Signal handlers that keep the storefront content cache coherent.
 
 Banner rotations and published content pages are cached for storefront
-reads. Any change to a banner or page — including a schedule or
-publication-state edit that changes what visitors see — invalidates the
+reads. Any change to a banner or page  -  including a schedule or
+publication-state edit that changes what visitors see  -  invalidates the
 matching cache generation so a stale payload is never served.
 """
 

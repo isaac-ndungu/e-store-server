@@ -1,7 +1,7 @@
 """API views for the content app.
 
 Storefront paths deliver published content pages and active banners to
-unauthenticated visitors — content browsing is public by design. Admin
+unauthenticated visitors  -  content browsing is public by design. Admin
 paths manage CRUD for both models and are gated behind the manager role.
 
 All mutations go through the content services layer; no view writes a model
@@ -105,7 +105,7 @@ def _staff_banner_or_404(banner_id):
 class ContentPageStorefrontView(APIView):
     """Retrieve a published content page by slug.
 
-    Public by design — the storefront renders content pages outside the login
+    Public by design  -  the storefront renders content pages outside the login
     wall. Unpublished or missing pages return 404, preventing enumeration of
     draft content.
     """
@@ -140,7 +140,7 @@ class ContentPageStorefrontView(APIView):
 class BannerStorefrontView(APIView):
     """List active banners for a given placement.
 
-    Public by design — the storefront fetches banners to populate layout
+    Public by design  -  the storefront fetches banners to populate layout
     regions. The ``placement`` query parameter is required; omitting it
     returns 400 to prevent unbounded queries across all placements.
     """
