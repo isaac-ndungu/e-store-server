@@ -10,6 +10,7 @@ tests that exercise ``select_for_update`` row-locking behaviour. Error
 tracking initializes whenever ``SENTRY_DSN`` is configured.
 """
 
+import os
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -62,6 +63,22 @@ def _database_from_url(url, conn_max_age, conn_health_checks):
     settings_dict["OPTIONS"].setdefault("keepalives_interval", 10)
     settings_dict["OPTIONS"].setdefault("keepalives_count", 5)
     return settings_dict
+
+
+def _cloudinary_packages_available():
+    """Check whether the Cloudinary SDK and storage backend are installed.
+
+    Returns:
+        bool: True when both ``cloudinary`` and ``cloudinary_storage`` can be
+            imported, False otherwise (e.g. a checkout where the optional
+            media dependencies have not been installed yet).
+    """
+    try:
+        import cloudinary  # noqa: F401
+        import cloudinary_storage  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 SECRET_KEY = config("SECRET_KEY", default="")
@@ -435,6 +452,43 @@ STORAGES = {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
     },
 }
+
+# Uploaded media (product/category/brand images, review photos, ticket and
+# product-document attachments) lives on Cloudinary whenever credentials are
+# configured. Local development and the test suite keep the plain filesystem
+# storage so they need no network access or third-party account: empty
+# credentials, or a checkout without the optional media dependencies
+# installed, simply leaves STORAGES["default"] untouched.
+CLOUDINARY_CLOUD_NAME = config("CLOUDINARY_CLOUD_NAME", default="")
+CLOUDINARY_API_KEY = config("CLOUDINARY_API_KEY", default="")
+CLOUDINARY_API_SECRET = config("CLOUDINARY_API_SECRET", default="")
+CLOUDINARY_URL = config("CLOUDINARY_URL", default="")
+CLOUDINARY_FOLDER = config("CLOUDINARY_FOLDER", default="")
+if CLOUDINARY_URL:
+    # The Cloudinary SDK reads this variable on its own; exporting it keeps
+    # the combined-URL form working without extra configuration code.
+    os.environ.setdefault("CLOUDINARY_URL", CLOUDINARY_URL)
+CLOUDINARY_STORAGE = {
+    "CLOUD_NAME": CLOUDINARY_CLOUD_NAME,
+    "API_KEY": CLOUDINARY_API_KEY,
+    "API_SECRET": CLOUDINARY_API_SECRET,
+    "SECURE": True,
+}
+if CLOUDINARY_FOLDER:
+    CLOUDINARY_STORAGE["MEDIA_TAG"] = CLOUDINARY_FOLDER
+USE_CLOUDINARY = (
+    not TESTING
+    and _cloudinary_packages_available()
+    and bool(
+        (CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET)
+        or CLOUDINARY_URL
+    )
+)
+if USE_CLOUDINARY:
+    INSTALLED_APPS = [*INSTALLED_APPS, "cloudinary_storage", "cloudinary"]
+    STORAGES["default"] = {
+        "BACKEND": "apps.core.storage.CloudinaryMediaStorage",
+    }
 
 # CDN domain placeholder (e.g. a Cloudflare distribution fronting S3/R2).
 CDN_DOMAIN = config("CDN_DOMAIN", default="")

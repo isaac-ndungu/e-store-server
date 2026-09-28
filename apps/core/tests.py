@@ -1,15 +1,20 @@
 """Tests for the core app.
 
 Covers the public site-config endpoints, the singleton invariant enforced by
-the model, the admin guards, the shared ``public`` throttle scope, and the
-load-test seed command's idempotent-insert / full-cleanup contracts.
+the model, the admin guards, the shared ``public`` throttle scope, the
+load-test seed command's idempotent-insert / full-cleanup contracts, and the
+Cloudinary media storage's per-file resource-type routing.
 """
 
 from io import StringIO
+from unittest import mock
 
+import cloudinary
 from django.contrib.admin.sites import AdminSite
 from django.core.cache import cache
+from django.core.files.base import ContentFile
 from django.core.management import call_command
+from django.test import SimpleTestCase
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -17,6 +22,7 @@ from rest_framework.test import APITestCase
 from apps.catalog.models import Product
 from apps.core.admin import SiteConfigAdmin
 from apps.core.models import SiteConfig
+from apps.core.storage import CloudinaryMediaStorage
 from apps.orders.models import Order, OrderItem
 from apps.social_proof.models import ProductViewEvent
 
@@ -180,3 +186,70 @@ class SeedLoadTestDataTests(APITestCase):
             ProductViewEvent.objects.filter(session_key__startswith="lt-sess-").count(),
             0,
         )
+
+
+class CloudinaryMediaStorageTests(SimpleTestCase):
+    """The Cloudinary storage routes each file to its own resource type."""
+
+    def setUp(self):
+        self._previous_cloud_name = cloudinary.config().cloud_name
+        cloudinary.config(cloud_name="demo")
+
+    def tearDown(self):
+        cloudinary.config(cloud_name=self._previous_cloud_name)
+
+    def test_images_upload_as_image_resource_type(self):
+        """Image extensions resolve to the image resource type."""
+        storage = CloudinaryMediaStorage()
+        for name in (
+            "products/images/photo.jpg",
+            "products/images/photo.JPEG",
+            "products/images/photo.png",
+            "products/images/photo.webp",
+            "products/images/photo.avif",
+        ):
+            self.assertEqual(storage._get_resource_type(name), "image")
+
+    def test_pdfs_and_unknown_files_upload_as_raw(self):
+        """PDFs and anything unrecognized resolve to the raw resource type."""
+        storage = CloudinaryMediaStorage()
+        self.assertEqual(
+            storage._get_resource_type("products/manuals/guide.pdf"), "raw"
+        )
+        self.assertEqual(
+            storage._get_resource_type("support/attachments/note.txt"), "raw"
+        )
+        self.assertEqual(
+            storage._get_resource_type("products/images/no-extension"), "raw"
+        )
+
+    def test_videos_upload_as_video_resource_type(self):
+        """Video extensions resolve to the video resource type."""
+        storage = CloudinaryMediaStorage()
+        self.assertEqual(storage._get_resource_type("products/video/demo.mp4"), "video")
+
+    @mock.patch("cloudinary_storage.storage.cloudinary.uploader.upload")
+    def test_save_sends_image_with_image_resource_type(self, mock_upload):
+        """Saving a photo calls the upload API with resource_type=image."""
+        mock_upload.return_value = {"public_id": "products/images/photo"}
+        name = CloudinaryMediaStorage().save(
+            "products/images/photo.jpg", ContentFile(b"data")
+        )
+        self.assertEqual(name, "products/images/photo")
+        self.assertEqual(mock_upload.call_args.kwargs["resource_type"], "image")
+
+    @mock.patch("cloudinary_storage.storage.cloudinary.uploader.upload")
+    def test_save_sends_pdf_with_raw_resource_type(self, mock_upload):
+        """Saving a manual calls the upload API with resource_type=raw."""
+        mock_upload.return_value = {"public_id": "products/manuals/guide"}
+        name = CloudinaryMediaStorage().save(
+            "products/manuals/guide.pdf", ContentFile(b"%PDF-1.4")
+        )
+        self.assertEqual(name, "products/manuals/guide")
+        self.assertEqual(mock_upload.call_args.kwargs["resource_type"], "raw")
+
+    def test_url_builds_a_cloudinary_delivery_url_offline(self):
+        """URL building needs no network and points at the stored public id."""
+        url = CloudinaryMediaStorage().url("products/images/photo")
+        self.assertIn("res.cloudinary.com/demo", url)
+        self.assertIn("products/images/photo", url)
