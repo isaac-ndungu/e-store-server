@@ -146,6 +146,31 @@ class LoginTests(APITestCase):
         self.assertEqual(response.data["username"], "staff")
         self.assertEqual(response.data["phone_number"], "+254700000001")
 
+    def test_me_grants_admin_role_with_every_capability(self):
+        """A staff caller reads role admin with all console sections granted."""
+        login = self.client.post(LOGIN_URL, self.login_payload, format="json")
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {login.data['access']}")
+        response = self.client.get(ME_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["role"], "admin")
+        self.assertEqual(
+            response.data["capabilities"],
+            {
+                "inquiries": True,
+                "orders": True,
+                "returns": True,
+                "tickets": True,
+                "moderation": True,
+                "catalog": True,
+                "collections": True,
+                "shipping": True,
+                "content": True,
+                "analytics": True,
+                "notifications": True,
+                "account": True,
+            },
+        )
+
 
 class MeUpdateTests(APITestCase):
     """Exercises PATCH on the /me/ endpoint for profile updates."""
@@ -240,6 +265,17 @@ class MeUpdateTests(APITestCase):
         self.user.refresh_from_db()
         self.assertTrue(self.user.is_staff)
         self.assertFalse(self.user.is_superuser)
+
+    def test_patch_cannot_set_role_or_capabilities(self):
+        """Role and capabilities stay server-derived even when submitted."""
+        response = self.client.patch(
+            ME_URL,
+            {"role": "customer", "capabilities": {"orders": False}},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["role"], "admin")
+        self.assertTrue(response.data["capabilities"]["orders"])
 
 
 class RefreshRotationAndLogoutTests(APITestCase):

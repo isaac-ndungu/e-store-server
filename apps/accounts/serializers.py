@@ -13,6 +13,24 @@ from rest_framework import serializers
 from apps.accounts.models import Address, User
 from apps.accounts.services import normalize_email, validate_phone_number
 
+# Console sections the staff frontend gates on. ``admin`` is the only staff
+# role: anyone reaching ``/me/`` with staff standing gets every section, and
+# anything else gets none (the console hides all sections without a grant).
+CONSOLE_SECTIONS = (
+    "inquiries",
+    "orders",
+    "returns",
+    "tickets",
+    "moderation",
+    "catalog",
+    "collections",
+    "shipping",
+    "content",
+    "analytics",
+    "notifications",
+    "account",
+)
+
 
 class LogoutSerializer(serializers.Serializer):
     """Validate the refresh token presented for blacklisting on logout."""
@@ -77,8 +95,14 @@ class UserSerializer(serializers.ModelSerializer):
     stays read-only  -  it is the login credential and changing it is handled
     separately. ``phone_number`` is normalized and validated so stored phones
     keep one shape. The writable field list is explicit; no client can set
-    ``is_staff``, ``phone_verified``, or any other field.
+    ``is_staff``, ``phone_verified``, or any other field. ``role`` and
+    ``capabilities`` are server-derived on every read: staff callers are
+    ``admin`` with every console section granted, non-staff callers get no
+    grant (the console hides everything without one).
     """
+
+    role = serializers.SerializerMethodField()
+    capabilities = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -91,8 +115,42 @@ class UserSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "date_joined",
+            "role",
+            "capabilities",
         ]
-        read_only_fields = ["id", "email", "phone_verified", "date_joined"]
+        read_only_fields = [
+            "id",
+            "email",
+            "phone_verified",
+            "date_joined",
+            "role",
+            "capabilities",
+        ]
+
+    def get_role(self, obj):
+        """Return the console role derived from staff standing.
+
+        Args:
+            obj: the serialized user.
+
+        Returns:
+            str: ``"admin"`` for staff or superusers, ``"customer"`` otherwise.
+        """
+        if obj.is_staff or obj.is_superuser:
+            return "admin"
+        return "customer"
+
+    def get_capabilities(self, obj):
+        """Return the per-section grants derived from staff standing.
+
+        Args:
+            obj: the serialized user.
+
+        Returns:
+            dict: every console section mapped to one grant flag.
+        """
+        allowed = bool(obj.is_staff or obj.is_superuser)
+        return {section: allowed for section in CONSOLE_SECTIONS}
 
     def validate_username(self, value):
         """Reject a username taken by another account.
