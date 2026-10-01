@@ -18,3 +18,4 @@ bleach==6.4.0
 drf-spectacular==0.30.0
 cloudinary==1.46.2
 django-cloudinary-storage==0.3.0
+resend==2.49.0

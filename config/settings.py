@@ -442,6 +442,8 @@ FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
 RESET_LINK_BASE = config("RESET_LINK_BASE", default="http://localhost:3000/reset/")
 WHATSAPP_BUSINESS_NUMBER = config("WHATSAPP_BUSINESS_NUMBER", default="")
 ORDER_INTAKE_EMAIL = config("ORDER_INTAKE_EMAIL", default="")
+RESEND_API_KEY = config("RESEND_API_KEY", default="")
+ORDER_FROM_EMAIL = config("ORDER_FROM_EMAIL", default="orders@estore.local")
 
 
 STORAGES = {
@@ -495,6 +497,11 @@ CDN_DOMAIN = config("CDN_DOMAIN", default="")
 
 CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default="", cast=Csv())
 CORS_ALLOW_CREDENTIALS = config("CORS_ALLOW_CREDENTIALS", default=False, cast=bool)
+# The storefront sends an Idempotency-Key on mutating POSTs (inquiries,
+# intake); it must be allowlisted or browsers block the preflight.
+from corsheaders.defaults import default_headers as _default_cors_headers
+
+CORS_ALLOW_HEADERS = (*_default_cors_headers, "Idempotency-Key")
 CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="", cast=Csv())
 
 AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="")
