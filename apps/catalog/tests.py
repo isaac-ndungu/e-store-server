@@ -493,14 +493,38 @@ class ProductListBrowseTests(APITestCase):
         self.assertEqual(names, sorted(names))
 
     def test_search_rank_helper_passes_through_off_postgres(self):
-        """The rank helper only reorders on PostgreSQL (tests run SQLite)."""
+        """Off PostgreSQL the rank helper returns the queryset unchanged."""
+        from django.db import connection
+
         from apps.catalog.selectors import order_by_search_rank
 
+        if connection.vendor == "postgresql":
+            self.skipTest("Pass-through applies only off PostgreSQL.")
         queryset = Product.objects.all()
         self.assertEqual(
             list(order_by_search_rank(queryset, "Fridge").values_list("pk", flat=True)),
             list(queryset.values_list("pk", flat=True)),
         )
+        self.assertEqual(
+            list(order_by_search_rank(queryset, "").values_list("pk", flat=True)),
+            list(queryset.values_list("pk", flat=True)),
+        )
+
+    def test_search_rank_helper_orders_by_relevance_on_postgres(self):
+        """On PostgreSQL matching products rank above non-matching ones."""
+        from django.db import connection
+
+        from apps.catalog.selectors import order_by_search_rank
+
+        if connection.vendor != "postgresql":
+            self.skipTest("Relevance ranking applies only on PostgreSQL.")
+        queryset = Product.objects.all()
+        ranked_pks = list(
+            order_by_search_rank(queryset, "Fridge").values_list("pk", flat=True)
+        )
+        washer_pk = Product.objects.get(slug="washer").pk
+        self.assertEqual(ranked_pks[-1], washer_pk)
+        self.assertEqual(len(ranked_pks), 3)
         self.assertEqual(
             list(order_by_search_rank(queryset, "").values_list("pk", flat=True)),
             list(queryset.values_list("pk", flat=True)),
