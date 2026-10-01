@@ -1,7 +1,7 @@
 """URL routes for the core app.
 
-Mounted at ``/api/v1/`` from ``config/api_urls.py``. These are read-only public
-resource endpoints, so plain paths rather than a router.
+Mounted at ``/api/v1/`` from ``config/api_urls.py``. Reads are public and
+the site-config update is staff-only; plain paths rather than a router.
 """
 
 from django.urls import path

@@ -1,9 +1,10 @@
 """Tests for the core app.
 
-Covers the public site-config endpoints, the singleton invariant enforced by
-the model, the admin guards, the shared ``public`` throttle scope, the
-load-test seed command's idempotent-insert / full-cleanup contracts, and the
-Cloudinary media storage's per-file resource-type routing.
+Covers the public site-config reads, the staff-only contact-facts update,
+the singleton invariant enforced by the model, the admin guards, the shared
+``public`` throttle scope, the load-test seed command's idempotent-insert /
+full-cleanup contracts, and the Cloudinary media storage's per-file
+resource-type routing.
 """
 
 from io import StringIO
@@ -19,6 +20,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from apps.accounts.models import User
 from apps.catalog.models import Product
 from apps.core.admin import SiteConfigAdmin
 from apps.core.models import SiteConfig
@@ -79,6 +81,149 @@ class SiteConfigEndpointTests(APITestCase):
             self.assertEqual(response.status_code, status.HTTP_200_OK)
         response = self.client.get(SITE_CONFIG_URL)
         self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+
+class SiteConfigUpdateEndpointTests(APITestCase):
+    """Exercises the staff-only site-config contact-facts update."""
+
+    def setUp(self):
+        cache.clear()
+        self.staff = User.objects.create_user(
+            email="manager@example.com",
+            username="manager",
+            password="StrongPass123!",
+            phone_number="+254700000001",
+            is_staff=True,
+        )
+        self.customer = User.objects.create_user(
+            email="buyer@example.com",
+            username="buyer",
+            password="StrongPass123!",
+            phone_number="+254712345678",
+        )
+
+    def test_anonymous_update_is_rejected(self):
+        """An anonymous caller cannot update the site config."""
+        response = self.client.put(
+            SITE_CONFIG_URL,
+            {"whatsapp_number": "254712345678"},
+            format="json",
+        )
+        self.assertIn(
+            response.status_code,
+            (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN),
+        )
+
+    def test_non_staff_update_is_rejected(self):
+        """A logged-in non-staff caller cannot update the site config."""
+        self.client.force_authenticate(user=self.customer)
+        response = self.client.put(
+            SITE_CONFIG_URL,
+            {"whatsapp_number": "254712345678"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_staff_can_update_contact_facts(self):
+        """Staff can set the hand-off number and intake email on the singleton."""
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.put(
+            SITE_CONFIG_URL,
+            {
+                "site_name": "My Store",
+                "tagline": "Quality appliances.",
+                "contact_email": "hello@example.com",
+                "support_phone": "+254700000000",
+                "whatsapp_number": "254712345678",
+                "order_intake_email": "orders@example.com",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config = SiteConfig.objects.get()
+        self.assertEqual(config.whatsapp_number, "254712345678")
+        self.assertEqual(config.order_intake_email, "orders@example.com")
+        self.assertEqual(SiteConfig.objects.count(), 1)
+
+    def test_staff_can_update_social_urls(self):
+        """Staff can set the footer social profile URLs on the singleton."""
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.patch(
+            SITE_CONFIG_URL,
+            {
+                "facebook_url": "https://facebook.com/vifaar",
+                "instagram_url": "https://instagram.com/vifaar",
+                "tiktok_url": "https://tiktok.com/@vifaar",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config = SiteConfig.objects.get()
+        self.assertEqual(config.facebook_url, "https://facebook.com/vifaar")
+        self.assertEqual(config.instagram_url, "https://instagram.com/vifaar")
+        self.assertEqual(config.tiktok_url, "https://tiktok.com/@vifaar")
+
+    def test_update_rejects_a_bare_social_handle(self):
+        """A social URL without a scheme yields HTTP 400."""
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.patch(
+            SITE_CONFIG_URL,
+            {"facebook_url": "facebook.com/vifaar"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_staff_can_partially_update_contact_facts(self):
+        """A PATCH with one field leaves the other fields untouched."""
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.patch(
+            SITE_CONFIG_URL,
+            {"order_intake_email": "orders@example.com"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config = SiteConfig.objects.get()
+        self.assertEqual(config.order_intake_email, "orders@example.com")
+        self.assertEqual(config.whatsapp_number, "")
+
+    def test_update_ignores_non_whitelisted_fields(self):
+        """Money and compliance fields cannot change through this endpoint."""
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.put(
+            SITE_CONFIG_URL,
+            {
+                "site_name": "My Store",
+                "tagline": "",
+                "contact_email": "",
+                "support_phone": "",
+                "whatsapp_number": "",
+                "order_intake_email": "",
+                "standard_vat_rate": "99.00",
+                "kra_pin": "X123",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config = SiteConfig.objects.get()
+        self.assertEqual(str(config.standard_vat_rate), "16.00")
+        self.assertEqual(config.kra_pin, "")
+
+    def test_update_rejects_bad_contact_facts(self):
+        """A mistyped email or WhatsApp number yields HTTP 400."""
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.put(
+            SITE_CONFIG_URL,
+            {
+                "site_name": "My Store",
+                "tagline": "",
+                "contact_email": "not-an-email",
+                "support_phone": "",
+                "whatsapp_number": "abc",
+                "order_intake_email": "orders@example.com",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class SiteConfigSingletonTests(APITestCase):
@@ -210,8 +355,8 @@ class CloudinaryMediaStorageTests(SimpleTestCase):
         ):
             self.assertEqual(storage._get_resource_type(name), "image")
 
-    def test_pdfs_and_unknown_files_upload_as_raw(self):
-        """PDFs and anything unrecognized resolve to the raw resource type."""
+    def test_pdfs_resolve_as_raw_and_bare_names_as_image(self):
+        """PDFs resolve to raw; bare pre-scheme names resolve as images."""
         storage = CloudinaryMediaStorage()
         self.assertEqual(
             storage._get_resource_type("products/manuals/guide.pdf"), "raw"
@@ -220,7 +365,8 @@ class CloudinaryMediaStorageTests(SimpleTestCase):
             storage._get_resource_type("support/attachments/note.txt"), "raw"
         )
         self.assertEqual(
-            storage._get_resource_type("products/images/no-extension"), "raw"
+            storage._get_resource_type("media/products/images/7_day_workout_oihdie"),
+            "image",
         )
 
     def test_videos_upload_as_video_resource_type(self):
@@ -230,26 +376,84 @@ class CloudinaryMediaStorageTests(SimpleTestCase):
 
     @mock.patch("cloudinary_storage.storage.cloudinary.uploader.upload")
     def test_save_sends_image_with_image_resource_type(self, mock_upload):
-        """Saving a photo calls the upload API with resource_type=image."""
-        mock_upload.return_value = {"public_id": "products/images/photo"}
+        """Saving a photo uploads as image and keeps the format suffix."""
+        mock_upload.return_value = {
+            "public_id": "products/images/photo",
+            "format": "jpg",
+        }
         name = CloudinaryMediaStorage().save(
             "products/images/photo.jpg", ContentFile(b"data")
         )
-        self.assertEqual(name, "products/images/photo")
+        self.assertEqual(name, "products/images/photo.jpg")
         self.assertEqual(mock_upload.call_args.kwargs["resource_type"], "image")
 
     @mock.patch("cloudinary_storage.storage.cloudinary.uploader.upload")
     def test_save_sends_pdf_with_raw_resource_type(self, mock_upload):
-        """Saving a manual calls the upload API with resource_type=raw."""
+        """Saving a manual uploads as raw and keeps the format suffix."""
+        mock_upload.return_value = {
+            "public_id": "products/manuals/guide",
+            "format": "pdf",
+        }
+        name = CloudinaryMediaStorage().save(
+            "products/manuals/guide.pdf", ContentFile(b"%PDF-1.4")
+        )
+        self.assertEqual(name, "products/manuals/guide.pdf")
+        self.assertEqual(mock_upload.call_args.kwargs["resource_type"], "raw")
+
+    @mock.patch("cloudinary_storage.storage.cloudinary.uploader.upload")
+    def test_save_falls_back_to_original_extension(self, mock_upload):
+        """A response without a format keeps the uploaded file's extension."""
         mock_upload.return_value = {"public_id": "products/manuals/guide"}
         name = CloudinaryMediaStorage().save(
             "products/manuals/guide.pdf", ContentFile(b"%PDF-1.4")
         )
-        self.assertEqual(name, "products/manuals/guide")
-        self.assertEqual(mock_upload.call_args.kwargs["resource_type"], "raw")
+        self.assertEqual(name, "products/manuals/guide.pdf")
+
+    @mock.patch("cloudinary_storage.storage.cloudinary.uploader.upload")
+    def test_save_extensionless_upload_uses_detected_format(self, mock_upload):
+        """An extensionless image upload stores the detected format suffix."""
+        mock_upload.return_value = {
+            "public_id": "support/attachments/photo",
+            "format": "jpg",
+        }
+        name = CloudinaryMediaStorage().save(
+            "support/attachments/photo", ContentFile(b"data")
+        )
+        self.assertEqual(name, "support/attachments/photo.jpg")
+
+    @mock.patch("cloudinary_storage.storage.cloudinary.uploader.destroy")
+    def test_delete_strips_suffix_for_destroy(self, mock_destroy):
+        """Deleting a suffixed key destroys the bare public id as an image."""
+        mock_destroy.return_value = {"result": "ok"}
+        self.assertTrue(CloudinaryMediaStorage().delete("products/images/photo.jpg"))
+        self.assertEqual(mock_destroy.call_args.args[0], "products/images/photo")
+        self.assertEqual(mock_destroy.call_args.kwargs["resource_type"], "image")
+
+    @mock.patch("cloudinary_storage.storage.cloudinary.uploader.destroy")
+    def test_delete_legacy_bare_name_destroys_full_name(self, mock_destroy):
+        """A bare pre-scheme key is destroyed whole as an image."""
+        mock_destroy.return_value = {"result": "ok"}
+        CloudinaryMediaStorage().delete("media/products/images/7_day_workout_oihdie")
+        self.assertEqual(
+            mock_destroy.call_args.args[0],
+            "media/products/images/7_day_workout_oihdie",
+        )
+        self.assertEqual(mock_destroy.call_args.kwargs["resource_type"], "image")
 
     def test_url_builds_a_cloudinary_delivery_url_offline(self):
         """URL building needs no network and points at the stored public id."""
-        url = CloudinaryMediaStorage().url("products/images/photo")
+        url = CloudinaryMediaStorage().url("products/images/photo.jpg")
         self.assertIn("res.cloudinary.com/demo", url)
+        self.assertIn("/image/upload/", url)
         self.assertIn("products/images/photo", url)
+
+    def test_url_legacy_bare_name_resolves_as_image(self):
+        """A bare pre-scheme image key builds an image (not raw) URL."""
+        url = CloudinaryMediaStorage().url("media/products/images/7_day_workout_oihdie")
+        self.assertIn("/image/upload/", url)
+        self.assertNotIn("/raw/upload/", url)
+
+    def test_url_pdf_suffix_resolves_as_raw(self):
+        """A suffixed manual key builds a raw delivery URL."""
+        url = CloudinaryMediaStorage().url("products/manuals/guide.pdf")
+        self.assertIn("/raw/upload/", url)

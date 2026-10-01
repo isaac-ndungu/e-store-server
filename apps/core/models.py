@@ -67,6 +67,21 @@ class SiteConfig(models.Model):
         blank=True,
         help_text="Mailbox that receives customer order emails.",
     )
+    facebook_url = models.URLField(
+        blank=True,
+        default="",
+        help_text="Full Facebook page URL, blank to hide the link.",
+    )
+    instagram_url = models.URLField(
+        blank=True,
+        default="",
+        help_text="Full Instagram profile URL, blank to hide the link.",
+    )
+    tiktok_url = models.URLField(
+        blank=True,
+        default="",
+        help_text="Full TikTok profile URL, blank to hide the link.",
+    )
     social_links = models.JSONField(default=dict, blank=True)
     kra_pin = models.CharField(max_length=20, blank=True)
     business_registration_number = models.CharField(max_length=50, blank=True)
