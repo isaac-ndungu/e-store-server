@@ -70,13 +70,6 @@ class StaffTicketListQuerySerializer(serializers.Serializer):
     assigned_to = serializers.IntegerField(required=False, min_value=1)
 
 
-class StaffAuthorSerializer(serializers.Serializer):
-    """Compact staff/customer identity for the support console  -  handle only."""
-
-    id = serializers.IntegerField()
-    username = serializers.CharField()
-
-
 def _attachment_download_url(request, message):
     """Return the authenticated download URL for a message's attachment.
 

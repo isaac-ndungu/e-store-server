@@ -49,15 +49,6 @@ _TRUNC_BY_GROUP = {
 }
 
 
-def valid_groupings():
-    """Return the supported time-series grouping keys.
-
-    Returns:
-        tuple: the ``group_by`` values accepted by the sales report.
-    """
-    return tuple(_TRUNC_BY_GROUP)
-
-
 def apply_period(queryset, from_time, to_time, field="placed_at"):
     """Restrict a queryset to an inclusive bounding period on a datetime field.
 

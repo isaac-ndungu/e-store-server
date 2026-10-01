@@ -39,18 +39,6 @@ def list_return_requests_for_order(order):
     return _base_queryset().filter(order=order)
 
 
-def list_return_requests_for_user(user):
-    """Return the return requests on the orders owned by a user.
-
-    Args:
-        user (User): the authenticated user.
-
-    Returns:
-        QuerySet: the user's return requests, newest first.
-    """
-    return _base_queryset().filter(order__user=user)
-
-
 def get_return_request_for_order(order, return_request_id):
     """Return a single return request on an order, or None.
 

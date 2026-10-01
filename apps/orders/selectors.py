@@ -61,8 +61,9 @@ def get_order_for_staff(order_id):
     )
 
 
-def list_staff_orders(status=None, phone=None, order_source=None,
-                      placed_from=None, placed_to=None):
+def list_staff_orders(
+    status=None, phone=None, order_source=None, placed_from=None, placed_to=None
+):
     """Return the staff order queue newest-first with per-row item counts.
 
     All filters are optional and combine with AND. The item count is annotated
@@ -90,27 +91,3 @@ def list_staff_orders(status=None, phone=None, order_source=None,
     if placed_to is not None:
         queryset = queryset.filter(placed_at__lte=placed_to)
     return queryset.annotate(item_count=Count("items"))
-
-
-def get_order_items(order):
-    """Return an order's line items with relations pre-fetched.
-
-    Args:
-        order (Order): the order.
-
-    Returns:
-        QuerySet: the order's items ordered by insertion order.
-    """
-    return order.items.select_related("product", "bundle")
-
-
-def get_order_status_history(order):
-    """Return an order's status audit trail.
-
-    Args:
-        order (Order): the order.
-
-    Returns:
-        QuerySet: the order's status history ordered by time.
-    """
-    return order.status_history.select_related("changed_by")

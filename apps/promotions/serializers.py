@@ -204,20 +204,3 @@ class CouponValidationResultSerializer(serializers.Serializer):
     value = serializers.CharField(allow_null=True)
     min_order_value = serializers.CharField(allow_null=True)
     reason = serializers.CharField(allow_null=True)
-
-
-class EffectivePriceResultSerializer(serializers.Serializer):
-    """Read serializer describing the effective price of a product.
-
-    All money fields are returned as strings to travel exactly as computed.
-    """
-
-    product = serializers.IntegerField()
-    base_price = serializers.CharField()
-    price = serializers.CharField()
-    discount = serializers.CharField()
-    discount_type = serializers.CharField(allow_null=True)
-    discount_name = serializers.CharField(allow_null=True)
-    badge_text = serializers.CharField(allow_null=True)
-    coupon_discount = serializers.CharField()
-    within_bundle = serializers.BooleanField()
