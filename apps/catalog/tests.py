@@ -1519,6 +1519,28 @@ class UploadValidatorTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
+    def test_image_validator_leaves_stream_rewound(self):
+        """Image validation rewinds the stream the storage save reads."""
+        from apps.catalog.validators import validate_image_upload
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), (0, 0, 255)).save(buffer, format="PNG")
+        uploaded = SimpleUploadedFile(
+            "photo.png", buffer.getvalue(), content_type="image/png"
+        )
+        validate_image_upload(uploaded)
+        self.assertEqual(uploaded.tell(), 0)
+
+    def test_pdf_validator_leaves_stream_rewound(self):
+        """PDF validation rewinds the stream the storage save reads."""
+        from apps.catalog.validators import validate_pdf_upload
+
+        uploaded = SimpleUploadedFile(
+            "manual.pdf", b"%PDF-1.4 rest of file", content_type="application/pdf"
+        )
+        validate_pdf_upload(uploaded)
+        self.assertEqual(uploaded.tell(), 0)
+
 
 class ImageProcessingTests(APITestCase):
     """Exercises responsive variant generation for product images."""

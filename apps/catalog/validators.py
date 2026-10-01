@@ -37,7 +37,8 @@ def validate_pdf_upload(file, max_size_mb=None):
     """Validate that an uploaded file is a PDF within the size limit.
 
     Checks the file's leading bytes for the ``%PDF-`` header and applies the
-    configured size ceiling.
+    configured size ceiling. Leaves the stream rewound so the subsequent
+    storage save stores the full content.
 
     Args:
         file: the uploaded file object (must have ``read()``, ``size``, and
@@ -58,6 +59,9 @@ def validate_pdf_upload(file, max_size_mb=None):
     header = file.read(len(PDF_HEADER))
     if header != PDF_HEADER:
         raise ValidationError("Upload a valid PDF file.")
+    # Storage saves read from the current position, so rewind after probing.
+    if hasattr(file, "seek"):
+        file.seek(0)
 
 
 def validate_image_upload(file, max_size_mb=None):
@@ -66,7 +70,8 @@ def validate_image_upload(file, max_size_mb=None):
     Checks the file is a real image decodable by Pillow (``ImageField`` does
     this automatically, but calling it here allows reuse outside ``ImageField``
     paths), that its format is in the allowed set, and that its size does not
-    exceed the limit.
+    exceed the limit. Leaves the stream rewound so the subsequent storage
+    save stores the full content.
 
     Args:
         file: the uploaded file object (must have ``read()``, ``size``, and
@@ -102,3 +107,6 @@ def validate_image_upload(file, max_size_mb=None):
             f"Image format '{img_format}' is not allowed. "
             f"Accepted formats: {', '.join(sorted(ALLOWED_IMAGE_FORMATS))}."
         )
+    # Storage saves read from the current position, so rewind after probing.
+    if hasattr(file, "seek"):
+        file.seek(0)
