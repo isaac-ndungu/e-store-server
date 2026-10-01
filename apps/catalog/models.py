@@ -231,6 +231,13 @@ class Product(models.Model):
             models.Index(fields=["sku"], name="prod_sku_idx"),
             models.Index(fields=["name"], name="prod_name_idx"),
             models.Index(fields=["is_active"], name="prod_active_idx"),
+            models.Index(
+                fields=["is_active", "is_discontinued"],
+                name="prod_active_discont_idx",
+            ),
+            models.Index(fields=["is_discontinued"], name="prod_discont_idx"),
+            models.Index(fields=["price"], name="prod_price_idx"),
+            models.Index(fields=["last_restocked_at"], name="prod_restocked_idx"),
             models.Index(fields=["stock_status"], name="prod_stock_status_idx"),
             models.Index(fields=["is_featured"], name="prod_featured_idx"),
             models.Index(fields=["category"], name="prod_category_idx"),

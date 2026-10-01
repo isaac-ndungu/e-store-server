@@ -9,6 +9,7 @@ record kept per staff account.
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
+from django.db.models.functions import Lower
 
 
 class User(AbstractUser):
@@ -29,6 +30,11 @@ class User(AbstractUser):
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username", "phone_number"]
+
+    class Meta:
+        indexes = [
+            models.Index(Lower("email"), name="user_email_lower_idx"),
+        ]
 
     def __str__(self):
         """Return the login credential (email) for admin/trace output."""
@@ -68,6 +74,8 @@ class Address(models.Model):
         indexes = [
             models.Index(fields=["user", "is_default"], name="addr_user_default_idx"),
             models.Index(fields=["county"], name="addr_county_idx"),
+            models.Index(fields=["is_default"], name="addr_default_idx"),
+            models.Index(fields=["created_at"], name="addr_created_idx"),
         ]
 
     def __str__(self):

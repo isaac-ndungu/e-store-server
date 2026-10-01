@@ -71,6 +71,8 @@ class NotificationLog(models.Model):
             models.Index(fields=["purpose"]),
             models.Index(fields=["created_at"]),
             models.Index(fields=["idempotency_key"]),
+            models.Index(fields=["provider_message_id"], name="notif_provider_msg_idx"),
+            models.Index(fields=["channel"], name="notif_channel_idx"),
         ]
 
     def __str__(self):

@@ -73,6 +73,11 @@ class Collection(models.Model):
             models.Index(fields=["collection_type"], name="coll_type_idx"),
             models.Index(fields=["smart_rule"], name="coll_rule_idx"),
             models.Index(fields=["display_location"], name="coll_loc_idx"),
+            models.Index(
+                fields=["collection_type", "is_active"],
+                name="coll_type_active_idx",
+            ),
+            models.Index(fields=["sort_order"], name="coll_sort_idx"),
         ]
         constraints = [
             models.CheckConstraint(

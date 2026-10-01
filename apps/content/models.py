@@ -73,6 +73,13 @@ class Banner(models.Model):
 
     class Meta:
         ordering = ["placement", "sort_order", "pk"]
+        indexes = [
+            models.Index(
+                fields=["is_active", "placement"],
+                name="banner_active_place_idx",
+            ),
+            models.Index(fields=["sort_order"], name="banner_sort_idx"),
+        ]
 
     def clean(self):
         """Validate that a link URL only reaches http(s) or relative targets.

@@ -65,6 +65,7 @@ class Inquiry(models.Model):
             models.Index(
                 fields=["channel", "-created_at"], name="inq_channel_created_idx"
             ),
+            models.Index(fields=["created_at"], name="inq_created_idx"),
         ]
 
     def __str__(self):

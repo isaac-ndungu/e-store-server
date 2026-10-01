@@ -1,6 +1,6 @@
 """Data models for the shipping app.
 
-``DeliveryArea`` is the staff-maintained list of places the store serves  - 
+``DeliveryArea`` is the staff-maintained list of places the store serves  -
 nothing more. It carries no pricing: delivery cost is quoted by staff in the
 sales conversation and typed into the order at intake. The county + area
 pair keeps the storefront picker consistent so orders cannot come from
@@ -29,6 +29,7 @@ class DeliveryArea(models.Model):
         indexes = [
             models.Index(fields=["is_active"], name="zone_active_idx"),
             models.Index(fields=["county"], name="zone_county_idx"),
+            models.Index(fields=["is_active", "county"], name="zone_active_county_idx"),
         ]
 
     def __str__(self):

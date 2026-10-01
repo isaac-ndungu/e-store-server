@@ -69,6 +69,7 @@ class CartItem(models.Model):
         indexes = [
             models.Index(fields=["cart"], name="cartitem_cart_idx"),
             models.Index(fields=["product"], name="cartitem_product_idx"),
+            models.Index(fields=["cart", "product"], name="cartitem_cart_prod_idx"),
         ]
         constraints = [
             models.CheckConstraint(

@@ -18,6 +18,7 @@ import decimal
 from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from django.db import models
+from django.db.models.functions import Lower
 
 MIN_ZERO = MinValueValidator(decimal.Decimal("0.00"))
 
@@ -89,6 +90,10 @@ class Discount(models.Model):
             models.Index(fields=["is_active"], name="disc_active_idx"),
             models.Index(fields=["starts_at"], name="disc_start_idx"),
             models.Index(fields=["ends_at"], name="disc_end_idx"),
+            models.Index(
+                fields=["is_active", "starts_at", "ends_at"],
+                name="disc_active_window_idx",
+            ),
         ]
 
     def __str__(self):
@@ -183,9 +188,14 @@ class Coupon(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=["code"], name="coup_code_idx"),
+            models.Index(Lower("code"), name="coup_code_lower_idx"),
             models.Index(fields=["is_active"], name="coup_active_idx"),
             models.Index(fields=["starts_at"], name="coup_start_idx"),
             models.Index(fields=["ends_at"], name="coup_end_idx"),
+            models.Index(
+                fields=["is_active", "starts_at", "ends_at"],
+                name="coup_active_window_idx",
+            ),
         ]
 
     def __str__(self):
@@ -255,6 +265,7 @@ class CouponRedemption(models.Model):
             models.Index(fields=["coupon"], name="red_coupon_idx"),
             models.Index(fields=["user"], name="red_user_idx"),
             models.Index(fields=["redeemed_at"], name="red_at_idx"),
+            models.Index(fields=["coupon", "user"], name="red_coupon_user_idx"),
         ]
 
     def __str__(self):

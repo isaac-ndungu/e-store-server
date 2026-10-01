@@ -44,6 +44,10 @@ class Bundle(models.Model):
         indexes = [
             models.Index(fields=["slug"], name="bundle_slug_idx"),
             models.Index(fields=["is_active"], name="bundle_active_idx"),
+            models.Index(
+                fields=["is_active", "starts_at", "ends_at"],
+                name="bundle_active_window_idx",
+            ),
         ]
         constraints = [
             CheckConstraint(
@@ -85,6 +89,11 @@ class BundleItem(models.Model):
 
     class Meta:
         ordering = ["pk"]
+        indexes = [
+            models.Index(fields=["bundle"], name="bitem_bundle_idx"),
+            models.Index(fields=["product"], name="bitem_product_idx"),
+            models.Index(fields=["bundle", "product"], name="bitem_bundle_product_idx"),
+        ]
         constraints = [
             CheckConstraint(
                 condition=Q(quantity__gte=1),

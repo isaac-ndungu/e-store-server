@@ -109,6 +109,11 @@ class Ticket(models.Model):
             models.Index(
                 fields=["assigned_to", "status"], name="ticket_assignee_status_idx"
             ),
+            models.Index(fields=["category"], name="ticket_category_idx"),
+            models.Index(fields=["created_at"], name="ticket_created_idx"),
+            models.Index(
+                fields=["status", "created_at"], name="ticket_status_created_idx"
+            ),
         ]
 
     def __str__(self):

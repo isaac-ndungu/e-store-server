@@ -80,6 +80,10 @@ class Review(models.Model):
                 fields=["product", "is_approved", "-created_at"],
                 name="rev_product_approved_idx",
             ),
+            models.Index(
+                fields=["is_approved", "-created_at"],
+                name="rev_approved_created_idx",
+            ),
             models.Index(fields=["order_item"], name="rev_order_item_idx"),
             models.Index(fields=["user", "-created_at"], name="rev_user_created_idx"),
             models.Index(
@@ -182,6 +186,10 @@ class ProductQuestion(models.Model):
             models.Index(
                 fields=["product", "is_approved", "-created_at"],
                 name="pq_product_approved_idx",
+            ),
+            models.Index(
+                fields=["is_approved", "-created_at"],
+                name="pq_approved_created_idx",
             ),
             models.Index(fields=["user", "-created_at"], name="pq_user_created_idx"),
         ]

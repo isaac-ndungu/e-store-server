@@ -4,7 +4,7 @@ A ``ReturnRequest`` captures a post-delivery return of one order line (or a
 whole single-line order) from the customer's request through staff approval,
 physical receipt, and refund resolution. ``status`` is the single source of
 truth for where a request is; the returns service layer records every change
-in ``ReturnRequestStatusHistory`` alongside it, so the resolution trail  - 
+in ``ReturnRequestStatusHistory`` alongside it, so the resolution trail  -
 including the amounts computed at approval  -  is fully reconstructable.
 
 A return request may also carry an optional link to the support ticket a
@@ -98,6 +98,8 @@ class ReturnRequest(models.Model):
             models.Index(
                 fields=["status", "created_at"], name="return_status_created_idx"
             ),
+            models.Index(fields=["created_at"], name="return_created_idx"),
+            models.Index(fields=["resolved_at"], name="return_resolved_idx"),
         ]
         constraints = [
             CheckConstraint(

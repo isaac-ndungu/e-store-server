@@ -132,6 +132,9 @@ class Order(models.Model):
                 fields=["payment_method", "status"], name="order_pmt_status_idx"
             ),
             models.Index(fields=["order_source"], name="order_source_idx"),
+            models.Index(fields=["payment_reference"], name="order_payref_idx"),
+            models.Index(fields=["placed_at"], name="order_placed_idx"),
+            models.Index(fields=["updated_at"], name="order_updated_idx"),
         ]
         constraints = [
             CheckConstraint(
