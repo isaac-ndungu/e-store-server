@@ -23,6 +23,10 @@ _CATEGORY_TTL_SECONDS = 30 * 60
 
 _CATEGORY_GENERATION_KEY = "catalog:category_generation"
 
+_FACET_GENERATION_KEY = "catalog:facet_generation"
+_FACET_DEFS_TTL_SECONDS = 15 * 60
+_FACET_COUNTS_TTL_SECONDS = 5 * 60
+
 
 def _list_key(generation):
     """Return the storage key for the category list under a generation.
@@ -122,3 +126,93 @@ def cache_category_detail(slug, generation, data):
         data (dict): the serialized category detail.
     """
     cache.set(_detail_key(slug, generation), data, _CATEGORY_TTL_SECONDS)
+
+
+def get_facet_generation():
+    """Return the current facet generation counter.
+
+    Returns:
+        int: the current generation.
+    """
+    return cache.get(_FACET_GENERATION_KEY, 0)
+
+
+def bump_facet_generation():
+    """Increment the facet generation, invalidating cached facet reads."""
+    try:
+        cache.incr(_FACET_GENERATION_KEY)
+    except ValueError:
+        cache.set(_FACET_GENERATION_KEY, 1)
+
+
+def _facet_defs_key(generation):
+    """Return the storage key for cached facet definitions.
+
+    Args:
+        generation (int): the generation the rows were cached under.
+
+    Returns:
+        str: the cache key.
+    """
+    return f"catalog:facets:defs:{generation}"
+
+
+def get_cached_facet_defs(generation):
+    """Return cached facet definition payloads, if current.
+
+    Args:
+        generation (int): the generation the rows must have been cached under.
+
+    Returns:
+        list | None: serialized facet rows, or None when cold.
+    """
+    return cache.get(_facet_defs_key(generation))
+
+
+def cache_facet_defs(generation, rows):
+    """Store serialized facet definition rows.
+
+    Args:
+        generation (int): the generation the rows were computed under.
+        rows (list): serialized facet rows.
+    """
+    cache.set(_facet_defs_key(generation), rows, _FACET_DEFS_TTL_SECONDS)
+
+
+def _facet_counts_key(generation, query_hash):
+    """Return the storage key for cached facet counts.
+
+    Args:
+        generation (int): the facet generation.
+        query_hash (str): hash of the filtered queryset SQL.
+
+    Returns:
+        str: the cache key.
+    """
+    return f"catalog:facets:counts:{generation}:{query_hash}"
+
+
+def get_cached_facet_counts(generation, query_hash):
+    """Return cached facet counts for a filter combination, if current.
+
+    Args:
+        generation (int): the facet generation.
+        query_hash (str): hash of the filtered queryset SQL.
+
+    Returns:
+        dict | None: the cached counts, or None when cold.
+    """
+    return cache.get(_facet_counts_key(generation, query_hash))
+
+
+def cache_facet_counts(generation, query_hash, counts):
+    """Store facet counts for a filter combination.
+
+    Args:
+        generation (int): the facet generation.
+        query_hash (str): hash of the filtered queryset SQL.
+        counts (dict): the computed facet counts.
+    """
+    cache.set(
+        _facet_counts_key(generation, query_hash), counts, _FACET_COUNTS_TTL_SECONDS
+    )

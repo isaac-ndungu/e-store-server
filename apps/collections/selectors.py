@@ -5,7 +5,7 @@ membership. Views delegate here so query patterns (filters, prefetching,
 ordering, the membership cache read) live in one place and stay consistent.
 """
 
-from django.db.models import Prefetch, Q
+from django.db.models import Case, Count, Prefetch, Q, When
 from django.utils import timezone
 
 from apps.catalog.models import Product, ProductImage
@@ -41,14 +41,16 @@ def list_collections(active_only=False, collection_type=None, display_location=N
     Returns:
         QuerySet: collections in display order.
     """
-    queryset = Collection.objects.all()
+    queryset = Collection.objects.annotate(
+        product_count=Count("memberships", distinct=True)
+    )
     if active_only:
         queryset = queryset.filter(is_active=True).filter(_in_window_filter())
     if collection_type is not None:
         queryset = queryset.filter(collection_type=collection_type)
     if display_location is not None:
         queryset = queryset.filter(display_location=display_location)
-    return queryset
+    return queryset.order_by("sort_order", "name")
 
 
 def get_collection_by_slug(slug, active_only=False):
@@ -96,19 +98,21 @@ def get_collection_products(collection):
 
     Matches the catalog's slim product queryset shape (``select_related`` /
     ``prefetch_related`` / ``only``) so the detail payload stays small and
-    no per-row queries fire while serializing.
+    no per-row queries fire while serializing. Ordering is applied in the
+    database via a ``Case`` expression so the result stays a lazy queryset
+    and the view can paginate without loading the whole collection.
 
     Args:
         collection (Collection): the collection.
 
     Returns:
-        list[Product]: the collection's active products, in display order.
+        QuerySet: the collection's active products, in display order.
     """
     pks = get_collection_product_pks(collection)
     if not pks:
-        return []
-    order_map = {pk: index for index, pk in enumerate(pks)}
-    products = (
+        return Product.objects.none()
+    preserved = Case(*[When(pk=pk, then=pos) for pos, pk in enumerate(pks)])
+    return (
         Product.objects.filter(pk__in=pks, is_active=True)
         .select_related("category", "brand")
         .prefetch_related(
@@ -123,6 +127,9 @@ def get_collection_products(collection):
             "name",
             "slug",
             "sku",
+            "price",
+            "compare_at_price",
+            "stock_status",
             "short_description",
             "product_type",
             "category_id",
@@ -134,5 +141,5 @@ def get_collection_products(collection):
             "review_count",
             "created_at",
         )
+        .order_by(preserved)
     )
-    return sorted(products, key=lambda product: order_map[product.pk])

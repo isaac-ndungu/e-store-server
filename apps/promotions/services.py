@@ -70,6 +70,7 @@ def _discounts_for_product(product, within_bundle):
         Discount.objects.filter(is_active=True, starts_at__lte=now)
         .filter(Q(ends_at__isnull=True) | Q(ends_at__gte=now))
         .select_related("bundle")
+        .prefetch_related("products", "categories", "brands")
     )
     if within_bundle:
         queryset = queryset.filter(applies_within_bundles=True)
@@ -89,7 +90,10 @@ def _discount_matches(discount, product):
     """Return whether a discount's scope covers the product.
 
     A bundle-scoped discount applies to the whole bundle's price, not to an
-    individual product lookup, so it is never returned here.
+    individual product lookup, so it is never returned here. Scope membership
+    is checked against the prefetched many-to-many collections loaded by
+    ``_discounts_for_product`` so pricing a cart line fires no extra query
+    per discount.
 
     Args:
         discount (Discount): the discount to evaluate.
@@ -104,16 +108,17 @@ def _discount_matches(discount, product):
     if scope == "sitewide":
         return True
     if scope == "product":
-        return discount.products.filter(pk=product.pk).exists()
+        return any(item.pk == product.pk for item in discount.products.all())
     if scope == "category":
         category_id = product.category_id
-        return (
-            category_id is not None
-            and discount.categories.filter(pk=category_id).exists()
+        return category_id is not None and any(
+            item.pk == category_id for item in discount.categories.all()
         )
     if scope == "brand":
         brand_id = product.brand_id
-        return brand_id is not None and discount.brands.filter(pk=brand_id).exists()
+        return brand_id is not None and any(
+            item.pk == brand_id for item in discount.brands.all()
+        )
     return False
 
 

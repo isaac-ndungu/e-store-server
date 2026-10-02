@@ -97,11 +97,18 @@ class SiteConfig(models.Model):
 
         ``force_insert`` must be dropped: ``objects.create()`` and
         ``get_or_create()`` pass it, which would make Django INSERT a duplicate
-        row with ``pk=1`` instead of updating the existing one.
+        row with ``pk=1`` instead of updating the existing one. The cached
+        read is dropped so the next load sees the fresh values.
         """
         self.pk = 1
         kwargs.pop("force_insert", None)
         super().save(*args, **kwargs)
+        try:
+            from apps.core.cache import invalidate_site_config
+
+            invalidate_site_config()
+        except Exception:
+            pass
 
     @classmethod
     def load(cls):

@@ -13,9 +13,9 @@ def _bundles_enabled():
     Returns:
         bool: whether bundles are enabled.
     """
-    from apps.core.models import SiteConfig
+    from apps.core.selectors import get_site_config
 
-    return SiteConfig.load().settings.get("enable_bundles", True)
+    return get_site_config().settings.get("enable_bundles", True)
 
 
 def _in_window_filter():

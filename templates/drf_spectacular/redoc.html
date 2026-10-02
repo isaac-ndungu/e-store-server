@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+{# Shadows the drf-spectacular default to declare the page language, describe
+   the page for crawlers, and expose navigation plus landmarks for assistive
+   technology. The Redoc asset is pinned to an explicit version with an
+   integrity hash; recompute the hash (openssl dgst -sha384 -binary FILE |
+   openssl base64 -A) whenever the pinned version changes. The packaged
+   template's Google Fonts links are intentionally omitted so the page needs
+   no third-party request that cannot carry an integrity hash; Redoc falls
+   back to system fonts. Compare the remaining markup against the packaged
+   template after a drf-spectacular upgrade. #}
+<html lang="en">
+  <head>
+    {% block head %}
+    <title>{{ title|default:"E-Store API" }} readable reference</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Readable API reference for the E-Store backend: full endpoint documentation with request and response schemas for the Kenyan home-appliance store.">
+    <link rel="canonical" href="{{ request.build_absolute_uri }}">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+    <link rel="icon" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.1/favicon-32x32.png">
+    <style>
+      {# Redoc doesn't change outer page styles. #}
+      body { margin: 0; padding: 0; }
+      .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .docs-nav { background: #1b1b1b; color: #fafafa; font-family: sans-serif; font-size: 14px; padding: 8px 16px; }
+      .docs-nav a { color: #fafafa; margin-right: 16px; }
+    </style>
+    {% endblock head %}
+  </head>
+  <body>
+    {% block body %}
+    <a class="visually-hidden" href="#docs-main">Skip to documentation</a>
+    <nav class="docs-nav" aria-label="API documentation">
+      <a href="/api/swagger/">Swagger UI</a>
+      <a href="/api/redoc/">Redoc</a>
+      <a href="/api/schema/">OpenAPI schema</a>
+    </nav>
+    <main id="docs-main">
+    <h1 class="visually-hidden">E-Store API reference</h1>
+    {% if settings %}
+    <div id="redoc-container"></div>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@2.5.4/bundles/redoc.standalone.js" integrity="sha384-w447zOpYfw/1Tv/5AK9NfHTlQIqE3RVR6KY62jCyy9zNDgO64cMwGGP1Fj0zJVf5" crossorigin="anonymous"></script>
+    <script>
+      const redocSettings = {{ settings|safe }};
+      Redoc.init("{{ schema_url }}", redocSettings, document.getElementById('redoc-container'))
+    </script>
+    {% else %}
+    <redoc spec-url="{{ schema_url }}"></redoc>
+    <script src="https://cdn.jsdelivr.net/npm/redoc@2.5.4/bundles/redoc.standalone.js" integrity="sha384-w447zOpYfw/1Tv/5AK9NfHTlQIqE3RVR6KY62jCyy9zNDgO64cMwGGP1Fj0zJVf5" crossorigin="anonymous"></script>
+    {% endif %}
+    </main>
+    {% endblock body %}
+  </body>
+</html>

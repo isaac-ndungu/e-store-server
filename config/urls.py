@@ -8,7 +8,7 @@ development.
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.urls import include, path
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -32,9 +32,25 @@ def health_view(request):
     return JsonResponse({"status": "ok"})
 
 
+def robots_view(request):
+    """Serve a crawler policy that keeps search engines off the API.
+
+    The backend serves JSON and private API docs, never storefront content,
+    so every crawler is disallowed. Deliberately public and unauthenticated.
+
+    Args:
+        request: the incoming HTTP request (unused by the handler).
+
+    Returns:
+        HttpResponse: a plain-text ``Disallow: /`` policy for all agents.
+    """
+    return HttpResponse("User-agent: *\nDisallow: /\n", content_type="text/plain")
+
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("health/", health_view, name="health"),
+    path("robots.txt", robots_view, name="robots"),
     path("api/", include(("config.api_urls", "api"), namespace="api")),
     path(
         "api/schema/",

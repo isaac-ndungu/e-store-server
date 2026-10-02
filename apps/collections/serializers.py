@@ -46,8 +46,10 @@ class CollectionSerializer(serializers.ModelSerializer):
     def get_product_count(self, obj):
         """Return the number of products currently in the collection.
 
-        Uses the cached membership length when available to avoid a query on a
-        hot storefront path; otherwise counts the membership rows directly.
+        Prefers the ``product_count`` annotation added by the list selector
+        so list rendering fires no extra query or cache lookup per row.
+        Falls back to the cached membership length, then to a direct
+        count, when the annotation is absent.
 
         Args:
             obj (Collection): the collection instance.
@@ -55,6 +57,9 @@ class CollectionSerializer(serializers.ModelSerializer):
         Returns:
             int: the number of members.
         """
+        annotated = getattr(obj, "product_count", None)
+        if annotated is not None:
+            return annotated
         from apps.collections import cache
 
         pks = cache.get_cached_product_pks(obj.slug)

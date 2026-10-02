@@ -226,7 +226,11 @@ def _compute_bundle_price(bundle):
     Raises:
         ValidationError: if any component cannot be priced.
     """
-    item_rows = list(bundle.items.select_related("product").order_by("pk"))
+    prefetched = getattr(bundle, "_prefetched_objects_cache", {}).get("items")
+    if prefetched is not None:
+        item_rows = sorted(prefetched, key=lambda item: item.pk)
+    else:
+        item_rows = list(bundle.items.select_related("product").order_by("pk"))
     if not item_rows:
         raise ValidationError("A bundle must have at least one item to be priced.")
 

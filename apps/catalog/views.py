@@ -239,7 +239,8 @@ class ProductListView(generics.ListAPIView):
             response.data["facets"] = facet_counts
             return response
 
-        serializer = self.get_serializer(queryset, many=True)
+        capped = queryset[: getattr(self.paginator, "page_size", 20)]
+        serializer = self.get_serializer(capped, many=True)
         facet_counts = compute_facet_counts(queryset)
         return Response({"results": serializer.data, "facets": facet_counts})
 

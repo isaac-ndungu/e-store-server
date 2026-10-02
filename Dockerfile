@@ -31,4 +31,6 @@ RUN SECRET_KEY=build-only DEBUG=False DB_ENGINE=django.db.backends.postgresql \
 EXPOSE 8000
 
 # Render supplies $PORT; default to 8000 for Compose/VPS runs.
-CMD ["sh", "-c", "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 3"]
+# Threads let one worker serve slow mobile clients while another thread
+# handles fast requests, instead of a slow download holding a whole worker.
+CMD ["sh", "-c", "python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 3 --threads 4 --timeout 30 --max-requests 1000 --max-requests-jitter 100"]

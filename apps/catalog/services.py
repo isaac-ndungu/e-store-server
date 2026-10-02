@@ -5,13 +5,12 @@ validation for the faceted product search. Views stay thin  -  all write
 logic and non-trivial read computation lives here.
 
 Facet aggregation runs one aggregate query per active ``FacetDefinition``
-per request. This is an intentional trade-off: it keeps the implementation
-straightforward and avoids premature caching before the project's Redis
-cache invalidation pattern is established for other read-heavy data. A
-future improvement can add Redis-backed caching for facet results with
-signal-based invalidation.
+per distinct filter combination on a cold cache, then serves repeats from
+Redis under the current facet generation (bumped on facet or product
+changes).
 """
 
+import hashlib
 import re
 import unicodedata
 from decimal import Decimal
@@ -21,6 +20,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils.text import slugify
 
+from apps.catalog import cache as catalog_cache
 from apps.catalog.models import (
     Brand,
     Category,
@@ -268,9 +268,11 @@ def compute_facet_counts(queryset):
     facet ``name``: choice facets map to ``{facet_value: count}``, range
     facets to ``{"min": ..., "max": ...}``.
 
-    Note: This still runs one query per active facet. Redis caching of
-    these results is deferred to when the project's cache invalidation
-    pattern is established.
+    Results are cached per filter combination (hashed from the filtered
+    queryset SQL) under the current facet generation, so repeated
+    storefront listing requests with identical filters skip up to
+    ``MAX_ACTIVE_FACETS`` aggregate queries. Any facet definition or
+    product change bumps the generation and invalidates the entries.
 
     Args:
         queryset (QuerySet): the base product queryset (already filtered by
@@ -279,6 +281,15 @@ def compute_facet_counts(queryset):
     Returns:
         dict: ``{"facet_name": {value/count or min/max}, ...}``
     """
+    generation = catalog_cache.get_facet_generation()
+    try:
+        query_hash = hashlib.sha1(str(queryset.query).encode()).hexdigest()
+    except Exception:
+        query_hash = ""
+    if query_hash:
+        cached = catalog_cache.get_cached_facet_counts(generation, query_hash)
+        if cached is not None:
+            return cached
     facets = get_active_facets()
     result = {}
 
@@ -288,6 +299,8 @@ def compute_facet_counts(queryset):
         else:
             result[facet.name] = _choice_counts_for_facet(queryset, facet)
 
+    if query_hash:
+        catalog_cache.cache_facet_counts(generation, query_hash, result)
     return result
 
 

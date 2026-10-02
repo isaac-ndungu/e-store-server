@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+{# Shadows the drf-spectacular default to declare the page language, describe
+   the page for crawlers, and expose navigation plus landmarks for assistive
+   technology. CDN assets are pinned to explicit versions with integrity
+   hashes; recompute the hashes (openssl dgst -sha384 -binary FILE |
+   openssl base64 -A) whenever the pinned version changes. Compare the
+   remaining markup against the packaged template after a drf-spectacular
+   upgrade. #}
+<html lang="en">
+  <head>
+    {% block head %}
+    <title>{{ title|default:"E-Store API" }} interactive reference</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Interactive API reference for the E-Store backend: browse endpoints and try calls against the Kenyan home-appliance store.">
+    <link rel="canonical" href="{{ request.build_absolute_uri }}">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net">
+    {% if favicon_href %}<link rel="icon" href="{{ favicon_href }}">{% endif %}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.1/swagger-ui.css" integrity="sha384-Ov4/wv3j2bmct8cDc5X4ngJZohVPzEmc6uDPH8WeljUxO5vtoykvMEfbu9Vh6RaW" crossorigin="anonymous">
+    <style>
+      html { box-sizing: border-box; overflow-y: scroll; }
+      *, *:after, *:before { box-sizing: inherit; }
+      body { background: #fafafa; margin: 0; }
+      .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .docs-nav { background: #1b1b1b; color: #fafafa; font-family: sans-serif; font-size: 14px; padding: 8px 16px; }
+      .docs-nav a { color: #fafafa; margin-right: 16px; }
+    </style>
+    {% endblock head %}
+  </head>
+  <body>
+    {% block body %}
+    <a class="visually-hidden" href="#docs-main">Skip to documentation</a>
+    <nav class="docs-nav" aria-label="API documentation">
+      <a href="/api/swagger/">Swagger UI</a>
+      <a href="/api/redoc/">Redoc</a>
+      <a href="/api/schema/">OpenAPI schema</a>
+    </nav>
+    <main id="docs-main">
+    <h1 class="visually-hidden">E-Store API reference</h1>
+    <div id="swagger-ui"></div>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.1/swagger-ui-bundle.js" integrity="sha384-ZPehFMQommnnuaZ4rpxgkgTT2DKFVp4hZC/7pLit+9Lek9T1YGSo23eHFbvNkXkw" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.33.1/swagger-ui-standalone-preset.js" integrity="sha384-My2aDM4r2Mbm3ybHcubKm9O9U8FEjvF/O5nGvE9YK5dzqOTbWEKa79RPJ1krdMaF" crossorigin="anonymous"></script>
+    {% if script_url %}
+    <script src="{{ script_url }}"></script>
+    {% else %}
+    <script>
+    {% include template_name_js %}
+    </script>
+    {% endif %}
+    </main>
+    {% endblock %}
+  </body>
+</html>

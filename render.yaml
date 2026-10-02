@@ -7,7 +7,7 @@ services:
     runtime: python
     plan: free
     buildCommand: "./scripts/render-build.sh"
-    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 3"
+    startCommand: "gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 3 --threads 4 --timeout 30 --max-requests 1000 --max-requests-jitter 100"
     healthCheckPath: /health/
     envVars:
       - key: PYTHON_VERSION
