@@ -9,6 +9,8 @@ as an interim implementation. Full-text search with autocomplete and typo
 tolerance (Meilisearch/Typesense) is planned for a later step.
 """
 
+import hashlib
+
 from django.db.models import Count, Prefetch
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema
@@ -60,6 +62,22 @@ from apps.catalog.services import (
 )
 
 # Public browse views
+
+
+def _hash_query_params(query_params):
+    """Return a stable hash of the request query params for page caching.
+
+    Sorts keys and multi-values so semantically identical filter
+    combinations share one cache entry regardless of param order.
+
+    Args:
+        query_params (QueryDict): the request query parameters.
+
+    Returns:
+        str: the hex digest identifying this filter combination.
+    """
+    normalized = sorted((key, sorted(values)) for key, values in query_params.lists())
+    return hashlib.sha1(repr(normalized).encode()).hexdigest()
 
 
 class CategoryListView(APIView):
@@ -201,6 +219,10 @@ class ProductListView(generics.ListAPIView):
 
     The response includes a ``facets`` dict with aggregate counts per active
     facet, computed from the currently-filtered queryset.
+
+    The serialized page is cached per filter combination under the
+    product-list generation (see ``apps.catalog.cache``); any product,
+    category, image, or facet change invalidates every cached page.
     """
 
     permission_classes = [permissions.AllowAny]
@@ -221,7 +243,19 @@ class ProductListView(generics.ListAPIView):
         Applies validated facet filters to the base queryset, orders text
         searches by relevance unless the caller asked for an explicit
         ordering, then computes aggregate counts for all active facets.
+
+        The whole serialized page (rows, facets, pagination envelope) is
+        identical for every anonymous caller asking the same filters, so it
+        is served from the product-list page cache when current. A warm
+        page costs two cache reads instead of the paginator count, the
+        page select, and the facet aggregates.
         """
+        generation = catalog_cache.get_product_list_generation()
+        query_hash = _hash_query_params(request.query_params)
+        cached = catalog_cache.get_cached_product_list_page(generation, query_hash)
+        if cached is not None:
+            return Response(cached)
+
         queryset = self.filter_queryset(self.get_queryset())
         queryset = queryset.filter(validate_facet_params(request.query_params))
         if request.query_params.get("search") and not request.query_params.get(
@@ -237,12 +271,15 @@ class ProductListView(generics.ListAPIView):
             facet_counts = compute_facet_counts(queryset)
             response = self.get_paginated_response(serializer.data)
             response.data["facets"] = facet_counts
+            catalog_cache.cache_product_list_page(generation, query_hash, response.data)
             return response
 
         capped = queryset[: getattr(self.paginator, "page_size", 20)]
         serializer = self.get_serializer(capped, many=True)
         facet_counts = compute_facet_counts(queryset)
-        return Response({"results": serializer.data, "facets": facet_counts})
+        payload = {"results": serializer.data, "facets": facet_counts}
+        catalog_cache.cache_product_list_page(generation, query_hash, payload)
+        return Response(payload)
 
 
 class ProductDetailView(generics.RetrieveAPIView):

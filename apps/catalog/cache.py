@@ -1,4 +1,4 @@
-"""Redis-backed caching of the storefront category tree.
+"""Redis-backed caching of the storefront category tree and product list.
 
 The active category list with live product counts is read into every
 storefront navigation, yet it changes only when a category is created,
@@ -7,11 +7,21 @@ rare operations in steady state. Caching the serialized rows and the
 per-slug detail payload avoids re-annotating the count query on every
 page load.
 
+The public product list is the hottest read on the storefront and its
+payload (paginated rows plus facet aggregates) is identical for every
+anonymous caller asking the same filters, so the whole serialized page is
+cached per filter combination. Freshness is generation-driven, exactly
+like the category cache: any product, category, image, or facet change
+bumps the generation and invalidates every cached page at once. A short
+TTL is a safety net for writes that bypass signals (review aggregates
+update the product row in place without firing ``post_save``), so ratings
+converge within the TTL rather than waiting for the next product edit.
+
 Changed data can affect many rows at once (a product moving category
 increments one count and decrements another), so invalidation is
 generation-driven: any relevant change bumps a counter, and a read is
 served only if it was cached under the current generation. Keys are
-namespaced with a ``catalog:category:`` prefix matching the project's
+namespaced with a ``catalog:`` prefix matching the project's
 colon-separated cache-key convention. Reads degrade gracefully to a fresh
 computation when the cache is cold; the TTL is a safety net, not the
 primary freshness mechanism.
@@ -26,6 +36,9 @@ _CATEGORY_GENERATION_KEY = "catalog:category_generation"
 _FACET_GENERATION_KEY = "catalog:facet_generation"
 _FACET_DEFS_TTL_SECONDS = 15 * 60
 _FACET_COUNTS_TTL_SECONDS = 5 * 60
+
+_PRODUCT_LIST_GENERATION_KEY = "catalog:product_list_generation"
+_PRODUCT_LIST_TTL_SECONDS = 60
 
 
 def _list_key(generation):
@@ -215,4 +228,64 @@ def cache_facet_counts(generation, query_hash, counts):
     """
     cache.set(
         _facet_counts_key(generation, query_hash), counts, _FACET_COUNTS_TTL_SECONDS
+    )
+
+
+def get_product_list_generation():
+    """Return the current product-list generation counter.
+
+    The counter is incremented whenever a product, category, product image,
+    or facet definition is saved or deleted, invalidating every cached
+    product-list page at once.
+
+    Returns:
+        int: the current generation.
+    """
+    return cache.get(_PRODUCT_LIST_GENERATION_KEY, 0)
+
+
+def bump_product_list_generation():
+    """Increment the product-list generation, invalidating cached pages."""
+    try:
+        cache.incr(_PRODUCT_LIST_GENERATION_KEY)
+    except ValueError:
+        cache.set(_PRODUCT_LIST_GENERATION_KEY, 1)
+
+
+def _product_list_key(generation, query_hash):
+    """Return the storage key for a cached product-list page.
+
+    Args:
+        generation (int): the generation the page was cached under.
+        query_hash (str): hash of the normalized request query params.
+
+    Returns:
+        str: the cache key.
+    """
+    return f"catalog:product_list:page:{generation}:{query_hash}"
+
+
+def get_cached_product_list_page(generation, query_hash):
+    """Return a cached product-list page payload, if current.
+
+    Args:
+        generation (int): the generation the page must have been cached under.
+        query_hash (str): hash of the normalized request query params.
+
+    Returns:
+        dict | None: the serialized page payload, or None when cold.
+    """
+    return cache.get(_product_list_key(generation, query_hash))
+
+
+def cache_product_list_page(generation, query_hash, payload):
+    """Store a serialized product-list page payload.
+
+    Args:
+        generation (int): the generation the page was computed under.
+        query_hash (str): hash of the normalized request query params.
+        payload (dict): the serialized page (results, facets, pagination).
+    """
+    cache.set(
+        _product_list_key(generation, query_hash), payload, _PRODUCT_LIST_TTL_SECONDS
     )

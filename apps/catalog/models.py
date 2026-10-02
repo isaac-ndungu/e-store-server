@@ -252,6 +252,26 @@ class Product(models.Model):
                 fields=["specs"],
                 opclasses=["jsonb_path_ops"],
             ),
+            GinIndex(
+                name="prod_name_trgm_idx",
+                fields=["name"],
+                opclasses=["gin_trgm_ops"],
+            ),
+            GinIndex(
+                name="prod_sku_trgm_idx",
+                fields=["sku"],
+                opclasses=["gin_trgm_ops"],
+            ),
+            GinIndex(
+                name="prod_short_desc_trgm_idx",
+                fields=["short_description"],
+                opclasses=["gin_trgm_ops"],
+            ),
+            GinIndex(
+                name="prod_desc_trgm_idx",
+                fields=["description"],
+                opclasses=["gin_trgm_ops"],
+            ),
         ]
 
     def __str__(self):

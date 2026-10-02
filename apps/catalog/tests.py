@@ -547,6 +547,99 @@ class ProductListBrowseTests(APITestCase):
         self.assertIsNone(other["primary_image"])
 
 
+class ProductListCacheTests(APITestCase):
+    """Exercises the product-list page cache and its invalidation."""
+
+    def setUp(self):
+        cache.clear()
+        self.category = _make_category()
+        self.brand = _make_brand()
+        _make_product(
+            name="Fridge 200L",
+            slug="fridge-200l",
+            sku="FRG-200",
+            category=self.category,
+            brand=self.brand,
+        )
+        _make_product(
+            name="Washer",
+            slug="washer",
+            sku="WSH-100",
+            category=self.category,
+            brand=self.brand,
+        )
+
+    def test_second_identical_request_serves_no_db_queries(self):
+        """A warm page costs cache reads, not the count/select/aggregates."""
+        first = self.client.get(URLS["products"])
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        with self.assertNumQueries(0):
+            second = self.client.get(URLS["products"])
+        self.assertEqual(second.data, first.data)
+
+    def test_product_edit_invalidates_page_cache(self):
+        """Renaming a product is reflected on the storefront immediately."""
+        self.client.get(URLS["products"])
+        product = Product.objects.get(slug="fridge-200l")
+        product.name = "Fridge 200L Updated"
+        product.save(update_fields=["name"])
+        response = self.client.get(URLS["products"])
+        names = {p["name"] for p in response.data["results"]}
+        self.assertIn("Fridge 200L Updated", names)
+
+    def test_new_product_appears_without_wait(self):
+        """A created product is listed without a cache expiry wait."""
+        self.assertEqual(self.client.get(URLS["products"]).data["count"], 2)
+        _make_product(name="Dryer", slug="dryer", sku="DRY-100")
+        self.assertEqual(self.client.get(URLS["products"]).data["count"], 3)
+
+    def test_distinct_filters_cached_separately(self):
+        """Different filter combinations do not share a cached page."""
+        other_category = _make_category(name="Laundry", slug="laundry")
+        plain = self.client.get(URLS["products"])
+        filtered = self.client.get(URLS["products"], {"category": other_category.id})
+        self.assertEqual(plain.data["count"], 2)
+        self.assertEqual(filtered.data["count"], 0)
+        self.assertEqual(self.client.get(URLS["products"]).data["count"], 2)
+
+    def test_search_results_cached_per_term(self):
+        """Each search term caches its own result set."""
+        fridge = self.client.get(URLS["products"], {"search": "Fridge"})
+        washer = self.client.get(URLS["products"], {"search": "Washer"})
+        self.assertEqual(fridge.data["count"], 1)
+        self.assertEqual(washer.data["count"], 1)
+        repeat = self.client.get(URLS["products"], {"search": "Fridge"})
+        self.assertEqual(repeat.data, fridge.data)
+
+    def test_product_image_change_invalidates_page_cache(self):
+        """A new primary image appears on the list card immediately."""
+        self.client.get(URLS["products"])
+        product = Product.objects.get(slug="fridge-200l")
+        ProductImage.objects.create(
+            product=product,
+            image="products/images/hero.png",
+            is_primary=True,
+            sort_order=0,
+        )
+        response = self.client.get(URLS["products"])
+        result = next(r for r in response.data["results"] if r["slug"] == "fridge-200l")
+        self.assertTrue(result["primary_image"].endswith("hero.png"))
+
+    def test_facet_definition_change_invalidates_page_cache(self):
+        """A new facet definition refreshes the cached facets payload."""
+        first = self.client.get(URLS["products"])
+        self.assertEqual(first.data["facets"], {})
+        FacetDefinition.objects.create(
+            name="Capacity",
+            key="capacity",
+            source_field="product_specs",
+            facet_type="choice",
+            is_active=True,
+        )
+        second = self.client.get(URLS["products"])
+        self.assertIn("Capacity", second.data["facets"])
+
+
 class ProductDetailBrowseTests(APITestCase):
     """Exercises the public product detail and pricing endpoints."""
 
