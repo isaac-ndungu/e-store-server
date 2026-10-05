@@ -410,6 +410,17 @@ class StockDashboardTests(_AnalystClient):
         self.assertEqual(snapshot["out_of_stock"], 1)
         self.assertEqual(snapshot["products"], 3)
 
+    def test_snapshot_carries_catalogue_totals(self):
+        """Active, discontinued, and timestamp figures ride with the snapshot."""
+        _make_product("TOT1", "Total One")
+        _make_product("TOT2", "Total Two", is_active=False)
+        _make_product("TOT3", "Total Three", is_discontinued=True)
+        response = self.client.get(reverse(STOCK_URL))
+        snapshot = response.data["snapshot"]
+        self.assertEqual(snapshot["active_products"], 2)
+        self.assertEqual(snapshot["discontinued_products"], 1)
+        self.assertTrue(snapshot["generated_at"])
+
 
 class ProductsDashboardTests(_AnalystClient):
     """The products widget reconciles rankings and catalogue health."""

@@ -227,14 +227,24 @@ def cod_dashboard():
 def stock_dashboard():
     """Return the stock widget for the current state.
 
-    Wraps the analytics stock snapshot; with no pending-payment holds left
-    in the system there is no reservation pipeline to report.
+    Wraps the analytics stock snapshot (per-status product counts) and adds
+    the catalogue-level figures the staff cards render: the active and
+    discontinued product totals plus a generation timestamp. Variant-level
+    unit and value figures are not part of this payload  -  availability is
+    a staff-set flag per product, with no quantity tracked behind it.
 
     Returns:
-        dict: the stock snapshot.
+        dict: the stock snapshot with catalogue totals.
     """
     return {
-        "snapshot": stock_snapshot(),
+        "snapshot": {
+            **stock_snapshot(),
+            "generated_at": timezone.now().isoformat(),
+            "active_products": Product.objects.filter(is_active=True).count(),
+            "discontinued_products": Product.objects.filter(
+                is_discontinued=True
+            ).count(),
+        },
     }
 
 
