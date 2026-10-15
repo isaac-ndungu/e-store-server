@@ -83,6 +83,9 @@ def _normalize(county):
 
 _COUNTY_LOOKUP = frozenset(_normalize(county) for county in KENYAN_COUNTIES)
 
+_COUNTY_CANONICAL = {_normalize(county): county for county in KENYAN_COUNTIES}
+_COUNTY_CANONICAL[_normalize("nairobi city")] = "Nairobi"
+
 
 def is_valid_county(county):
     """Return True when ``county`` names one of the 47 Kenyan counties.
@@ -101,3 +104,22 @@ def is_valid_county(county):
     if normalized in _COUNTY_LOOKUP:
         return True
     return _COUNTY_ALIASES.get(normalized) is not None
+
+
+def canonical_county(county):
+    """Return the official spelling for a county name.
+
+    Args:
+        county (str): the raw county name from a courier feed or staff input.
+
+    Returns:
+        str | None: the matching entry from ``KENYAN_COUNTIES``, or None
+            when the name does not resolve to a known county.
+    """
+    normalized = _normalize(county)
+    if normalized in _COUNTY_CANONICAL:
+        return _COUNTY_CANONICAL[normalized]
+    alias = _COUNTY_ALIASES.get(normalized)
+    if alias is not None:
+        return _COUNTY_CANONICAL.get(_normalize(alias))
+    return None

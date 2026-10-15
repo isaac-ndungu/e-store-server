@@ -1,0 +1,370 @@
+[
+  {
+    "county": "Bomet",
+    "area_name": "Bomet Town"
+  },
+  {
+    "county": "Bungoma",
+    "area_name": "Bungoma"
+  },
+  {
+    "county": "Bungoma",
+    "area_name": "Webuye, Dina Junction"
+  },
+  {
+    "county": "Busia",
+    "area_name": "Busia Town"
+  },
+  {
+    "county": "Embu",
+    "area_name": "Embu Town"
+  },
+  {
+    "county": "Embu",
+    "area_name": "Runyenjes Town"
+  },
+  {
+    "county": "Homa Bay",
+    "area_name": "Homa Bay Town"
+  },
+  {
+    "county": "Homa Bay",
+    "area_name": "Oyugis"
+  },
+  {
+    "county": "Isiolo",
+    "area_name": "Isiolo Town"
+  },
+  {
+    "county": "Kajiado",
+    "area_name": "Isinya Town"
+  },
+  {
+    "county": "Kajiado",
+    "area_name": "Kajiado Town"
+  },
+  {
+    "county": "Kajiado",
+    "area_name": "Kiserian"
+  },
+  {
+    "county": "Kajiado",
+    "area_name": "Kitengela Town"
+  },
+  {
+    "county": "Kajiado",
+    "area_name": "Namanga Town"
+  },
+  {
+    "county": "Kajiado",
+    "area_name": "Ngong Town"
+  },
+  {
+    "county": "Kajiado",
+    "area_name": "Ongata Rongai"
+  },
+  {
+    "county": "Kakamega",
+    "area_name": "Kakamega Town"
+  },
+  {
+    "county": "Kakamega",
+    "area_name": "Mumias"
+  },
+  {
+    "county": "Kericho",
+    "area_name": "Kericho Town"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Githunguri Town"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Juja"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Kiambu Town"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Kikuyu Town"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Limuru Town"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Makongeni, Thika"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Ruiru"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Thika Town"
+  },
+  {
+    "county": "Kiambu",
+    "area_name": "Wangige"
+  },
+  {
+    "county": "Kilifi",
+    "area_name": "Kilifi Town"
+  },
+  {
+    "county": "Kilifi",
+    "area_name": "Malindi Town"
+  },
+  {
+    "county": "Kilifi",
+    "area_name": "Mariakani Town"
+  },
+  {
+    "county": "Kilifi",
+    "area_name": "Mazeras Town"
+  },
+  {
+    "county": "Kilifi",
+    "area_name": "Mtwapa Town"
+  },
+  {
+    "county": "Kilifi",
+    "area_name": "Watamu Town"
+  },
+  {
+    "county": "Kirinyaga",
+    "area_name": "Kagio Market"
+  },
+  {
+    "county": "Kirinyaga",
+    "area_name": "Kerugoya Town"
+  },
+  {
+    "county": "Kirinyaga",
+    "area_name": "Kutus Town"
+  },
+  {
+    "county": "Kirinyaga",
+    "area_name": "Mwea Town"
+  },
+  {
+    "county": "Kisii",
+    "area_name": "Kisii Town"
+  },
+  {
+    "county": "Kisumu",
+    "area_name": "Ahero"
+  },
+  {
+    "county": "Kisumu",
+    "area_name": "Awasi"
+  },
+  {
+    "county": "Kisumu",
+    "area_name": "Kisumu Town (Andytech)"
+  },
+  {
+    "county": "Kitui",
+    "area_name": "Kitui Town"
+  },
+  {
+    "county": "Kwale",
+    "area_name": "Taru Town"
+  },
+  {
+    "county": "Kwale",
+    "area_name": "Ukunda"
+  },
+  {
+    "county": "Laikipia",
+    "area_name": "Nanyuki Town"
+  },
+  {
+    "county": "Laikipia",
+    "area_name": "Nyahururu Town"
+  },
+  {
+    "county": "Machakos",
+    "area_name": "Kyumvi"
+  },
+  {
+    "county": "Machakos",
+    "area_name": "Machakos Town"
+  },
+  {
+    "county": "Machakos",
+    "area_name": "Mlolongo"
+  },
+  {
+    "county": "Makueni",
+    "area_name": "Emali Town"
+  },
+  {
+    "county": "Makueni",
+    "area_name": "Kibwezi Town"
+  },
+  {
+    "county": "Makueni",
+    "area_name": "Makindu Town"
+  },
+  {
+    "county": "Makueni",
+    "area_name": "Makueni, Wote"
+  },
+  {
+    "county": "Makueni",
+    "area_name": "Sultan Hamud"
+  },
+  {
+    "county": "Meru",
+    "area_name": "Makutano, Meru"
+  },
+  {
+    "county": "Meru",
+    "area_name": "Maua Town"
+  },
+  {
+    "county": "Meru",
+    "area_name": "Meru Town"
+  },
+  {
+    "county": "Meru",
+    "area_name": "Nchiru, Meru University"
+  },
+  {
+    "county": "Meru",
+    "area_name": "Nkubu Town"
+  },
+  {
+    "county": "Meru",
+    "area_name": "Timau"
+  },
+  {
+    "county": "Migori",
+    "area_name": "Migori Town"
+  },
+  {
+    "county": "Mombasa",
+    "area_name": "Bamburi"
+  },
+  {
+    "county": "Mombasa",
+    "area_name": "Mombasa Changamwe"
+  },
+  {
+    "county": "Mombasa",
+    "area_name": "Mombasa Mwembe Tayari Buxton"
+  },
+  {
+    "county": "Mombasa",
+    "area_name": "Mombasa Town"
+  },
+  {
+    "county": "Mombasa",
+    "area_name": "Nyali"
+  },
+  {
+    "county": "Murang'a",
+    "area_name": "Kenol Town"
+  },
+  {
+    "county": "Murang'a",
+    "area_name": "Maragua Town"
+  },
+  {
+    "county": "Murang'a",
+    "area_name": "Muranga Town"
+  },
+  {
+    "county": "Nairobi",
+    "area_name": "Nairobi"
+  },
+  {
+    "county": "Nakuru",
+    "area_name": "Gilgil Town"
+  },
+  {
+    "county": "Nakuru",
+    "area_name": "Molo"
+  },
+  {
+    "county": "Nakuru",
+    "area_name": "Naivasha Town"
+  },
+  {
+    "county": "Nakuru",
+    "area_name": "Nakuru Town"
+  },
+  {
+    "county": "Nandi",
+    "area_name": "Kapsabet Town"
+  },
+  {
+    "county": "Narok",
+    "area_name": "Narok Town"
+  },
+  {
+    "county": "Nyamira",
+    "area_name": "Nyamira"
+  },
+  {
+    "county": "Nyeri",
+    "area_name": "Chaka Town"
+  },
+  {
+    "county": "Nyeri",
+    "area_name": "Karatina Town"
+  },
+  {
+    "county": "Nyeri",
+    "area_name": "Naromoru"
+  },
+  {
+    "county": "Nyeri",
+    "area_name": "Nyeri Town"
+  },
+  {
+    "county": "Siaya",
+    "area_name": "Bondo Town"
+  },
+  {
+    "county": "Siaya",
+    "area_name": "Siaya Town"
+  },
+  {
+    "county": "Taita-Taveta",
+    "area_name": "Maungu Town"
+  },
+  {
+    "county": "Taita-Taveta",
+    "area_name": "Voi Town"
+  },
+  {
+    "county": "Tharaka-Nithi",
+    "area_name": "Chogoria Town"
+  },
+  {
+    "county": "Tharaka-Nithi",
+    "area_name": "Chuka Town"
+  },
+  {
+    "county": "Trans-Nzoia",
+    "area_name": "Kiminini Town"
+  },
+  {
+    "county": "Trans-Nzoia",
+    "area_name": "Kitale"
+  },
+  {
+    "county": "Uasin Gishu",
+    "area_name": "Eldoret"
+  },
+  {
+    "county": "Vihiga",
+    "area_name": "Mbale"
+  }
+]

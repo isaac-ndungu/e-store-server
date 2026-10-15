@@ -7,12 +7,19 @@ is quoted by staff and entered at order intake.
 """
 
 from django.core.cache import cache
+from django.core.management import call_command
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import User
+from apps.shipping.constants import canonical_county
 from apps.shipping.models import DeliveryArea
+from apps.shipping.services import (
+    build_delivery_area_pair,
+    normalize_area_name,
+    sync_delivery_areas,
+)
 
 LIST_URL = reverse("api:shipping:delivery-areas")
 ADMIN_LIST_URL = reverse("api:shipping:admin-delivery-area-list-create")
@@ -135,3 +142,58 @@ class DeliveryAreaAdminTests(APITestCase):
         self.client.credentials()
         response = self.client.get(ADMIN_LIST_URL)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class PickupAreaSyncTests(APITestCase):
+    """Exercises the courier pickup-point import into delivery areas."""
+
+    def test_feed_names_normalize_to_canonical_values(self):
+        """All-caps feed names resolve to official county and title-case area."""
+        self.assertEqual(canonical_county("MURANGA "), "Murang'a")
+        self.assertEqual(canonical_county("THARAKA NITHI"), "Tharaka-Nithi")
+        self.assertEqual(normalize_area_name("MAKONGENI,THIKA"), "Makongeni, Thika")
+        self.assertEqual(
+            build_delivery_area_pair("LAIKIPIA", "NANYUKI TOWN"),
+            ("Laikipia", "Nanyuki Town"),
+        )
+
+    def test_sync_creates_and_skips_unknown_counties(self):
+        """Known pairs are created while blank or unknown counties are skipped."""
+        result = sync_delivery_areas(
+            [
+                ("MOMBASA", "MOMBASA TOWN"),
+                ("MOMBASA", "MOMBASA TOWN"),
+                ("Narnia", "Cair Paravel"),
+                ("", ""),
+            ]
+        )
+        self.assertEqual(result, {"created": 1, "reactivated": 0, "skipped": 2})
+        self.assertTrue(
+            DeliveryArea.objects.filter(
+                county="Mombasa", area_name="Mombasa Town"
+            ).exists()
+        )
+
+    def test_sync_is_idempotent_and_reactivates(self):
+        """A second run creates nothing and switches areas back on."""
+        sync_delivery_areas([("Kiambu", "Thika Town")])
+        area = DeliveryArea.objects.get(county="Kiambu", area_name="Thika Town")
+        area.is_active = False
+        area.save(update_fields=["is_active"])
+        result = sync_delivery_areas([("KIAMBU", "THIKA TOWN")])
+        self.assertEqual(result, {"created": 0, "reactivated": 1, "skipped": 0})
+        area.refresh_from_db()
+        self.assertTrue(area.is_active)
+
+    def test_sync_command_loads_bundled_snapshot(self):
+        """The management command populates areas without duplicates."""
+        call_command("sync_delivery_areas")
+        first_count = DeliveryArea.objects.count()
+        self.assertGreater(first_count, 80)
+        self.assertTrue(
+            DeliveryArea.objects.filter(
+                county="Kisumu", area_name="Kisumu Town (Andytech)"
+            ).exists()
+        )
+        call_command("sync_delivery_areas")
+        self.assertEqual(DeliveryArea.objects.count(), first_count)
