@@ -43,6 +43,7 @@ def get_site_config():
             "facebook_url": obj.facebook_url,
             "instagram_url": obj.instagram_url,
             "tiktok_url": obj.tiktok_url,
+            "meta_pixel_id": obj.meta_pixel_id,
             "social_links": obj.social_links,
             "kra_pin": obj.kra_pin,
             "business_registration_number": obj.business_registration_number,

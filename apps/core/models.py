@@ -82,6 +82,12 @@ class SiteConfig(models.Model):
         default="",
         help_text="Full TikTok profile URL, blank to hide the link.",
     )
+    meta_pixel_id = models.CharField(
+        max_length=32,
+        blank=True,
+        default="",
+        help_text="Meta Pixel numeric dataset ID for ads measurement, blank to keep tracking dormant.",
+    )
     social_links = models.JSONField(default=dict, blank=True)
     kra_pin = models.CharField(max_length=20, blank=True)
     business_registration_number = models.CharField(max_length=50, blank=True)
@@ -117,7 +123,7 @@ class SiteConfig(models.Model):
         Returns:
             SiteConfig: the one-and-only configuration row.
         """
-        obj, created = cls.objects.get_or_create(pk=1)
+        obj, _ = cls.objects.get_or_create(pk=1)
         return obj
 
     def __str__(self):

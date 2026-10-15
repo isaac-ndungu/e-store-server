@@ -15,6 +15,7 @@ from rest_framework import serializers
 from apps.core.models import SiteConfig
 
 WHATSAPP_DIGITS = re.compile(r"^\+?[0-9]{7,15}$")
+PIXEL_DATASET_ID = re.compile(r"^[0-9]{10,20}$")
 
 
 class SiteConfigSerializer(serializers.ModelSerializer):
@@ -37,6 +38,7 @@ class SiteConfigSerializer(serializers.ModelSerializer):
             "facebook_url",
             "instagram_url",
             "tiktok_url",
+            "meta_pixel_id",
             "social_links",
             "kra_pin",
             "business_registration_number",
@@ -53,10 +55,10 @@ class SiteConfigUpdateSerializer(serializers.ModelSerializer):
 
     Only storefront contact facts are writable here: the WhatsApp number and
     intake email drive the cart hand-offs, the social profile URLs drive the
-    footer links, and the remaining fields are the matching public contact
-    copy. VAT, KRA/legal copy, theme, settings, and media stay
-    Django-admin-only so a console session cannot touch money or
-    compliance data.
+    footer links, the Pixel ID drives ads measurement, and the remaining
+    fields are the matching public contact copy. VAT, KRA/legal copy, theme,
+    settings, and media stay Django-admin-only so a console session cannot
+    touch money or compliance data.
     """
 
     class Meta:
@@ -71,6 +73,7 @@ class SiteConfigUpdateSerializer(serializers.ModelSerializer):
             "facebook_url",
             "instagram_url",
             "tiktok_url",
+            "meta_pixel_id",
         ]
 
     def validate_whatsapp_number(self, value):
@@ -94,6 +97,32 @@ class SiteConfigUpdateSerializer(serializers.ModelSerializer):
                 "Enter a valid international number, e.g. 254712345678."
             )
         return number
+
+    def validate_meta_pixel_id(self, value):
+        """Accept a blank ID or a numeric Meta Pixel dataset ID.
+
+        Staff paste from Events Manager, where Meta also shows a JavaScript
+        snippet: only the bare numeric ID is valid here, so anything
+        containing non-digit characters is rejected rather than stored.
+
+        Args:
+            value: the submitted Pixel ID.
+
+        Returns:
+            str: the trimmed ID, or "" when tracking stays dormant.
+
+        Raises:
+            serializers.ValidationError: when the value is not blank and not
+                a 10-to-20 digit dataset ID.
+        """
+        pixel_id = (value or "").strip()
+        if pixel_id == "":
+            return ""
+        if not PIXEL_DATASET_ID.match(pixel_id):
+            raise serializers.ValidationError(
+                "Enter the numeric Pixel ID only, not the JavaScript snippet."
+            )
+        return pixel_id
 
 
 class LegalInformationSerializer(serializers.ModelSerializer):

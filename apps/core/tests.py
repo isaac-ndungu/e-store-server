@@ -57,6 +57,13 @@ class SiteConfigEndpointTests(APITestCase):
         for key in ("theme", "settings", "kra_pin", "return_policy_text", "domain"):
             self.assertIn(key, response.data)
 
+    def test_site_config_exposes_blank_pixel_id_by_default(self):
+        """The Pixel ID reads blank until staff configure ads measurement."""
+        response = self.client.get(SITE_CONFIG_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("meta_pixel_id", response.data)
+        self.assertEqual(response.data["meta_pixel_id"], "")
+
     def test_legal_endpoint_returns_legal_fields_only(self):
         """The legal endpoint returns trust/legal copy and not storefront JSON."""
         response = self.client.get(LEGAL_URL)
@@ -172,6 +179,47 @@ class SiteConfigUpdateEndpointTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_staff_can_set_the_pixel_id(self):
+        """Staff can store the numeric Pixel dataset ID on the singleton."""
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.patch(
+            SITE_CONFIG_URL,
+            {"meta_pixel_id": "123456789012345"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config = SiteConfig.objects.get()
+        self.assertEqual(config.meta_pixel_id, "123456789012345")
+
+    def test_update_rejects_a_pasted_pixel_snippet(self):
+        """Anything but bare digits yields HTTP 400 and keeps the old value."""
+        self.client.force_authenticate(user=self.staff)
+        for bad_value in ("fbq('init','123456789012345')", "123", "  "):
+            response = self.client.patch(
+                SITE_CONFIG_URL,
+                {"meta_pixel_id": bad_value},
+                format="json",
+            )
+            if bad_value.strip() == "":
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+            else:
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        config = SiteConfig.objects.get()
+        self.assertEqual(config.meta_pixel_id, "")
+
+    def test_staff_can_blank_the_pixel_id(self):
+        """Clearing the ID returns tracking to dormant without an error."""
+        SiteConfig.objects.create(meta_pixel_id="123456789012345")
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.patch(
+            SITE_CONFIG_URL,
+            {"meta_pixel_id": ""},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config = SiteConfig.objects.get()
+        self.assertEqual(config.meta_pixel_id, "")
 
     def test_staff_can_partially_update_contact_facts(self):
         """A PATCH with one field leaves the other fields untouched."""
