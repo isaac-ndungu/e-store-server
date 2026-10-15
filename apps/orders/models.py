@@ -151,22 +151,6 @@ class Order(models.Model):
         """Return a compact label identifying the order."""
         return f"Order #{self.pk} ({self.status})"
 
-    @property
-    def items_total(self):
-        """Return the sum of all line-item total prices.
-
-        This is used to reconcile the order's money fields, never to charge
-        the customer  -  the authoritative amounts are the snapshot fields on
-        the order.
-
-        Returns:
-            Decimal: the sum of ``total_price`` across all line items.
-        """
-        from decimal import Decimal
-
-        total = self.items.aggregate(total=models.Sum(models.F("total_price")))["total"]
-        return total if total is not None else Decimal("0")
-
 
 class OrderItem(models.Model):
     """One line of an order with order-time data snapshotted.
@@ -264,16 +248,3 @@ class OrderStatusHistory(models.Model):
     def __str__(self):
         """Return a compact label with the transition."""
         return f"{self.from_status or '(created)'} -> {self.to_status}"
-
-
-def new_bundle_group_id():
-    """Return a fresh, unique bundle-group identifier.
-
-    A bundle purchase decomposes into a set of per-component ``OrderItem``
-    rows that share this value so the lines can be grouped back together for
-    display and analytics.
-
-    Returns:
-        UUID: a new universally unique identifier.
-    """
-    return uuid.uuid4()

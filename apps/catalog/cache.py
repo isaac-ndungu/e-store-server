@@ -34,7 +34,6 @@ _CATEGORY_TTL_SECONDS = 30 * 60
 _CATEGORY_GENERATION_KEY = "catalog:category_generation"
 
 _FACET_GENERATION_KEY = "catalog:facet_generation"
-_FACET_DEFS_TTL_SECONDS = 15 * 60
 _FACET_COUNTS_TTL_SECONDS = 5 * 60
 
 _PRODUCT_LIST_GENERATION_KEY = "catalog:product_list_generation"
@@ -156,40 +155,6 @@ def bump_facet_generation():
         cache.incr(_FACET_GENERATION_KEY)
     except ValueError:
         cache.set(_FACET_GENERATION_KEY, 1)
-
-
-def _facet_defs_key(generation):
-    """Return the storage key for cached facet definitions.
-
-    Args:
-        generation (int): the generation the rows were cached under.
-
-    Returns:
-        str: the cache key.
-    """
-    return f"catalog:facets:defs:{generation}"
-
-
-def get_cached_facet_defs(generation):
-    """Return cached facet definition payloads, if current.
-
-    Args:
-        generation (int): the generation the rows must have been cached under.
-
-    Returns:
-        list | None: serialized facet rows, or None when cold.
-    """
-    return cache.get(_facet_defs_key(generation))
-
-
-def cache_facet_defs(generation, rows):
-    """Store serialized facet definition rows.
-
-    Args:
-        generation (int): the generation the rows were computed under.
-        rows (list): serialized facet rows.
-    """
-    cache.set(_facet_defs_key(generation), rows, _FACET_DEFS_TTL_SECONDS)
 
 
 def _facet_counts_key(generation, query_hash):

@@ -39,22 +39,3 @@ def client_ip(request):
         return proxied.strip()
 
     return "".join(xff.split()) if xff else remote_addr
-
-
-def is_client_ip_allowed(request, allowlist):
-    """Return whether a request's client IP is in an allowlist.
-
-    An empty allowlist passes every request so local development without a
-    configured provider IP range keeps working; deployments opt into the check
-    by setting the list.
-
-    Args:
-        request: the incoming HTTP request.
-        allowlist (list[str]): the trusted source IPs.
-
-    Returns:
-        bool: True when the allowlist is empty or the client IP is listed.
-    """
-    if not allowlist:
-        return True
-    return client_ip(request) in allowlist

@@ -9,7 +9,7 @@ processed under the same key is answered with 409 rather than being run twice.
 A key is bound to the request it first succeeded with: repeating the key
 with a *different* body is answered with 409 instead of replaying the first
 result, so a stale or recycled UUID cannot silently return the wrong order,
-ticket, or refund. Keys live 24 hours; only successful responses are cached  - 
+ticket, or refund. Keys live 24 hours; only successful responses are cached -
 a failed (validation) attempt can be retried with the same key after the
 caller fixes the payload.
 """
@@ -195,46 +195,3 @@ def conflicting_key_response():
         },
         status=http_status.HTTP_409_CONFLICT,
     )
-
-
-class IdempotentCreateMixin:
-    """Mixin for create views that must reject duplicate mutations.
-
-    Requires the ``Idempotency-Key`` header, replays the stored response for
-    a repeat of a key that already succeeded, and returns 409 while an
-    earlier request with the same key is still being processed.
-    """
-
-    def create(self, request, *args, **kwargs):
-        """Enforce idempotency around the standard create behaviour.
-
-        Args:
-            request: the incoming request.
-
-        Returns:
-            Response: the replayed or freshly created response.
-        """
-        key = require_idempotency_key(request)
-        scope = f"u{request.user.pk}"
-        fingerprint = request_fingerprint(request)
-        cached = read_cached_result(scope, key)
-        if cached is not None:
-            if payload_conflict(cached, fingerprint):
-                return conflicting_key_response()
-            return Response(cached["data"], status=cached["status"])
-        if not acquire_processing_lock(scope, key):
-            return Response(
-                {
-                    "detail": "A request with this Idempotency-Key is already in progress."
-                },
-                status=http_status.HTTP_409_CONFLICT,
-            )
-        try:
-            response = super().create(request, *args, **kwargs)
-            if response.status_code in IDEMPOTENT_STATUS_CODES:
-                store_result(
-                    scope, key, response.status_code, response.data, fingerprint
-                )
-            return response
-        finally:
-            release_processing_lock(scope, key)

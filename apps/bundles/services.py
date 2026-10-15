@@ -116,7 +116,7 @@ def create_bundle(
 def update_bundle(bundle, **data):
     """Update a bundle's fields.
 
-    Items are managed through their own service methods.
+    Items are managed through the admin bundle-item API.
 
     Args:
         bundle (Bundle): the bundle to update.
@@ -131,30 +131,6 @@ def update_bundle(bundle, **data):
         setattr(bundle, field, value)
     bundle.save()
     return bundle
-
-
-def add_bundle_item(bundle, *, product_id, quantity=1, is_optional=False):
-    """Add a component to a bundle.
-
-    Args:
-        bundle (Bundle): the bundle to extend.
-        product_id (int): the component product id.
-        quantity (int): how many of the component are included.
-        is_optional (bool): whether the component may be dropped by the buyer.
-
-    Returns:
-        BundleItem: the created item.
-
-    Raises:
-        ValidationError: if the product is missing or inactive.
-    """
-    data = {
-        "product_id": product_id,
-        "quantity": quantity,
-        "is_optional": is_optional,
-    }
-    _validate_item(data)
-    return BundleItem.objects.create(bundle=bundle, **data)
 
 
 def _validate_item(data):

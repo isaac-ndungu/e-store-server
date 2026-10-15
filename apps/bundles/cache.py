@@ -13,8 +13,6 @@ matching the project's colon-separated cache-key convention. All reads degrade
 gracefully to a fresh computation when the cache is cold.
 """
 
-from decimal import Decimal
-
 from django.core.cache import cache
 
 # How long a cached bundle price is kept. Invalidation is signal-driven, so
@@ -81,19 +79,3 @@ def invalidate_all_bundle_prices():
 
     for slug in Bundle.objects.values_list("slug", flat=True):
         cache.delete(_cache_key(slug))
-
-
-def _money(value):
-    """Return ``value`` as an exact ``Decimal``.
-
-    ``DecimalField`` values are ``Decimal`` under PostgreSQL but plain strings
-    under the in-memory SQLite used by tests, so any arithmetic on a money
-    field must pass through here first.
-
-    Args:
-        value: a ``DecimalField`` value in its backend-native form.
-
-    Returns:
-        Decimal: the exact decimal value.
-    """
-    return value if isinstance(value, Decimal) else Decimal(value)

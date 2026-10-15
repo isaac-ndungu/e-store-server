@@ -99,16 +99,3 @@ def cache_effective_price(product_id, within_bundle, generation, price_data):
         (generation, price_data),
         _EFFECTIVE_TTL_SECONDS,
     )
-
-
-def invalidate_effective_price(product_id, within_bundle):
-    """Drop the effective price for a single product.
-
-    Used when a product's own price changes, so the next read recomputes
-    without waiting for a generation bump.
-
-    Args:
-        product_id (int): the product id.
-        within_bundle (bool): whether the price is inside a bundle.
-    """
-    cache.delete(_effective_key(product_id, within_bundle))
