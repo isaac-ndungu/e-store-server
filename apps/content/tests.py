@@ -13,6 +13,7 @@ from unittest import mock
 
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.core.management import call_command
 from django.urls import reverse
 from django.utils import timezone
 from PIL import Image
@@ -111,6 +112,7 @@ class ContentPageServiceTests(APITestCase):
         self.assertIn("<p>Great</p>", page.body)
         self.assertNotIn("<script>", page.body)
         self.assertNotIn("onerror", page.body)
+        self.assertEqual(page.title, "Trust & Safety")
 
     def test_create_page_allows_structural_tags(self):
         """A curated set of formatting tags survives sanitisation."""
@@ -125,12 +127,12 @@ class ContentPageServiceTests(APITestCase):
     def test_create_page_sanitises_plain_text_fields(self):
         """Titles and meta fields have all markup stripped."""
         page = create_page(
-            title="<script>alert(1)</script>Title",
+            title="<script>alert(1)</script>Warranty & Service",
             slug="title-page",
             body="<p>Body</p>",
             meta_title="<b>Meta</b>",
         )
-        self.assertEqual(page.title, "alert(1)Title")
+        self.assertEqual(page.title, "alert(1)Warranty & Service")
         self.assertEqual(page.meta_title, "Meta")
 
     def test_create_page_rejects_duplicate_slug(self):
@@ -182,6 +184,48 @@ class ContentPageStorefrontTests(APITestCase):
         self.assertNotIn("meta_title", response.data)
         self.assertNotIn("meta_description", response.data)
         self.assertNotIn("is_published", response.data)
+
+
+class SeedPolicyPagesCommandTests(APITestCase):
+    """Exercises the policy-page seed command's create-only default."""
+
+    def test_seed_creates_all_published_pages(self):
+        """A fresh database gains every canonical page."""
+        call_command("seed_policy_pages")
+        for slug in (
+            "privacy-policy",
+            "cookie-policy",
+            "terms",
+            "return-policy",
+            "warranty",
+            "delivery-installation",
+            "about",
+        ):
+            page = ContentPage.objects.get(slug=slug)
+            self.assertTrue(page.is_published)
+            self.assertTrue(page.body)
+            self.assertTrue(page.meta_title)
+
+    def test_seed_leaves_staff_edits_alone_without_update(self):
+        """Re-running the command never overwrites console edits."""
+        call_command("seed_policy_pages")
+        page = ContentPage.objects.get(slug="terms")
+        page.body = "<p>Staff wording.</p>"
+        page.save()
+        call_command("seed_policy_pages")
+        page.refresh_from_db()
+        self.assertEqual(page.body, "<p>Staff wording.</p>")
+
+    def test_update_refreshes_bodies_to_the_canonical_text(self):
+        """The --update flag restores the canonical wording on demand."""
+        call_command("seed_policy_pages")
+        page = ContentPage.objects.get(slug="terms")
+        page.body = "<p>Staff wording.</p>"
+        page.save()
+        call_command("seed_policy_pages", update=True)
+        page.refresh_from_db()
+        self.assertNotEqual(page.body, "<p>Staff wording.</p>")
+        self.assertIn("Effective date", page.body)
 
 
 class BannerStorefrontTests(APITestCase):

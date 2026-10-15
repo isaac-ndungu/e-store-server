@@ -9,6 +9,8 @@ No feature flag gates content creation  -  unlike reviews or social proof,
 content management is a core staff capability that is always enabled.
 """
 
+import html
+
 import bleach
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
@@ -82,6 +84,9 @@ def _sanitize_plain(value):
     """Strip all markup from plain-text fields.
 
     Used for titles, meta fields, and link URLs where no HTML is expected.
+    Entities are decoded after stripping because these values are escaped
+    again at render time - storing them escaped would double-escape
+    characters like ``&`` in titles.
 
     Args:
         value (str): the raw text.
@@ -89,7 +94,7 @@ def _sanitize_plain(value):
     Returns:
         str: the sanitised text.
     """
-    return bleach.clean(value, tags=set(), strip=True)
+    return html.unescape(bleach.clean(value, tags=set(), strip=True))
 
 
 def create_page(
