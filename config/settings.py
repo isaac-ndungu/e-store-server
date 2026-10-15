@@ -16,6 +16,7 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
 
+from corsheaders.defaults import default_headers as _default_cors_headers
 from decouple import Csv, config
 from django.core.exceptions import ImproperlyConfigured
 
@@ -507,8 +508,6 @@ CORS_ALLOWED_ORIGINS = config("CORS_ALLOWED_ORIGINS", default="", cast=Csv())
 CORS_ALLOW_CREDENTIALS = config("CORS_ALLOW_CREDENTIALS", default=False, cast=bool)
 # The storefront sends an Idempotency-Key on mutating POSTs (inquiries,
 # intake); it must be allowlisted or browsers block the preflight.
-from corsheaders.defaults import default_headers as _default_cors_headers
-
 CORS_ALLOW_HEADERS = (*_default_cors_headers, "Idempotency-Key")
 CSRF_TRUSTED_ORIGINS = config("CSRF_TRUSTED_ORIGINS", default="", cast=Csv())
 

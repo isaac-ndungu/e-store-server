@@ -15,7 +15,7 @@ then caches the resulting product id list per slug. Manual collections are
 untouched. Collecting the product ids in a single query and matching them in
 Python keeps the refresh cheap even with many candidates.
 
-``best_sellers`` is a valid smart rule on the model, but its data source  - 
+``best_sellers`` is a valid smart rule on the model, but its data source -
 order-line counts  -  is not yet built, so it currently computes to an empty
 membership. Its computation slots into ``_SMART_RULE_COMPUTERS`` when that
 feature lands.

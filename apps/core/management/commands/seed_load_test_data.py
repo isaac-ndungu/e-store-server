@@ -258,7 +258,7 @@ class Command(BaseCommand):
             User(
                 email=f"loadtest.{i}@customer.loadtest.example",
                 username=f"loadtest-user-{i:04d}",
-                phone_number=f"+25470{i:07d}",
+                phone_number=f"{_USER_PHONE_PREFIX}{i:07d}",
             )
             for i in range(user_count)
         ]

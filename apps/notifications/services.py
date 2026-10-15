@@ -158,7 +158,7 @@ def _check_send_rate_limit(recipient):
         ),
         (f"sms_rate_day:{recipient}", _SEND_RATE_LIMIT_DAILY, _SEND_RATE_WINDOW_DAILY),
     )
-    for cache_key, limit, timeout in windows:
+    for cache_key, limit, _timeout in windows:
         count = cache.get(cache_key, 0)
         if count >= limit:
             raise serializers.ValidationError(

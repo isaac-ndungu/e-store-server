@@ -15,7 +15,7 @@ workflows are implemented:
 - ``cancel_confirmed_order``  -  the pre-shipment cancellation path: a required
   staff note plus the manual-refund record, then the order is cancelled.
 
-Refunds are arranged by staff outside the system, so money never moves here  - 
+Refunds are arranged by staff outside the system, so money never moves here -
 these functions record what happened, with the amounts still computed and
 capped server-side from the order snapshots.
 

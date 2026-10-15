@@ -131,7 +131,7 @@ class ReturnApproveSerializer(serializers.Serializer):
 
     ``refund_method`` is free text naming how the money will go back (e.g.
     "M-Pesa - sent manually"); the service records it, never executes it.
-    ``refund_amount`` and ``restocking_fee`` are optional staff overrides  - 
+    ``refund_amount`` and ``restocking_fee`` are optional staff overrides -
     when absent, the service computes them from the order snapshot, and any
     supplied value is still capped server-side.
     """

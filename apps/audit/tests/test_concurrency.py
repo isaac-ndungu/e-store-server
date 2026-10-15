@@ -55,7 +55,7 @@ def _make_staff(suffix="race"):
 
 def _make_product(sku="RACE-1"):
     """Create a product with no stock behind it."""
-    category, _ = Category.objects.get_or_create(name="Kitchen", slug="kitchen")
+    Category.objects.get_or_create(name="Kitchen", slug="kitchen")
     brand, _ = Brand.objects.get_or_create(name="Ramtons", slug="ramtons")
     return Product.objects.create(
         name="Race Blender",
