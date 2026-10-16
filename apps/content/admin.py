@@ -8,7 +8,7 @@ enforces sanitisation through the services.
 
 from django.contrib import admin
 
-from apps.content.models import Banner, ContentPage
+from apps.content.models import Banner, BlogCategory, BlogPost, BlogTag, ContentPage
 
 
 @admin.register(ContentPage)
@@ -35,3 +35,33 @@ class BannerAdmin(admin.ModelAdmin):
     )
     list_filter = ("is_active", "placement")
     search_fields = ("title", "placement")
+
+
+@admin.register(BlogCategory)
+class BlogCategoryAdmin(admin.ModelAdmin):
+    """Admin page for browsing and editing blog categories."""
+
+    list_display = ("name", "slug", "sort_order", "is_active", "updated_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "slug")
+    prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(BlogTag)
+class BlogTagAdmin(admin.ModelAdmin):
+    """Admin page for browsing and editing blog tags."""
+
+    list_display = ("name", "slug")
+    search_fields = ("name", "slug")
+    prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(BlogPost)
+class BlogPostAdmin(admin.ModelAdmin):
+    """Admin page for browsing and editing blog posts."""
+
+    list_display = ("title", "slug", "status", "published_at", "updated_at")
+    list_filter = ("status", "category", "noindex")
+    search_fields = ("title", "slug", "excerpt")
+    prepopulated_fields = {"slug": ("title",)}
+    filter_horizontal = ("tags", "related_products")
