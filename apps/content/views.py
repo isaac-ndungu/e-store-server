@@ -18,19 +18,36 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.content import cache as content_cache
+from apps.content.models import BlogCategory, BlogTag
 from apps.content.selectors import (
     get_banner_for_staff,
+    get_blog_post_for_staff,
     get_page_for_staff,
     get_published_page_by_slug,
+    get_published_post_by_slug,
     list_active_banners_for_placement,
+    list_active_blog_categories,
     list_all_banners,
+    list_all_blog_posts,
     list_all_pages,
+    list_blog_tags,
+    list_published_posts,
 )
 from apps.content.serializers import (
     BannerAdminSerializer,
     BannerCreateSerializer,
     BannerStorefrontSerializer,
     BannerUpdateSerializer,
+    BlogCategoryCreateSerializer,
+    BlogCategoryPublicSerializer,
+    BlogCategoryUpdateSerializer,
+    BlogPostAdminSerializer,
+    BlogPostCreateSerializer,
+    BlogPostDetailSerializer,
+    BlogPostListSerializer,
+    BlogPostUpdateSerializer,
+    BlogTagCreateSerializer,
+    BlogTagPublicSerializer,
     ContentPageAdminSerializer,
     ContentPageCreateSerializer,
     ContentPageStorefrontSerializer,
@@ -38,10 +55,18 @@ from apps.content.serializers import (
 )
 from apps.content.services import (
     create_banner,
+    create_blog_category,
+    create_blog_post,
+    create_blog_tag,
     create_page,
     delete_banner,
+    delete_blog_category,
+    delete_blog_post,
+    delete_blog_tag,
     delete_page,
     update_banner,
+    update_blog_category,
+    update_blog_post,
     update_page,
 )
 from apps.core.api import service_error_to_400 as _service_error_to_400
@@ -523,3 +548,551 @@ def _parse_active_param(request):
     if normalised in ("false", "0", "no"):
         return False
     return None
+
+
+def _parse_positive_int(raw):
+    """Parse an optional positive-int query parameter, ignoring garbage.
+
+    Args:
+        raw (str | None): the raw query value.
+
+    Returns:
+        int | None: the parsed id, or None when missing or invalid.
+    """
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except TypeError, ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _parse_flag(raw):
+    """Parse an optional boolean query flag as a strict opt-in.
+
+    Only an explicit true-ish value enables the flag; anything else,
+    including garbage, leaves it off.
+
+    Args:
+        raw (str | None): the raw query value.
+
+    Returns:
+        bool: True for true/1/yes, False otherwise.
+    """
+    if not raw:
+        return False
+    return raw.strip().lower() in ("true", "1", "yes")
+
+
+class _BlogPostListPagination(PageNumberPagination):
+    """Paginator for the public blog list with a capped page size.
+
+    The cap lets small embeds request just a few rows without pulling a
+    full page of results on every render.
+    """
+
+    page_size_query_param = "page_size"
+    max_page_size = 50
+
+
+def _staff_blog_post_or_404(post_id):
+    """Return a blog post for staff management or raise HTTP 404.
+
+    Args:
+        post_id (int): the post primary key.
+
+    Returns:
+        BlogPost: the matched post.
+
+    Raises:
+        Http404: when no post matches the id.
+    """
+    post = get_blog_post_for_staff(post_id)
+    if post is None:
+        raise Http404
+    return post
+
+
+def _resolve_blog_category(category_id):
+    """Resolve an optional category id to an instance.
+
+    Args:
+        category_id (int | None): the category primary key.
+
+    Returns:
+        BlogCategory | None: the category, or None when not supplied.
+
+    Raises:
+        serializers.ValidationError: when the id matches no category.
+    """
+    if category_id is None:
+        return None
+    try:
+        return BlogCategory.objects.get(pk=category_id)
+    except BlogCategory.DoesNotExist as exc:
+        raise serializers.ValidationError(
+            {"category_id": "No category matches this id."}
+        ) from exc
+
+
+class BlogPostListView(APIView):
+    """List published blog posts for the storefront.
+
+    Public by design  -  articles are crawlable content. Supports filtering
+    by ``category``, ``tag``, ``search``, and ``product`` query parameters,
+    and ``exclude_noindex`` for crawler feeds that must not advertise
+    noindex URLs. ``page_size`` is honoured up to a cap so small embeds
+    (e.g. related-guide strips) can ask for just a few rows.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public_catalog"
+
+    @extend_schema(
+        operation_id="blog_post_list",
+        responses={200: BlogPostListSerializer(many=True)},
+    )
+    def get(self, request):
+        """Return paginated published posts, newest first.
+
+        Args:
+            request: the GET request with optional filters.
+
+        Returns:
+            Response: the paginated post list.
+        """
+        posts = list_published_posts(
+            category_slug=request.query_params.get("category"),
+            tag_slug=request.query_params.get("tag"),
+            search=request.query_params.get("search"),
+            product_id=_parse_positive_int(request.query_params.get("product")),
+            exclude_noindex=_parse_flag(request.query_params.get("exclude_noindex")),
+        )
+        paginator = _BlogPostListPagination()
+        page = paginator.paginate_queryset(posts, request)
+        serializer = BlogPostListSerializer(
+            page, many=True, context={"request": request}
+        )
+        return paginator.get_paginated_response(serializer.data)
+
+
+class BlogPostDetailView(APIView):
+    """Retrieve a published blog post by slug with SEO payloads.
+
+    Public by design. Drafts and scheduled posts return 404.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public_catalog"
+
+    @extend_schema(
+        operation_id="blog_post_detail",
+        responses={200: BlogPostDetailSerializer},
+    )
+    def get(self, request, slug):
+        """Return the post detail including meta and structured data.
+
+        Args:
+            request: the GET request.
+            slug (str): the post slug.
+
+        Returns:
+            Response: the post detail, or 404 when missing or unpublished.
+        """
+        generation = content_cache.get_blog_generation()
+        data = content_cache.get_cached_blog_post(slug, generation)
+        if data is None:
+            post = get_published_post_by_slug(slug)
+            if post is None:
+                raise Http404
+            data = BlogPostDetailSerializer(post, context={"request": request}).data
+            content_cache.cache_blog_post(slug, generation, data)
+        return Response(data)
+
+
+class BlogCategoryListView(APIView):
+    """List active blog categories for archive pages and navigation."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public_catalog"
+
+    @extend_schema(
+        operation_id="blog_category_list",
+        responses={200: BlogCategoryPublicSerializer(many=True)},
+    )
+    def get(self, request):
+        """Return active categories with published post counts.
+
+        Args:
+            request: the GET request.
+
+        Returns:
+            Response: the category list.
+        """
+        categories = list_active_blog_categories()
+        serializer = BlogCategoryPublicSerializer(categories, many=True)
+        return Response(serializer.data)
+
+
+class BlogTagListView(APIView):
+    """List blog tags for archive pages and navigation."""
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "public_catalog"
+
+    @extend_schema(
+        operation_id="blog_tag_list",
+        responses={200: BlogTagPublicSerializer(many=True)},
+    )
+    def get(self, request):
+        """Return tags ordered by name.
+
+        Args:
+            request: the GET request.
+
+        Returns:
+            Response: the tag list.
+        """
+        tags = list_blog_tags()
+        serializer = BlogTagPublicSerializer(tags, many=True)
+        return Response(serializer.data)
+
+
+class BlogPostAdminListView(APIView):
+    """List all blog posts for staff management."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_post_list",
+        responses={200: BlogPostAdminSerializer(many=True)},
+    )
+    def get(self, request):
+        """Return posts filtered by the optional ``status`` query flag.
+
+        Args:
+            request: the GET request (``?status=draft|published``).
+
+        Returns:
+            Response: the paginated post list for management.
+        """
+        posts = list_all_blog_posts(status=request.query_params.get("status"))
+        paginator = PageNumberPagination()
+        page = paginator.paginate_queryset(posts, request)
+        serializer = BlogPostAdminSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class BlogPostAdminCreateView(APIView):
+    """Create a blog post as a manager."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_post_create",
+        request=BlogPostCreateSerializer,
+        responses={201: BlogPostAdminSerializer},
+    )
+    def post(self, request):
+        """Create a new blog post from the supplied payload.
+
+        Args:
+            request: the POST request carrying the post data.
+
+        Returns:
+            Response: ``201 Created`` with the admin post shape.
+        """
+        input_serializer = BlogPostCreateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+        category = _resolve_blog_category(data.get("category_id"))
+        post = _service_error_to_400(create_blog_post)(
+            title=data["title"],
+            slug=data["slug"],
+            body=data["body"],
+            excerpt=data.get("excerpt", ""),
+            category=category,
+            author_name=data.get("author_name", ""),
+            status=data.get("status", "draft"),
+            published_at=data.get("published_at"),
+            meta_title=data.get("meta_title", ""),
+            meta_description=data.get("meta_description", ""),
+            canonical_url=data.get("canonical_url", ""),
+            noindex=data.get("noindex", False),
+            cover_image=data.get("cover_image"),
+            og_image=data.get("og_image"),
+            tag_ids=data.get("tag_ids", []),
+            related_product_ids=data.get("related_product_ids", []),
+        )
+        serializer = BlogPostAdminSerializer(post)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class BlogPostAdminDetailView(APIView):
+    """Retrieve a blog post for staff management by id."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_post_detail",
+        responses={200: BlogPostAdminSerializer},
+    )
+    def get(self, request, post_id):
+        """Return the admin shape of the post.
+
+        Args:
+            request: the GET request.
+            post_id (int): the post primary key.
+
+        Returns:
+            Response: the post data, or 404.
+        """
+        post = _staff_blog_post_or_404(post_id)
+        serializer = BlogPostAdminSerializer(post)
+        return Response(serializer.data)
+
+
+class BlogPostAdminUpdateView(APIView):
+    """Update a blog post as a manager."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_post_update",
+        request=BlogPostUpdateSerializer,
+        responses={200: BlogPostAdminSerializer},
+    )
+    def patch(self, request, post_id):
+        """Partially update the post with the supplied fields.
+
+        Args:
+            request: the PATCH request carrying the update payload.
+            post_id (int): the post primary key.
+
+        Returns:
+            Response: ``200 OK`` with the updated admin shape.
+        """
+        post = _staff_blog_post_or_404(post_id)
+        input_serializer = BlogPostUpdateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        data = dict(input_serializer.validated_data)
+        if "category_id" in data:
+            data["category"] = _resolve_blog_category(data.pop("category_id"))
+        updated = _service_error_to_400(update_blog_post)(post=post, **data)
+        serializer = BlogPostAdminSerializer(updated)
+        return Response(serializer.data)
+
+
+class BlogPostAdminDeleteView(APIView):
+    """Delete a blog post as a manager."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_post_delete",
+        responses={204: None},
+    )
+    def delete(self, request, post_id):
+        """Delete the post.
+
+        Args:
+            request: the DELETE request.
+            post_id (int): the post primary key.
+
+        Returns:
+            Response: ``204 No Content`` on success, or ``404``.
+        """
+        post = _staff_blog_post_or_404(post_id)
+        delete_blog_post(post=post)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BlogCategoryAdminListView(APIView):
+    """List blog categories for staff management."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_category_list",
+        responses={200: BlogCategoryPublicSerializer(many=True)},
+    )
+    def get(self, request):
+        """Return all categories ordered for management.
+
+        Args:
+            request: the GET request.
+
+        Returns:
+            Response: the category list.
+        """
+        categories = BlogCategory.objects.order_by("sort_order", "name", "pk")
+        serializer = BlogCategoryPublicSerializer(categories, many=True)
+        return Response(serializer.data)
+
+
+class BlogCategoryAdminCreateView(APIView):
+    """Create a blog category as a manager."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_category_create",
+        request=BlogCategoryCreateSerializer,
+        responses={201: BlogCategoryPublicSerializer},
+    )
+    def post(self, request):
+        """Create a new blog category from the supplied payload.
+
+        Args:
+            request: the POST request carrying the category data.
+
+        Returns:
+            Response: ``201 Created`` with the category shape.
+        """
+        input_serializer = BlogCategoryCreateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        category = _service_error_to_400(create_blog_category)(
+            **input_serializer.validated_data
+        )
+        serializer = BlogCategoryPublicSerializer(category)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class BlogCategoryAdminUpdateView(APIView):
+    """Update a blog category as a manager."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_category_update",
+        request=BlogCategoryUpdateSerializer,
+        responses={200: BlogCategoryPublicSerializer},
+    )
+    def patch(self, request, category_id):
+        """Partially update the category with the supplied fields.
+
+        Args:
+            request: the PATCH request carrying the update payload.
+            category_id (int): the category primary key.
+
+        Returns:
+            Response: ``200 OK`` with the updated shape, or ``404``.
+        """
+        try:
+            category = BlogCategory.objects.get(pk=category_id)
+        except BlogCategory.DoesNotExist:
+            raise Http404 from None
+        input_serializer = BlogCategoryUpdateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        updated = _service_error_to_400(update_blog_category)(
+            category=category, **input_serializer.validated_data
+        )
+        serializer = BlogCategoryPublicSerializer(updated)
+        return Response(serializer.data)
+
+
+class BlogCategoryAdminDeleteView(APIView):
+    """Delete a blog category as a manager."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_category_delete",
+        responses={204: None},
+    )
+    def delete(self, request, category_id):
+        """Delete the category, keeping its posts with a null category.
+
+        Args:
+            request: the DELETE request.
+            category_id (int): the category primary key.
+
+        Returns:
+            Response: ``204 No Content`` on success, or ``404``.
+        """
+        try:
+            category = BlogCategory.objects.get(pk=category_id)
+        except BlogCategory.DoesNotExist:
+            raise Http404 from None
+        delete_blog_category(category=category)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class BlogTagAdminCreateView(APIView):
+    """Create a blog tag as a manager."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_tag_create",
+        request=BlogTagCreateSerializer,
+        responses={201: BlogTagPublicSerializer},
+    )
+    def post(self, request):
+        """Create a new blog tag from the supplied payload.
+
+        Args:
+            request: the POST request carrying the tag data.
+
+        Returns:
+            Response: ``201 Created`` with the tag shape.
+        """
+        input_serializer = BlogTagCreateSerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        tag = _service_error_to_400(create_blog_tag)(**input_serializer.validated_data)
+        serializer = BlogTagPublicSerializer(tag)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class BlogTagAdminDeleteView(APIView):
+    """Delete a blog tag as a manager."""
+
+    permission_classes = [permissions.IsAdminUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    @extend_schema(
+        operation_id="admin_blog_tag_delete",
+        responses={204: None},
+    )
+    def delete(self, request, tag_id):
+        """Delete the tag.
+
+        Args:
+            request: the DELETE request.
+            tag_id (int): the tag primary key.
+
+        Returns:
+            Response: ``204 No Content`` on success, or ``404``.
+        """
+        try:
+            tag = BlogTag.objects.get(pk=tag_id)
+        except BlogTag.DoesNotExist:
+            raise Http404 from None
+        delete_blog_tag(tag=tag)
+        return Response(status=status.HTTP_204_NO_CONTENT)

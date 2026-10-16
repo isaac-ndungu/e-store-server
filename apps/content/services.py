@@ -15,7 +15,7 @@ import bleach
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
-from apps.content.models import Banner, ContentPage
+from apps.content.models import Banner, BlogCategory, BlogPost, BlogTag, ContentPage
 
 _ALLOWABLE_TAGS = frozenset(
     {
@@ -289,3 +289,356 @@ def delete_banner(*, banner):
         None
     """
     banner.delete()
+
+
+def _compute_reading_stats(html_body):
+    """Derive word count and reading time from stored HTML.
+
+    Tags are stripped before counting so markup never inflates the total.
+    Reading time assumes 200 words per minute with a one-minute floor for
+    any non-empty post.
+
+    Args:
+        html_body (str): the sanitised post body.
+
+    Returns:
+        tuple: ``(word_count, reading_minutes)``.
+    """
+    text = bleach.clean(html_body, tags=set(), strip=True)
+    words = [part for part in text.split() if part.strip()]
+    word_count = len(words)
+    reading_minutes = max(1, (word_count + 199) // 200) if word_count else 0
+    return word_count, reading_minutes
+
+
+def create_blog_category(
+    *, name, slug, description="", meta_title="", meta_description="", is_active=True
+):
+    """Create a blog category.
+
+    Args:
+        name (str): the category label.
+        slug (str): the URL-safe identifier.
+        description (str): archive page copy.
+        meta_title (str): optional SEO title override.
+        meta_description (str): optional SEO description.
+        is_active (bool): whether the category is storefront-visible.
+
+    Returns:
+        BlogCategory: the created category.
+
+    Raises:
+        ValidationError: when the slug is already in use.
+    """
+    category = BlogCategory(
+        name=_sanitize_plain(name),
+        slug=slug,
+        description=_sanitize_html(description),
+        meta_title=_sanitize_plain(meta_title),
+        meta_description=_sanitize_plain(meta_description),
+        is_active=is_active,
+    )
+    try:
+        category.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"slug": "A category with this slug already exists."}
+        ) from exc
+    return category
+
+
+def update_blog_category(*, category, **fields):
+    """Update a blog category's fields.
+
+    Args:
+        category (BlogCategory): the category to update.
+        **fields: keyword arguments matching model field names.
+
+    Returns:
+        BlogCategory: the updated category.
+
+    Raises:
+        ValidationError: when a new slug conflicts with an existing category.
+    """
+    updatable = {
+        "name",
+        "slug",
+        "description",
+        "meta_title",
+        "meta_description",
+        "sort_order",
+        "is_active",
+    }
+    sanitise_html = {"description"}
+    sanitise_plain = {"name", "meta_title", "meta_description"}
+    update_fields = []
+
+    for key, value in fields.items():
+        if key not in updatable:
+            continue
+        if key in sanitise_html:
+            value = _sanitize_html(value)
+        elif key in sanitise_plain:
+            value = _sanitize_plain(value)
+        setattr(category, key, value)
+        update_fields.append(key)
+
+    if not update_fields:
+        return category
+
+    try:
+        category.save(update_fields=update_fields)
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"slug": "A category with this slug already exists."}
+        ) from exc
+    return category
+
+
+def delete_blog_category(*, category):
+    """Delete a blog category.
+
+    Posts in the category are kept with a null category.
+
+    Args:
+        category (BlogCategory): the category to delete.
+
+    Returns:
+        None
+    """
+    category.delete()
+
+
+def create_blog_tag(*, name, slug):
+    """Create a blog tag.
+
+    Args:
+        name (str): the tag label.
+        slug (str): the URL-safe identifier.
+
+    Returns:
+        BlogTag: the created tag.
+
+    Raises:
+        ValidationError: when the slug is already in use.
+    """
+    tag = BlogTag(name=_sanitize_plain(name), slug=slug)
+    try:
+        tag.save()
+    except IntegrityError as exc:
+        raise ValidationError({"slug": "A tag with this slug already exists."}) from exc
+    return tag
+
+
+def delete_blog_tag(*, tag):
+    """Delete a blog tag.
+
+    Args:
+        tag (BlogTag): the tag to delete.
+
+    Returns:
+        None
+    """
+    tag.delete()
+
+
+def create_blog_post(
+    *,
+    title,
+    slug,
+    body,
+    excerpt="",
+    category=None,
+    author_name="",
+    status="draft",
+    published_at=None,
+    meta_title="",
+    meta_description="",
+    canonical_url="",
+    noindex=False,
+    cover_image=None,
+    og_image=None,
+    tag_ids=(),
+    related_product_ids=(),
+):
+    """Create a blog post with its tag and product links.
+
+    The body and plain-text fields are sanitised before storage and the
+    reading stats are derived from the stored HTML, so the API never trusts
+    caller-supplied counts. Images are validated by the serializer before
+    reaching this layer.
+
+    Args:
+        title (str): the post heading.
+        slug (str): the URL-safe identifier.
+        body (str): the HTML article body.
+        excerpt (str): short summary used for listings and meta fallback.
+        category: an optional BlogCategory instance.
+        author_name (str): display byline stored as text.
+        status (str): ``draft`` or ``published``.
+        published_at: optional publish timestamp for scheduling.
+        meta_title (str): optional SEO title override.
+        meta_description (str): optional SEO description.
+        canonical_url (str): optional canonical override.
+        noindex (bool): whether crawlers should skip this post.
+        cover_image: optional uploaded cover image.
+        og_image: optional uploaded social-share image override.
+        tag_ids: iterable of BlogTag primary keys to attach.
+        related_product_ids: iterable of Product primary keys to link.
+
+    Returns:
+        BlogPost: the created post.
+
+    Raises:
+        ValidationError: when the slug is already in use or a status is invalid.
+    """
+    if status not in ("draft", "published"):
+        raise ValidationError({"status": "Status must be draft or published."})
+    clean_body = _sanitize_html(body)
+    word_count, reading_minutes = _compute_reading_stats(clean_body)
+    post = BlogPost(
+        title=_sanitize_plain(title),
+        slug=slug,
+        body=clean_body,
+        excerpt=_sanitize_plain(excerpt),
+        category=category,
+        author_name=_sanitize_plain(author_name),
+        status=status,
+        published_at=published_at,
+        meta_title=_sanitize_plain(meta_title),
+        meta_description=_sanitize_plain(meta_description),
+        canonical_url=canonical_url.strip(),
+        noindex=noindex,
+        word_count=word_count,
+        reading_minutes=reading_minutes,
+    )
+    if cover_image is not None:
+        post.cover_image = cover_image
+    if og_image is not None:
+        post.og_image = og_image
+    try:
+        post.save()
+    except IntegrityError as exc:
+        raise ValidationError(
+            {"slug": "A post with this slug already exists."}
+        ) from exc
+    if tag_ids:
+        post.tags.set(BlogTag.objects.filter(pk__in=list(tag_ids)))
+    if related_product_ids:
+        from apps.catalog.models import Product
+
+        post.related_products.set(
+            Product.objects.filter(pk__in=list(related_product_ids))
+        )
+    return post
+
+
+def update_blog_post(*, post, tag_ids=None, related_product_ids=None, **fields):
+    """Update a blog post's fields.
+
+    Reading stats are recomputed whenever the body changes. Tag and product
+    links are replaced wholesale when the corresponding id list is supplied
+    and left untouched when omitted.
+
+    Args:
+        post (BlogPost): the post to update.
+        tag_ids: optional replacement list of BlogTag primary keys.
+        related_product_ids: optional replacement list of Product primary keys.
+        **fields: keyword arguments matching model field names.
+
+    Returns:
+        BlogPost: the updated post.
+
+    Raises:
+        ValidationError: when a new slug conflicts, a status is invalid, or
+            the slug of a post that stays published is changed. Published
+            slugs are locked because live URLs are indexed and linked;
+            unpublish first, then rename.
+    """
+    if (
+        post.status == "published"
+        and "slug" in fields
+        and fields["slug"] != post.slug
+        and fields.get("status", post.status) == "published"
+    ):
+        raise ValidationError(
+            {
+                "slug": (
+                    "The slug of a published post cannot be changed. "
+                    "Unpublish the post first, then rename it."
+                )
+            }
+        )
+    updatable = {
+        "title",
+        "slug",
+        "body",
+        "excerpt",
+        "category",
+        "author_name",
+        "status",
+        "published_at",
+        "meta_title",
+        "meta_description",
+        "canonical_url",
+        "noindex",
+        "cover_image",
+        "og_image",
+    }
+    sanitise_html = {"body"}
+    sanitise_plain = {
+        "title",
+        "excerpt",
+        "author_name",
+        "meta_title",
+        "meta_description",
+    }
+    update_fields = []
+
+    for key, value in fields.items():
+        if key not in updatable:
+            continue
+        if key == "status" and value not in ("draft", "published"):
+            raise ValidationError({"status": "Status must be draft or published."})
+        if key in sanitise_html:
+            value = _sanitize_html(value)
+        elif key in sanitise_plain:
+            value = _sanitize_plain(value)
+        elif key == "canonical_url" and value:
+            value = value.strip()
+        setattr(post, key, value)
+        update_fields.append(key)
+
+    if "body" in update_fields:
+        post.word_count, post.reading_minutes = _compute_reading_stats(post.body)
+        update_fields.extend(["word_count", "reading_minutes"])
+
+    if update_fields:
+        try:
+            post.save(update_fields=list(dict.fromkeys(update_fields)))
+        except IntegrityError as exc:
+            raise ValidationError(
+                {"slug": "A post with this slug already exists."}
+            ) from exc
+
+    if tag_ids is not None:
+        post.tags.set(BlogTag.objects.filter(pk__in=list(tag_ids)))
+    if related_product_ids is not None:
+        from apps.catalog.models import Product
+
+        post.related_products.set(
+            Product.objects.filter(pk__in=list(related_product_ids))
+        )
+    return post
+
+
+def delete_blog_post(*, post):
+    """Delete a blog post.
+
+    Args:
+        post (BlogPost): the post to delete.
+
+    Returns:
+        None
+    """
+    post.delete()

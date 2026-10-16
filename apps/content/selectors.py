@@ -8,7 +8,7 @@ management interface.
 
 from django.utils import timezone
 
-from apps.content.models import Banner, ContentPage
+from apps.content.models import Banner, BlogCategory, BlogPost, BlogTag, ContentPage
 
 
 def get_published_page_by_slug(slug):
@@ -126,4 +126,182 @@ def list_all_banners(*, active=None, placement=None):
         queryset = queryset.filter(is_active=active)
     if placement is not None:
         queryset = queryset.filter(placement=placement)
+    return queryset
+
+
+def list_active_blog_categories():
+    """Return active blog categories with their published post counts.
+
+    Returns:
+        QuerySet: categories ordered for archive display.
+    """
+    from django.db.models import Count, Q
+
+    now = timezone.now()
+    return (
+        BlogCategory.objects.filter(is_active=True)
+        .annotate(
+            post_count=Count(
+                "posts",
+                filter=Q(posts__status="published") & Q(posts__published_at__lte=now),
+            )
+        )
+        .order_by("sort_order", "name", "pk")
+    )
+
+
+def get_blog_category_by_slug(slug):
+    """Return an active blog category by slug, or None.
+
+    Args:
+        slug (str): the category slug.
+
+    Returns:
+        BlogCategory | None: the category, or None when missing or inactive.
+    """
+    return BlogCategory.objects.filter(slug=slug, is_active=True).first()
+
+
+def list_blog_tags():
+    """Return all blog tags ordered by name.
+
+    Returns:
+        QuerySet: tags ordered by name.
+    """
+    return BlogTag.objects.order_by("name", "pk")
+
+
+def list_published_posts(
+    *,
+    category_slug=None,
+    tag_slug=None,
+    search=None,
+    product_id=None,
+    exclude_noindex=False,
+):
+    """Return published blog posts with relations prefetched for listing.
+
+    Only posts with ``status`` published and ``published_at`` in the past
+    are included. The category join and tag/product prefetches keep the list
+    view to a constant query count.
+
+    Args:
+        category_slug (str | None): restrict to this category slug.
+        tag_slug (str | None): restrict to posts carrying this tag slug.
+        search (str | None): case-insensitive match on title and excerpt.
+        product_id (int | None): restrict to posts linking this product,
+            used for related-guide strips on product pages.
+        exclude_noindex (bool): skip posts staff flagged as hidden from
+            search engines. Used by crawler feeds, which must never
+            advertise a noindex URL.
+
+    Returns:
+        QuerySet: matching posts newest first.
+    """
+    now = timezone.now()
+    queryset = (
+        BlogPost.objects.filter(status="published", published_at__lte=now)
+        .select_related("category")
+        .prefetch_related("tags", "related_products")
+        .order_by("-published_at", "-pk")
+    )
+    if category_slug:
+        queryset = queryset.filter(category__slug=category_slug)
+    if tag_slug:
+        queryset = queryset.filter(tags__slug=tag_slug)
+    if product_id:
+        queryset = queryset.filter(related_products__pk=product_id)
+    if exclude_noindex:
+        queryset = queryset.filter(noindex=False)
+    if search:
+        from django.db.models import Q
+
+        queryset = queryset.filter(
+            Q(title__icontains=search) | Q(excerpt__icontains=search)
+        )
+    return queryset
+
+
+def get_published_post_by_slug(slug):
+    """Return a published blog post by slug, or None.
+
+    Drafts and scheduled (future-dated) posts are never exposed, and
+    ``noindex`` posts stay reachable but flagged so the storefront can emit
+    the robots meta tag.
+
+    Args:
+        slug (str): the post slug.
+
+    Returns:
+        BlogPost | None: the post, or None when missing or not yet public.
+    """
+    now = timezone.now()
+    try:
+        return (
+            BlogPost.objects.select_related("category")
+            .prefetch_related("tags", "related_products")
+            .get(slug=slug, status="published", published_at__lte=now)
+        )
+    except BlogPost.DoesNotExist:
+        return None
+
+
+def list_related_posts(*, post, limit=3):
+    """Return published posts related to the given post.
+
+    Same-category posts rank first, then the newest published posts,
+    excluding the post itself.
+
+    Args:
+        post (BlogPost): the reference post.
+        limit (int): maximum posts to return.
+
+    Returns:
+        QuerySet: related published posts.
+    """
+    from django.db.models import Case, IntegerField, When
+
+    now = timezone.now()
+    queryset = BlogPost.objects.filter(
+        status="published", published_at__lte=now
+    ).exclude(pk=post.pk)
+    if post.category_id:
+        queryset = queryset.annotate(
+            same_category=Case(
+                When(category_id=post.category_id, then=1),
+                default=0,
+                output_field=IntegerField(),
+            )
+        ).order_by("-same_category", "-published_at", "-pk")
+    else:
+        queryset = queryset.order_by("-published_at", "-pk")
+    return queryset[:limit]
+
+
+def get_blog_post_for_staff(post_id):
+    """Return a blog post for staff management by id, or None.
+
+    Args:
+        post_id (int): the post primary key.
+
+    Returns:
+        BlogPost | None: the post, or None when no post matches.
+    """
+    return BlogPost.objects.filter(pk=post_id).first()
+
+
+def list_all_blog_posts(*, status=None):
+    """Return blog posts for the staff management list.
+
+    Args:
+        status (str | None): when set, restrict to that publication state.
+
+    Returns:
+        QuerySet: posts ordered newest first.
+    """
+    queryset = BlogPost.objects.select_related("category").order_by(
+        "-published_at", "-pk"
+    )
+    if status in ("draft", "published"):
+        queryset = queryset.filter(status=status)
     return queryset

@@ -8,6 +8,7 @@ the admin endpoints.
 
 from django.urls import path
 
+from apps.content.feeds import BlogFeed, BlogFeedStylesheetView, BlogSitemapView
 from apps.content.views import (
     BannerAdminCreateView,
     BannerAdminDeleteView,
@@ -15,6 +16,21 @@ from apps.content.views import (
     BannerAdminListView,
     BannerAdminUpdateView,
     BannerStorefrontView,
+    BlogCategoryAdminCreateView,
+    BlogCategoryAdminDeleteView,
+    BlogCategoryAdminListView,
+    BlogCategoryAdminUpdateView,
+    BlogCategoryListView,
+    BlogPostAdminCreateView,
+    BlogPostAdminDeleteView,
+    BlogPostAdminDetailView,
+    BlogPostAdminListView,
+    BlogPostAdminUpdateView,
+    BlogPostDetailView,
+    BlogPostListView,
+    BlogTagAdminCreateView,
+    BlogTagAdminDeleteView,
+    BlogTagListView,
     ContentPageAdminCreateView,
     ContentPageAdminDeleteView,
     ContentPageAdminDetailView,
@@ -33,6 +49,80 @@ urlpatterns = [
         "content/banners/",
         BannerStorefrontView.as_view(),
         name="banner-storefront",
+    ),
+    path("blog/posts/", BlogPostListView.as_view(), name="blog-post-list"),
+    path(
+        "blog/posts/<slug:slug>/",
+        BlogPostDetailView.as_view(),
+        name="blog-post-detail",
+    ),
+    path(
+        "blog/categories/",
+        BlogCategoryListView.as_view(),
+        name="blog-category-list",
+    ),
+    path("blog/tags/", BlogTagListView.as_view(), name="blog-tag-list"),
+    path("blog/sitemap.xml", BlogSitemapView.as_view(), name="blog-sitemap"),
+    path("blog/feed/", BlogFeed(), name="blog-feed"),
+    path(
+        "blog/feed.xsl",
+        BlogFeedStylesheetView.as_view(),
+        name="blog-feed-stylesheet",
+    ),
+    path(
+        "blog/admin/posts/",
+        BlogPostAdminListView.as_view(),
+        name="blog-post-admin-list",
+    ),
+    path(
+        "blog/admin/posts/create/",
+        BlogPostAdminCreateView.as_view(),
+        name="blog-post-admin-create",
+    ),
+    path(
+        "blog/admin/posts/<int:post_id>/",
+        BlogPostAdminDetailView.as_view(),
+        name="blog-post-admin-detail",
+    ),
+    path(
+        "blog/admin/posts/<int:post_id>/update/",
+        BlogPostAdminUpdateView.as_view(),
+        name="blog-post-admin-update",
+    ),
+    path(
+        "blog/admin/posts/<int:post_id>/delete/",
+        BlogPostAdminDeleteView.as_view(),
+        name="blog-post-admin-delete",
+    ),
+    path(
+        "blog/admin/categories/",
+        BlogCategoryAdminListView.as_view(),
+        name="blog-category-admin-list",
+    ),
+    path(
+        "blog/admin/categories/create/",
+        BlogCategoryAdminCreateView.as_view(),
+        name="blog-category-admin-create",
+    ),
+    path(
+        "blog/admin/categories/<int:category_id>/update/",
+        BlogCategoryAdminUpdateView.as_view(),
+        name="blog-category-admin-update",
+    ),
+    path(
+        "blog/admin/categories/<int:category_id>/delete/",
+        BlogCategoryAdminDeleteView.as_view(),
+        name="blog-category-admin-delete",
+    ),
+    path(
+        "blog/admin/tags/create/",
+        BlogTagAdminCreateView.as_view(),
+        name="blog-tag-admin-create",
+    ),
+    path(
+        "blog/admin/tags/<int:tag_id>/delete/",
+        BlogTagAdminDeleteView.as_view(),
+        name="blog-tag-admin-delete",
     ),
     path(
         "content/admin/pages/",
