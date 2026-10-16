@@ -115,3 +115,118 @@ class Banner(models.Model):
         """Return a compact label identifying the banner."""
         label = self.title or self.placement
         return f"banner: {label}"
+
+
+class BlogCategory(models.Model):
+    """A topical grouping for blog posts (e.g. buying guides, energy saving).
+
+    Categories power archive pages and internal linking, so each one carries
+    its own SEO title and description. Inactive categories are hidden from
+    public reads but remain visible to staff.
+    """
+
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(unique=True)
+    description = models.TextField(blank=True)
+    meta_title = models.CharField(max_length=255, blank=True)
+    meta_description = models.TextField(blank=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["sort_order", "name", "pk"]
+        indexes = [
+            models.Index(fields=["is_active", "slug"], name="bc_active_slug_idx"),
+        ]
+
+    def __str__(self):
+        """Return a compact label identifying the category."""
+        return f"blog category: {self.name}"
+
+
+class BlogTag(models.Model):
+    """A cross-cutting label for blog posts (e.g. energy-saving, hisense).
+
+    Tags complement categories: a post lives in one category but can carry
+    several tags, giving crawlers more topical paths to the same content.
+    """
+
+    name = models.CharField(max_length=100)
+    slug = models.SlugField(unique=True)
+
+    class Meta:
+        ordering = ["name", "pk"]
+        indexes = [
+            models.Index(fields=["slug"], name="btag_slug_idx"),
+        ]
+
+    def __str__(self):
+        """Return a compact label identifying the tag."""
+        return f"blog tag: {self.name}"
+
+
+class BlogPost(models.Model):
+    """An SEO article that links editorial content to sellable products.
+
+    Only rows with ``status`` set to published and ``published_at`` in the
+    past are visible on the storefront; drafts and scheduled posts return 404
+    on public reads. ``related_products`` is the commercial link: every guide
+    points at real products so ranking content passes equity to product pages.
+    The storefront renders ``body`` as stored, builds ``<title>`` from
+    ``meta_title`` (falling back to ``title``), and injects an Article
+    structured-data block from the detail payload.
+    """
+
+    STATUS_CHOICES = (("draft", "Draft"), ("published", "Published"))
+
+    title = models.CharField(max_length=255)
+    slug = models.SlugField(unique=True)
+    excerpt = models.CharField(max_length=500, blank=True)
+    body = models.TextField()
+    cover_image = models.ImageField(
+        upload_to="content/blog/", blank=True, validators=[validate_image_upload]
+    )
+    category = models.ForeignKey(
+        BlogCategory,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="posts",
+    )
+    tags = models.ManyToManyField(BlogTag, blank=True, related_name="posts")
+    related_products = models.ManyToManyField(
+        "catalog.Product", blank=True, related_name="blog_posts"
+    )
+    author_name = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
+    published_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    meta_title = models.CharField(max_length=255, blank=True)
+    meta_description = models.TextField(blank=True)
+    canonical_url = models.CharField(max_length=500, blank=True)
+    og_image = models.ImageField(
+        upload_to="content/blog/og/", blank=True, validators=[validate_image_upload]
+    )
+    noindex = models.BooleanField(default=False)
+    reading_minutes = models.PositiveIntegerField(default=0)
+    word_count = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-published_at", "-pk"]
+        indexes = [
+            models.Index(
+                fields=["status", "published_at"], name="bpost_status_pub_idx"
+            ),
+            models.Index(fields=["slug"], name="bpost_slug_idx"),
+            models.Index(
+                fields=["category", "status", "published_at"],
+                name="bpost_cat_status_idx",
+            ),
+        ]
+
+    def __str__(self):
+        """Return a compact label identifying the post."""
+        return f"blog post: {self.title}"

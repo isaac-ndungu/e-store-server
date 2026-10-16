@@ -18,9 +18,11 @@ from django.core.cache import cache
 
 _BANNER_TTL_SECONDS = 10 * 60
 _PAGE_TTL_SECONDS = 10 * 60
+_BLOG_TTL_SECONDS = 10 * 60
 
 _BANNER_GENERATION_KEY = "content:banner_generation"
 _PAGE_GENERATION_KEY = "content:page_generation"
+_BLOG_GENERATION_KEY = "content:blog_generation"
 
 
 def _banner_key(placement, generation):
@@ -145,3 +147,64 @@ def cache_page(slug, generation, data):
         data (dict): the serialized page.
     """
     cache.set(_page_key(slug, generation), data, _PAGE_TTL_SECONDS)
+
+
+def _blog_key(slug, generation):
+    """Return the storage key for a blog post under a generation.
+
+    Args:
+        slug (str): the post slug.
+        generation (int): the generation the post was cached under.
+
+    Returns:
+        str: the cache key.
+    """
+    return f"content:blog:post:{slug}:{generation}"
+
+
+def get_blog_generation():
+    """Return the current blog generation counter.
+
+    The counter is incremented whenever a post, category, or tag changes,
+    invalidating every cached blog payload at once.
+
+    Returns:
+        int: the current generation.
+    """
+    return cache.get(_BLOG_GENERATION_KEY, 0)
+
+
+def bump_blog_generation():
+    """Increment the blog generation, invalidating cached blog payloads.
+
+    Called from the content signals when a post, category, or tag is
+    created, edited, or deleted.
+    """
+    try:
+        cache.incr(_BLOG_GENERATION_KEY)
+    except ValueError:
+        cache.set(_BLOG_GENERATION_KEY, 1)
+
+
+def get_cached_blog_post(slug, generation):
+    """Return a cached blog post payload, if current.
+
+    Args:
+        slug (str): the post slug.
+        generation (int): the generation the post must have been cached under.
+
+    Returns:
+        dict | None: the serialized post, or ``None`` when cold or stale.
+    """
+    return cache.get(_blog_key(slug, generation))
+
+
+def cache_blog_post(slug, generation, data):
+    """Store a serialized blog post payload.
+
+    Args:
+        slug (str): the post slug.
+        generation (int): the generation the post was computed under.
+        data (dict): the serialized post.
+    """
+    cache.set(_blog_key(slug, generation), data, _BLOG_TTL_SECONDS)

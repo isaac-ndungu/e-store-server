@@ -10,7 +10,7 @@ from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from apps.content import cache as content_cache
-from apps.content.models import Banner, ContentPage
+from apps.content.models import Banner, BlogCategory, BlogPost, BlogTag, ContentPage
 
 
 @receiver(post_save, sender=Banner)
@@ -35,3 +35,39 @@ def on_page_saved(sender, instance, **kwargs):
 def on_page_deleted(sender, instance, **kwargs):
     """Invalidate cached pages when a content page is deleted."""
     content_cache.bump_page_generation()
+
+
+@receiver(post_save, sender=BlogPost)
+def on_blog_post_saved(sender, instance, **kwargs):
+    """Invalidate cached blog payloads when a post changes."""
+    content_cache.bump_blog_generation()
+
+
+@receiver(post_delete, sender=BlogPost)
+def on_blog_post_deleted(sender, instance, **kwargs):
+    """Invalidate cached blog payloads when a post is deleted."""
+    content_cache.bump_blog_generation()
+
+
+@receiver(post_save, sender=BlogCategory)
+def on_blog_category_saved(sender, instance, **kwargs):
+    """Invalidate cached blog payloads when a category changes."""
+    content_cache.bump_blog_generation()
+
+
+@receiver(post_delete, sender=BlogCategory)
+def on_blog_category_deleted(sender, instance, **kwargs):
+    """Invalidate cached blog payloads when a category is deleted."""
+    content_cache.bump_blog_generation()
+
+
+@receiver(post_save, sender=BlogTag)
+def on_blog_tag_saved(sender, instance, **kwargs):
+    """Invalidate cached blog payloads when a tag changes."""
+    content_cache.bump_blog_generation()
+
+
+@receiver(post_delete, sender=BlogTag)
+def on_blog_tag_deleted(sender, instance, **kwargs):
+    """Invalidate cached blog payloads when a tag is deleted."""
+    content_cache.bump_blog_generation()
