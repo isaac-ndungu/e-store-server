@@ -16,6 +16,8 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
+from apps.core.permissions import ApiDocsAccess
+
 
 def health_view(request):
     """Return a liveness/readiness probe for Postman, CI, and load balancers.
@@ -54,17 +56,21 @@ urlpatterns = [
     path("api/", include(("config.api_urls", "api"), namespace="api")),
     path(
         "api/schema/",
-        SpectacularAPIView.as_view(permission_classes=[]),
+        SpectacularAPIView.as_view(permission_classes=[ApiDocsAccess]),
         name="schema",
     ),
     path(
         "api/swagger/",
-        SpectacularSwaggerView.as_view(url_name="schema", permission_classes=[]),
+        SpectacularSwaggerView.as_view(
+            url_name="schema", permission_classes=[ApiDocsAccess]
+        ),
         name="swagger-ui",
     ),
     path(
         "api/redoc/",
-        SpectacularRedocView.as_view(url_name="schema", permission_classes=[]),
+        SpectacularRedocView.as_view(
+            url_name="schema", permission_classes=[ApiDocsAccess]
+        ),
         name="redoc",
     ),
 ]

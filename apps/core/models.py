@@ -8,6 +8,8 @@ KRA PIN, legal copy, feature toggles) that changes without a deploy.
 
 from django.db import models
 
+from apps.catalog.validators import validate_image_upload
+
 
 def default_site_settings():
     """Return the recommended default ``settings`` JSON for a fresh install.
@@ -52,8 +54,16 @@ class SiteConfig(models.Model):
     site_name = models.CharField(max_length=255, default="My Store")
     tagline = models.CharField(max_length=255, blank=True)
     domain = models.CharField(max_length=255, blank=True)
-    logo = models.ImageField(upload_to="site/logo/", blank=True)
-    favicon = models.ImageField(upload_to="site/favicon/", blank=True)
+    logo = models.ImageField(
+        upload_to="site/logo/",
+        blank=True,
+        validators=[validate_image_upload],
+    )
+    favicon = models.ImageField(
+        upload_to="site/favicon/",
+        blank=True,
+        validators=[validate_image_upload],
+    )
     theme = models.JSONField(default=dict)
     settings = models.JSONField(default=default_site_settings)
     contact_email = models.EmailField(blank=True)

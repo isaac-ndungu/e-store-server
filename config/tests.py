@@ -3,7 +3,8 @@
 A smoke test so CI (and Postman) can confirm the backend serves requests.
 """
 
-from django.test import SimpleTestCase
+from django.contrib.auth import get_user_model
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 
@@ -138,3 +139,49 @@ class DocsPagesTests(SimpleTestCase):
         response = self.client.get("/api/swagger/", HTTP_ACCEPT_ENCODING="gzip")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers.get("Content-Encoding"), "gzip")
+
+
+class ApiDocsAccessTests(TestCase):
+    """The API documentation is public in development and staff-only in production."""
+
+    docs_paths = ("/api/schema/", "/api/swagger/", "/api/redoc/")
+
+    def setUp(self):
+        """Create one staff account and one non-staff customer account."""
+        user_model = get_user_model()
+        self.staff = user_model.objects.create_user(
+            email="docs-staff@example.invalid",
+            username="docs-staff",
+            phone_number="+254700000001",
+            password="StrongPass123!",
+            is_staff=True,
+        )
+        self.customer = user_model.objects.create_user(
+            email="docs-customer@example.invalid",
+            username="docs-customer",
+            phone_number="+254700000002",
+            password="StrongPass123!",
+        )
+
+    @override_settings(API_DOCS_PUBLIC=False)
+    def test_anonymous_callers_are_rejected_in_production(self):
+        """Anonymous callers cannot read the schema or either docs page."""
+        for path in self.docs_paths:
+            response = self.client.get(path)
+            self.assertIn(response.status_code, (401, 403), path)
+
+    @override_settings(API_DOCS_PUBLIC=False)
+    def test_authenticated_non_staff_callers_are_rejected_in_production(self):
+        """A logged-in customer is not allowed to read the API documentation."""
+        self.client.force_login(self.customer)
+        for path in self.docs_paths:
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 403, path)
+
+    @override_settings(API_DOCS_PUBLIC=False)
+    def test_staff_callers_can_open_docs_in_production(self):
+        """Staff can still use the schema and docs pages in production."""
+        self.client.force_login(self.staff)
+        for path in self.docs_paths:
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200, path)

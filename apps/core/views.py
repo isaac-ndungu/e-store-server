@@ -30,6 +30,7 @@ class SiteConfigView(generics.RetrieveUpdateAPIView):
     shared ``public`` scope for reads and the ``admin`` scope for writes.
     """
 
+    permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public"
     serializer_class = SiteConfigSerializer

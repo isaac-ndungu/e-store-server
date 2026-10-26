@@ -17,6 +17,7 @@ cannot be listed twice in the same collection.
 from django.db import models
 from django.db.models import Q
 
+from apps.catalog.validators import validate_image_upload
 from apps.collections.constants import SMART_RULE_CHOICES_VALUES
 
 
@@ -55,7 +56,11 @@ class Collection(models.Model):
     smart_rule = models.CharField(max_length=20, choices=SMART_RULE_CHOICES, blank=True)
     rule_window_days = models.PositiveIntegerField(default=14)
     rule_threshold = models.PositiveIntegerField(null=True, blank=True)
-    banner_image = models.ImageField(upload_to="collections/banners/", blank=True)
+    banner_image = models.ImageField(
+        upload_to="collections/banners/",
+        blank=True,
+        validators=[validate_image_upload],
+    )
     description = models.TextField(blank=True)
     display_location = models.CharField(max_length=50, blank=True)
     sort_order = models.PositiveIntegerField(default=0)

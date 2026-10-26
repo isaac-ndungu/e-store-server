@@ -59,6 +59,7 @@ jobs:
     env:
       DEBUG: "False"
       SECRET_KEY: ci-only-non-prod-key
+      ALLOWED_HOSTS: localhost,testserver
       DB_ENGINE: django.db.backends.postgresql
       DB_NAME: ecommerce
       DB_USER: ecommerce

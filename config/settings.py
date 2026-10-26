@@ -84,6 +84,10 @@ def _cloudinary_packages_available():
 
 SECRET_KEY = config("SECRET_KEY", default="")
 DEBUG = config("DEBUG", default=True, cast=bool)
+# The schema and Swagger/ReDoc pages describe the whole API surface, so they
+# stay open only for local development and the test suite. Production callers
+# must be authenticated staff.
+API_DOCS_PUBLIC = TESTING or DEBUG
 
 if not DEBUG and not SECRET_KEY:
     raise ImproperlyConfigured("SECRET_KEY must be set when DEBUG is False")
@@ -259,6 +263,10 @@ MEDIA_ROOT = BASE_DIR / "media"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+_DEFAULT_RENDERER_CLASSES = ["rest_framework.renderers.JSONRenderer"]
+if DEBUG:
+    _DEFAULT_RENDERER_CLASSES.append("rest_framework.renderers.BrowsableAPIRenderer")
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -272,6 +280,7 @@ REST_FRAMEWORK = {
         "rest_framework.filters.SearchFilter",
         "rest_framework.filters.OrderingFilter",
     ],
+    "DEFAULT_RENDERER_CLASSES": _DEFAULT_RENDERER_CLASSES,
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],

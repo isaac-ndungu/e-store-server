@@ -11,16 +11,21 @@ appliance business.
 - Celery + Celery Beat
 - Docker Compose for local infrastructure
 
-## Quick start (local, SQLite)
+## Quick start (local, PostgreSQL)
 
 ```bash
 python -m venv env
 source env/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env
+# Fill in DATABASE_URL (or the DB_* variables) and REDIS_URL.
 python manage.py migrate
 python manage.py runserver
 ```
+
+The test runner swaps in in-memory SQLite unless `TEST_USE_POSTGRES=True` is
+set. Set that flag to exercise the row-locking and concurrency paths against
+PostgreSQL before deploying.
 
 `requirements.txt` is the production set (what Docker and Render install);
 `requirements-dev.txt` adds lint/format/audit/load-test tooling on top.
@@ -74,14 +79,61 @@ need no external services.
    (`postgresql://...?sslmode=require`).
 2. Push this repo to GitHub and create a new **Blueprint** on Render pointing
    at `render.yaml` (or create the services manually).
-3. In the Render dashboard, set `DATABASE_URL` (Neon string) on both services,
-   plus `FRONTEND_URL` / `CORS_ALLOWED_ORIGINS` pointing at the storefront.
-   `SECRET_KEY` is generated; copy the same value to the worker service.
-4. Deploy. The build runs migrations and collects static files; health is
-   checked at `/health/`. API docs live at `/api/swagger/`.
+3. In the Render dashboard, set `DATABASE_URL` (Neon string) on the web,
+   worker, and beat services, plus `FRONTEND_URL` / `CORS_ALLOWED_ORIGINS`
+   pointing at the storefront. `SECRET_KEY` is generated; copy the same value
+   to the worker and beat services. The beat service is required for periodic
+   maintenance, smart-collection refreshes, and abandoned-cart sweeps.
+4. Deploy. The build runs migrations, collects static files, and seeds the
+   delivery areas and policy pages. Health is checked at `/health/`. API docs
+   are at `/api/swagger/`, but require a staff login outside development.
 
 The frontend only needs the web service URL as its API base URL
 (e.g. `https://e-store-api.onrender.com`).
+
+## Production data bootstrap
+
+Start production from an empty PostgreSQL database and let migrations create
+the schema. Never copy a local `db.sqlite3`, a development database dump, or
+the `media/` folder to the server.
+
+After migrations, load only the reference data the storefront needs on day
+one:
+
+```bash
+python manage.py sync_delivery_areas
+python manage.py seed_policy_pages
+python manage.py createsuperuser
+```
+
+`SiteConfig` is created with safe defaults the first time it is read; fill in
+the business name, KRA PIN, contact details, social links, and upload the logo
+through the staff console. Both seed commands are idempotent and leave staff
+edits untouched. Catalogue data is intentionally empty: enter real categories,
+brands, and products through the staff console after launch.
+
+Load-test data can be removed from a development database without touching
+real rows:
+
+```bash
+python manage.py seed_load_test_data --wipe-only
+```
+
+Before deploying, run the production checks and a fresh-database rehearsal in
+an environment that points at a disposable PostgreSQL database:
+
+```bash
+python manage.py check --deploy
+python manage.py makemigrations --check --dry-run
+python manage.py migrate
+TEST_USE_POSTGRES=True python manage.py test
+```
+
+Production settings must include `DEBUG=False`, a fresh random `SECRET_KEY`,
+an explicit `ALLOWED_HOSTS`, `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, and
+`CSRF_TRUSTED_ORIGINS` for cookie-based admin sessions. Set a real
+`EMAIL_BACKEND` if password-reset mail must leave the server; the default is
+console output outside tests.
 
 ## API collection (Postman)
 
