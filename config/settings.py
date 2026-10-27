@@ -313,6 +313,7 @@ REST_FRAMEWORK = {
         "cart_write": "60/min",
         "order_intake": "30/min",
     },
+    "EXCEPTION_HANDLER": "apps.core.exceptions.handlers.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
@@ -565,6 +566,48 @@ if not DEBUG and not TESTING:
             CSRF_TRUSTED_ORIGINS = [*CSRF_TRUSTED_ORIGINS, render_origin]
     STATIC_URL = f"{CDN_DOMAIN}/static/"
     MEDIA_URL = f"{CDN_DOMAIN}/media/"
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "{levelname} {asctime} {module} {process:d} {thread:d} {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "{levelname} {asctime} {module} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+    "loggers": {
+        "django": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+        "apps": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+    },
+}
 
 if TESTING:
     PASSWORD_HASHERS = [
