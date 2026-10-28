@@ -1,3 +1,4 @@
+import bleach
 from rest_framework import serializers
 
 from apps.catalog.models import Brand, Category, Product
@@ -46,6 +47,18 @@ class DiscountSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "redemption_count", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        """Sanitize the name."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_badge_text(self, value):
+        """Sanitize the badge text."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
 
     def validate(self, attrs):
         """Enforce scope-relation pairing and a valid window.
@@ -141,6 +154,12 @@ class CouponSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
+    def validate_code(self, value):
+        """Sanitize the code."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip().upper()
+
     def validate(self, attrs):
         """Require a value for percent/fixed coupons and a valid window.
 
@@ -193,6 +212,12 @@ class CouponValidationSerializer(serializers.Serializer):
     subtotal = serializers.DecimalField(
         max_digits=12, decimal_places=2, required=False, allow_null=True
     )
+
+    def validate_code(self, value):
+        """Sanitize the code."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip().upper()
 
 
 class CouponValidationResultSerializer(serializers.Serializer):

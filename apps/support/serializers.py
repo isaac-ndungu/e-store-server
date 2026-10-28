@@ -8,6 +8,8 @@ Read serializers are staff-facing shapes carrying the author's display handle
 and assignment context for the support console.
 """
 
+import bleach
+
 from django.urls import reverse
 from rest_framework import serializers
 
@@ -33,6 +35,18 @@ class TicketCreateSerializer(serializers.Serializer):
         required=False, allow_null=True, min_value=1
     )
 
+    def validate_subject(self, value):
+        """Sanitize the subject."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_message(self, value):
+        """Sanitize the message."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
 
 class TicketMessageCreateSerializer(serializers.Serializer):
     """Input for adding a message to a ticket.
@@ -43,6 +57,12 @@ class TicketMessageCreateSerializer(serializers.Serializer):
 
     body = serializers.CharField(max_length=TICKET_MESSAGE_MAX_LENGTH)
     attachment = serializers.FileField(required=False, allow_null=True)
+
+    def validate_body(self, value):
+        """Sanitize the message body."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
 
 
 class TicketAssignSerializer(serializers.Serializer):

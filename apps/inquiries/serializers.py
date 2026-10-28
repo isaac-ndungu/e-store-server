@@ -8,6 +8,7 @@ and is validated line by line. Staff serializers expose the queue fields
 and the status-transition input.
 """
 
+import bleach
 from rest_framework import serializers
 
 from apps.inquiries.models import Inquiry
@@ -69,6 +70,19 @@ class InquiryCreateSerializer(serializers.Serializer):
         max_length=255, required=False, allow_blank=True, default=""
     )
 
+    def validate_contact_hint(self, value):
+        """Sanitize the optional contact hint.
+
+        Args:
+            value (str): the raw contact hint.
+
+        Returns:
+            str: the sanitized contact hint.
+        """
+        if not value:
+            return ""
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
     def validate_cart_snapshot(self, value):
         """Validate the fallback snapshot lines.
 
@@ -81,7 +95,13 @@ class InquiryCreateSerializer(serializers.Serializer):
         """
         if value is None:
             return None
-        return _validate_snapshot(value)
+        cleaned = _validate_snapshot(value)
+        for line in cleaned:
+            if "name" in line:
+                line["name"] = bleach.clean(line["name"], tags=set(), strip=True).strip()
+            if "sku" in line:
+                line["sku"] = bleach.clean(line["sku"], tags=set(), strip=True).strip()
+        return cleaned
 
 
 class InquiryDetailSerializer(serializers.ModelSerializer):
