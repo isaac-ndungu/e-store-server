@@ -1,3 +1,4 @@
+from apps.core.permissions import IsStaffUser
 import django.core.exceptions as django_exc
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
@@ -113,7 +114,7 @@ class AdminBundleListCreateView(generics.ListCreateAPIView):
     trigger one query per bundle.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = BundleSerializer
@@ -130,7 +131,7 @@ class AdminBundleDetailView(generics.RetrieveUpdateDestroyAPIView):
     payload does not cause extra queries.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = BundleSerializer
@@ -147,7 +148,7 @@ class AdminBundleItemListCreateView(generics.ListCreateAPIView):
     be created against the bundle in the path.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = BundleItemSerializer
@@ -173,7 +174,7 @@ class AdminBundleItemDetailView(generics.RetrieveUpdateDestroyAPIView):
     through its own bundle.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = BundleItemSerializer

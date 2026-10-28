@@ -36,6 +36,7 @@ from apps.accounts.services import (
     reset_password,
     send_password_reset_email,
 )
+from apps.core.permissions import IsStaffUser
 
 
 class LoginView(TokenObtainPairView):
@@ -71,7 +72,7 @@ class LoginView(TokenObtainPairView):
         user = serializer.user
         if user is not None and not (user.is_staff or user.is_superuser):
             return Response(
-                {"detail": "This login is for staff accounts only."},
+                {"errors": {"detail": "This login is for staff accounts only."}},
                 status=status.HTTP_403_FORBIDDEN,
             )
         return Response(serializer.validated_data, status=status.HTTP_200_OK)
@@ -254,7 +255,9 @@ class CurrentUserView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         """Return the authenticated user for the request."""
-        return self.request.user
+        obj = self.request.user
+        self.check_object_permissions(self.request, obj)
+        return obj
 
 
 class AddressPagination(PageNumberPagination):
@@ -279,7 +282,7 @@ class AddressListCreateView(generics.ListCreateAPIView):
     fields, and ordering by the declared fields.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     serializer_class = AddressSerializer
     pagination_class = AddressPagination
     filterset_fields = ["is_default", "county"]
@@ -313,9 +316,15 @@ class AddressListCreateView(generics.ListCreateAPIView):
 class AddressRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a single directory entry (staff only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     serializer_class = AddressSerializer
     queryset = Address.objects.all()
+
+    def get_object(self):
+        """Return the object and enforce object-level permissions."""
+        obj = super().get_object()
+        self.check_object_permissions(self.request, obj)
+        return obj
 
     @property
     def throttle_scope(self):

@@ -39,6 +39,7 @@ from apps.catalog.images import (
 )
 from apps.catalog.validators import validate_image_upload
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.permissions import IsStaffUser
 from apps.core.idempotency import (
     acquire_processing_lock,
     conflicting_key_response,
@@ -583,7 +584,7 @@ class ReviewPhotoDeleteView(APIView):
 class ReviewModerationListView(APIView):
     """List every review for moderation by managers and support staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -611,7 +612,7 @@ class ReviewModerationListView(APIView):
 class ReviewApproveView(APIView):
     """Approve a review as staff, refreshing the product rating."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None
@@ -640,7 +641,7 @@ class ReviewApproveView(APIView):
 class ReviewRejectView(APIView):
     """Hide a review from the storefront as staff, refreshing the rating."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None
@@ -668,7 +669,7 @@ class ReviewRejectView(APIView):
 class QuestionModerationListView(APIView):
     """List every question for moderation by managers and support staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -696,7 +697,7 @@ class QuestionModerationListView(APIView):
 class QuestionAnswerCreateView(APIView):
     """Answer a product question as staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -732,7 +733,7 @@ class QuestionAnswerCreateView(APIView):
 class QuestionApproveView(APIView):
     """Approve a question as staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None
@@ -760,7 +761,7 @@ class QuestionApproveView(APIView):
 class QuestionRejectView(APIView):
     """Hide a question and its answers from the storefront as staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None

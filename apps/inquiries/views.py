@@ -18,6 +18,7 @@ from rest_framework.views import APIView
 
 from apps.cart.selectors import build_cart_snapshot, get_cart_from_cookie
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.permissions import IsStaffUser
 from apps.inquiries.selectors import list_inquiries
 from apps.inquiries.serializers import (
     InquiryCreateSerializer,
@@ -80,7 +81,7 @@ class InquiryCreateView(APIView):
 class InquiryListView(APIView):
     """List the staff follow-up queue, newest first (staff only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "inquiry_read"
 
@@ -122,7 +123,7 @@ class InquiryListView(APIView):
 class InquiryStatusUpdateView(APIView):
     """Move an inquiry through the staff queue (staff only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "inquiry_read"
 
@@ -141,9 +142,11 @@ class InquiryStatusUpdateView(APIView):
         from apps.inquiries.models import Inquiry
 
         try:
-            return Inquiry.objects.select_related("converted_order").get(pk=inquiry_id)
+            obj = Inquiry.objects.select_related("converted_order").get(pk=inquiry_id)
         except Inquiry.DoesNotExist as exc:
             raise Http404 from exc
+        self.check_object_permissions(self.request, obj)
+        return obj
 
     @extend_schema(
         operation_id="inquiry_status_update",

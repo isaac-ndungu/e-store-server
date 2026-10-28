@@ -4,6 +4,25 @@ from django.conf import settings
 from rest_framework import permissions
 
 
+class IsStaffUser(permissions.BasePermission):
+    """Allow only authenticated staff or superuser accounts."""
+
+    message = "This action requires staff privileges."
+
+    def has_permission(self, request, view):
+        """Check if the user is authenticated and has staff status.
+
+        Args:
+            request: the incoming DRF request.
+            view: the view being accessed.
+
+        Returns:
+            bool: True if the user is authenticated and is staff or superuser.
+        """
+        user = request.user
+        return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+
+
 class ApiDocsAccess(permissions.BasePermission):
     """Allow API documentation anonymously in development, staff-only otherwise.
 
@@ -25,4 +44,5 @@ class ApiDocsAccess(permissions.BasePermission):
         """
         if settings.API_DOCS_PUBLIC:
             return True
-        return bool(request.user and request.user.is_staff)
+        user = request.user
+        return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))

@@ -10,7 +10,11 @@ accept no query parameters at all.
 """
 
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions, serializers
+from rest_framework import permissions
+
+from rest_framework import serializers
+
+from apps.core.permissions import IsStaffUser
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -51,7 +55,7 @@ class DashboardAPIView(APIView):
     can resolve its query string through a declared serializer.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "dashboard_read"
     query_serializer_class = DashboardQuerySerializer

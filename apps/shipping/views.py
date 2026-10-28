@@ -1,3 +1,4 @@
+from apps.core.permissions import IsStaffUser
 """API views for the shipping app.
 
 Split into a public endpoint (``AllowAny``: the delivery-area catalogue for
@@ -42,7 +43,7 @@ class DeliveryAreaListView(generics.ListAPIView):
 class AdminDeliveryAreaListCreateView(generics.ListCreateAPIView):
     """List all delivery areas or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = DeliveryAreaSerializer
@@ -55,7 +56,7 @@ class AdminDeliveryAreaListCreateView(generics.ListCreateAPIView):
 class AdminDeliveryAreaDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a delivery area (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = DeliveryAreaSerializer

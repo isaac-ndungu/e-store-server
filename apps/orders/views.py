@@ -23,6 +23,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.permissions import IsStaffUser
 from apps.orders.models import Order
 from apps.orders.selectors import (
     find_orders_by_payment_reference,
@@ -49,7 +50,7 @@ class StaffOrderIntakeView(APIView):
     replaying the first order.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_intake"
 
@@ -152,7 +153,7 @@ class StaffOrderListView(APIView):
     answered with 400; unknown params are ignored.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
@@ -208,7 +209,7 @@ class StaffOrderListView(APIView):
 class StaffOrderDetailView(APIView):
     """Retrieve one order for staff with items and status history."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_read"
 
@@ -279,7 +280,7 @@ class OrderStatusUpdateView(APIView):
     status-history row alongside it.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "order_write"
 
