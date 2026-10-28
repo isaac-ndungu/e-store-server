@@ -145,7 +145,7 @@ class EndpointSecurityPostureTests(TestCase):
 class RoleRestrictionAuditTests(TestCase):
     """Cross-check staff-only restrictions across the API.
 
-    Staff endpoints require Django's staff flag via ``IsAdminUser``. These
+    Staff endpoints require Django's staff flag via ``IsStaffUser``. These
     assertions pin the pairs most likely to regress: analytics and dashboard
     data is staff-only, and order/return fulfilment actions are gated by the
     staff flag rather than being public.
@@ -153,11 +153,11 @@ class RoleRestrictionAuditTests(TestCase):
 
     def test_analytics_views_are_manager_or_analyst_only(self):
         """Revenue reports require staff access."""
-        self._assert_shares_permission("apps.analytics.views", "IsAdminUser")
+        self._assert_shares_permission("apps.analytics.views", "IsStaffUser")
 
     def test_dashboard_views_are_manager_or_analyst_only(self):
         """Dashboard widgets require staff access."""
-        self._assert_shares_permission("apps.dashboard.views", "IsAdminUser")
+        self._assert_shares_permission("apps.dashboard.views", "IsStaffUser")
 
     def test_fulfilment_actions_require_staff(self):
         """Order/return status actions gate on staff access, not public."""
@@ -181,7 +181,7 @@ class RoleRestrictionAuditTests(TestCase):
                 perm.__name__
                 for perm in (_declared_attr(view_class, "permission_classes") or [])
             }
-            if "IsAdminUser" not in names:
+            if "IsStaffUser" not in names and "IsAdminUser" not in names:
                 offending.append(
                     f"{identifier} allows {sorted(names) or ['<none declared>']}"
                 )

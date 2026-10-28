@@ -142,13 +142,13 @@ class BannerCreateSerializer(serializers.Serializer):
     title = serializers.CharField(
         max_length=BANNER_TITLE_MAX_LENGTH, required=False, allow_blank=True, default=""
     )
-    image = serializers.ImageField(validators=[validate_image_upload])
     link_url = serializers.CharField(
         max_length=BANNER_LINK_URL_MAX_LENGTH,
         required=False,
         allow_blank=True,
         default="",
     )
+    image = serializers.ImageField(validators=[validate_image_upload])
     placement = serializers.CharField(max_length=50)
     sort_order = serializers.IntegerField(min_value=0, default=0)
     starts_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
@@ -200,10 +200,10 @@ class BannerUpdateSerializer(serializers.Serializer):
     title = serializers.CharField(
         max_length=BANNER_TITLE_MAX_LENGTH, required=False, allow_blank=True
     )
-    image = serializers.ImageField(required=False, validators=[validate_image_upload])
     link_url = serializers.CharField(
         max_length=BANNER_LINK_URL_MAX_LENGTH, required=False, allow_blank=True
     )
+    image = serializers.ImageField(required=False, validators=[validate_image_upload])
     placement = serializers.CharField(max_length=50, required=False)
     sort_order = serializers.IntegerField(min_value=0, required=False)
     starts_at = serializers.DateTimeField(required=False, allow_null=True)
