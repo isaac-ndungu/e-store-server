@@ -29,6 +29,7 @@ class CategoryListSerializer(serializers.ModelSerializer):
             "image",
             "is_active",
             "parent",
+            "sort_order",
             "product_count",
         ]
         read_only_fields = ["id"]
@@ -65,6 +66,7 @@ class CategoryDetailSerializer(serializers.ModelSerializer):
             "meta_description",
             "is_active",
             "parent",
+            "sort_order",
             "children",
             "product_count",
         ]
@@ -114,6 +116,7 @@ class CategoryWriteSerializer(serializers.ModelSerializer):
             "meta_description",
             "is_active",
             "parent",
+            "sort_order",
         ]
         read_only_fields = ["id"]
 

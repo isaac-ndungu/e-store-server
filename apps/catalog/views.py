@@ -168,9 +168,9 @@ class CategoryDetailView(generics.RetrieveAPIView):
                 .prefetch_related(
                     Prefetch(
                         "children",
-                        queryset=Category.objects.filter(is_active=True).annotate(
-                            product_count=Count("products")
-                        ),
+                        queryset=Category.objects.filter(is_active=True)
+                        .annotate(product_count=Count("products"))
+                        .order_by("sort_order", "name"),
                     )
                 ),
                 slug=slug,
@@ -392,7 +392,7 @@ class AdminCategoryListCreateView(generics.ListCreateAPIView):
         return (
             Category.objects.select_related("parent")
             .annotate(product_count=Count("products"))
-            .order_by("name")
+            .order_by("sort_order", "name")
         )
 
 

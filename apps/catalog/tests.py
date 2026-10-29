@@ -121,6 +121,7 @@ def _make_category(**kwargs):
         name=name,
         slug=slug,
         is_active=kwargs.get("is_active", True),
+        sort_order=kwargs.get("sort_order", 0),
     )
 
 
@@ -257,6 +258,44 @@ class CategoryBrowseTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         slugs = {c["slug"] for c in response.data}
         self.assertEqual(slugs, {"root-one", "root-two"})
+
+    def test_categories_follow_manual_sort_order(self):
+        """Categories are ordered by ``sort_order`` then name."""
+        _make_category(name="Zeta", slug="zeta", sort_order=2)
+        _make_category(name="Alpha", slug="alpha", sort_order=2)
+        _make_category(name="First", slug="first", sort_order=0)
+        response = self.client.get(URLS["categories"])
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [category["slug"] for category in response.data],
+            ["first", "alpha", "zeta"],
+        )
+        self.assertEqual(response.data[0]["sort_order"], 0)
+
+    def test_category_detail_children_follow_manual_sort_order(self):
+        """A category's children are ordered by ``sort_order`` then name."""
+        parent = _make_category(name="Audio", slug="audio")
+        Category.objects.create(
+            name="Speakers",
+            slug="speakers",
+            parent=parent,
+            sort_order=2,
+            is_active=True,
+        )
+        Category.objects.create(
+            name="Soundbars",
+            slug="soundbars",
+            parent=parent,
+            sort_order=1,
+            is_active=True,
+        )
+        url = reverse("api:catalog:category-detail", args=[parent.slug])
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [child["slug"] for child in response.data["children"]],
+            ["soundbars", "speakers"],
+        )
 
 
 class CategoryCacheTests(APITestCase):
@@ -886,15 +925,30 @@ class CategoryAdminTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["slug"], "microwaves")
 
+    def test_admin_can_create_category_with_sort_order(self):
+        """An admin can set the manual display order when creating a category."""
+        _login(self.client)
+        response = self.client.post(
+            URLS["admin_categories"],
+            {"name": "Soundbars", "sort_order": 4},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["sort_order"], 4)
+        self.assertEqual(Category.objects.get(slug="soundbars").sort_order, 4)
+
     def test_admin_can_update_category(self):
         """An admin can update a category."""
         _login(self.client)
         category = _make_category(name="Old Name", slug="old-name")
         url = reverse("api:catalog:admin-category-detail", args=[category.pk])
-        response = self.client.patch(url, {"name": "New Name"}, format="json")
+        response = self.client.patch(
+            url, {"name": "New Name", "sort_order": 7}, format="json"
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         category.refresh_from_db()
         self.assertEqual(category.name, "New Name")
+        self.assertEqual(category.sort_order, 7)
 
     def test_admin_can_delete_category(self):
         """An admin can delete a category."""
