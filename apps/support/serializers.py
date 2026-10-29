@@ -9,7 +9,6 @@ and assignment context for the support console.
 """
 
 import bleach
-
 from django.urls import reverse
 from rest_framework import serializers
 

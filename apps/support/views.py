@@ -1,4 +1,3 @@
-from rest_framework import status
 """API views for the support app.
 
 Ticket endpoints are staff-only: tickets are internal
@@ -13,11 +12,7 @@ and attachments are validated by content and size here before storage.
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import FileResponse, Http404
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions
-
 from rest_framework import serializers, status
-
-from apps.core.permissions import IsStaffUser
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -35,6 +30,7 @@ from apps.core.idempotency import (
     require_idempotency_key,
     store_result,
 )
+from apps.core.permissions import IsStaffUser
 from apps.orders.selectors import get_order_for_staff
 from apps.returns.models import ReturnRequest
 from apps.support.selectors import (

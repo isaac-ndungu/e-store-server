@@ -1,10 +1,10 @@
-from apps.core.permissions import IsStaffUser
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.core.permissions import IsStaffUser
 from apps.promotions.selectors import list_coupons, list_discounts
 from apps.promotions.serializers import (
     CouponSerializer,

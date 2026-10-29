@@ -1,4 +1,3 @@
-from rest_framework import status
 """API views for the content app.
 
 Storefront paths deliver published content pages and active banners to
@@ -12,11 +11,7 @@ the view or the serializer.
 
 from django.http import Http404
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions
-
-from rest_framework import serializers, status
-
-from apps.core.permissions import IsStaffUser
+from rest_framework import permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
@@ -75,6 +70,7 @@ from apps.content.services import (
     update_page,
 )
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.permissions import IsStaffUser
 
 
 def _page_or_404(slug):

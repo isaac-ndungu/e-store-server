@@ -16,7 +16,7 @@ written directly in a view.
 from django.utils.dateparse import parse_date, parse_datetime
 from django.utils.timezone import is_naive, make_aware
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions, status
+from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle

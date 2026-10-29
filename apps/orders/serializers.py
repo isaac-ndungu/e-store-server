@@ -11,9 +11,9 @@ The one exception is ``delivery_fee``: no system source exists for it, so
 staff type in the quoted amount and it is validated non-negative here.
 """
 
-import bleach
 from decimal import Decimal
 
+import bleach
 from rest_framework import serializers
 
 from apps.orders.models import (

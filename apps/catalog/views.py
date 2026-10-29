@@ -1,4 +1,3 @@
-from apps.core.permissions import IsStaffUser
 """API views for the catalog app.
 
 Split into public browse views (``AllowAny``) and admin CRUD views
@@ -61,6 +60,7 @@ from apps.catalog.services import (
     compute_facet_counts,
     validate_facet_params,
 )
+from apps.core.permissions import IsStaffUser
 
 # Public browse views
 

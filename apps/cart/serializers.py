@@ -5,7 +5,6 @@ quantity, optional bundle); prices are never an input. Read serializers
 carry the server-computed unit and line totals alongside the line identity.
 """
 
-import bleach
 from rest_framework import serializers
 
 from apps.cart.selectors import MAX_LINE_QUANTITY

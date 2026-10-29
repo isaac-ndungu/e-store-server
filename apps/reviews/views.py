@@ -39,7 +39,6 @@ from apps.catalog.images import (
 )
 from apps.catalog.validators import validate_image_upload
 from apps.core.api import service_error_to_400 as _service_error_to_400
-from apps.core.permissions import IsStaffUser
 from apps.core.idempotency import (
     acquire_processing_lock,
     conflicting_key_response,
@@ -50,6 +49,7 @@ from apps.core.idempotency import (
     require_idempotency_key,
     store_result,
 )
+from apps.core.permissions import IsStaffUser
 from apps.reviews.constants import (
     MAX_UNATTACHED_PHOTOS_PER_SESSION,
     MAX_UNATTACHED_PHOTOS_PER_USER,

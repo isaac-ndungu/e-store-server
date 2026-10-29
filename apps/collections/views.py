@@ -1,4 +1,3 @@
-from apps.core.permissions import IsStaffUser
 """API views for the collections app.
 
 Split into public endpoints (``AllowAny``: collection list and a single
@@ -25,6 +24,7 @@ from apps.collections.serializers import (
     CollectionMembershipSerializer,
     CollectionSerializer,
 )
+from apps.core.permissions import IsStaffUser
 
 # Public views
 

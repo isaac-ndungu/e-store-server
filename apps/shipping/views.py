@@ -1,4 +1,3 @@
-from apps.core.permissions import IsStaffUser
 """API views for the shipping app.
 
 Split into a public endpoint (``AllowAny``: the delivery-area catalogue for
@@ -11,6 +10,7 @@ parse input, call a selector, return a response.
 from rest_framework import generics, permissions
 from rest_framework.throttling import ScopedRateThrottle
 
+from apps.core.permissions import IsStaffUser
 from apps.shipping.models import DeliveryArea
 from apps.shipping.selectors import list_delivery_areas
 from apps.shipping.serializers import DeliveryAreaSerializer

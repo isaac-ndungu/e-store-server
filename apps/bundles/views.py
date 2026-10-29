@@ -1,4 +1,3 @@
-from apps.core.permissions import IsStaffUser
 import django.core.exceptions as django_exc
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
@@ -16,6 +15,7 @@ from apps.bundles.serializers import (
     BundleSerializer,
 )
 from apps.bundles.services import get_bundle_price
+from apps.core.permissions import IsStaffUser
 
 # Public views
 
