@@ -26,7 +26,7 @@ def get_active_categories():
         Category.objects.filter(is_active=True)
         .select_related("parent")
         .annotate(product_count=Count("products"))
-        .order_by("name")
+        .order_by("sort_order", "name")
     )
 
 

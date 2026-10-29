@@ -31,10 +31,11 @@ class ProductImageInline(admin.TabularInline):
 class CategoryAdmin(admin.ModelAdmin):
     """Admin page for product categories."""
 
-    list_display = ("name", "slug", "parent", "is_active")
+    list_display = ("name", "slug", "parent", "sort_order", "is_active")
     list_filter = ("is_active",)
     search_fields = ("name", "slug")
     prepopulated_fields = {"slug": ("name",)}
+    ordering = ["sort_order", "name"]
 
 
 @admin.register(Brand)

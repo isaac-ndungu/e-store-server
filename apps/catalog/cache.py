@@ -30,6 +30,7 @@ primary freshness mechanism.
 from django.core.cache import cache
 
 _CATEGORY_TTL_SECONDS = 30 * 60
+_CATEGORY_CACHE_VERSION = 2
 
 _CATEGORY_GENERATION_KEY = "catalog:category_generation"
 
@@ -49,7 +50,7 @@ def _list_key(generation):
     Returns:
         str: the cache key.
     """
-    return f"catalog:category:list:{generation}"
+    return f"catalog:category:v{_CATEGORY_CACHE_VERSION}:list:{generation}"
 
 
 def _detail_key(slug, generation):
@@ -62,7 +63,7 @@ def _detail_key(slug, generation):
     Returns:
         str: the cache key.
     """
-    return f"catalog:category:detail:{slug}:{generation}"
+    return f"catalog:category:v{_CATEGORY_CACHE_VERSION}:detail:{slug}:{generation}"
 
 
 def get_category_generation():

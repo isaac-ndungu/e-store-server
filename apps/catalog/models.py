@@ -21,7 +21,8 @@ class Category(models.Model):
 
     Categories form a tree via the self-referential ``parent`` FK. Leaf
     categories contain products; parent categories group sub-categories for
-    navigation. ``slug`` is unique and used in storefront URLs.
+    navigation. ``slug`` is unique and used in storefront URLs. ``sort_order``
+    controls manual display sequence, with ``name`` breaking ties.
     """
 
     parent = models.ForeignKey(
@@ -35,11 +36,12 @@ class Category(models.Model):
     )
     meta_title = models.CharField(max_length=255, blank=True)
     meta_description = models.TextField(blank=True)
+    sort_order = models.PositiveIntegerField(default=0, db_index=True)
     is_active = models.BooleanField(default=True)
 
     class Meta:
         verbose_name_plural = "categories"
-        ordering = ["name"]
+        ordering = ["sort_order", "name"]
         indexes = [
             models.Index(fields=["slug"], name="cat_slug_idx"),
             models.Index(fields=["is_active"], name="cat_active_idx"),
