@@ -98,7 +98,9 @@ class InquiryCreateSerializer(serializers.Serializer):
         cleaned = _validate_snapshot(value)
         for line in cleaned:
             if "name" in line:
-                line["name"] = bleach.clean(line["name"], tags=set(), strip=True).strip()
+                line["name"] = bleach.clean(
+                    line["name"], tags=set(), strip=True
+                ).strip()
             if "sku" in line:
                 line["sku"] = bleach.clean(line["sku"], tags=set(), strip=True).strip()
         return cleaned

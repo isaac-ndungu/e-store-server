@@ -20,7 +20,9 @@ class IsStaffUser(permissions.BasePermission):
             bool: True if the user is authenticated and is staff or superuser.
         """
         user = request.user
-        return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+        return bool(
+            user and user.is_authenticated and (user.is_staff or user.is_superuser)
+        )
 
 
 class ApiDocsAccess(permissions.BasePermission):
@@ -45,4 +47,6 @@ class ApiDocsAccess(permissions.BasePermission):
         if settings.API_DOCS_PUBLIC:
             return True
         user = request.user
-        return bool(user and user.is_authenticated and (user.is_staff or user.is_superuser))
+        return bool(
+            user and user.is_authenticated and (user.is_staff or user.is_superuser)
+        )

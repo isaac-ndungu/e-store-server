@@ -47,7 +47,11 @@ def custom_exception_handler(exc, context):
 
         if isinstance(exc, exceptions.PermissionDenied):
             return Response(
-                {"errors": {"detail": "You do not have permission to perform this action."}},
+                {
+                    "errors": {
+                        "detail": "You do not have permission to perform this action."
+                    }
+                },
                 status=response.status_code,
             )
 
@@ -67,7 +71,9 @@ def custom_exception_handler(exc, context):
             wait = getattr(exc, "wait", None)
             detail = "Request was throttled."
             if wait:
-                detail = f"Request was throttled. Expected available in {int(wait)} seconds."
+                detail = (
+                    f"Request was throttled. Expected available in {int(wait)} seconds."
+                )
             return Response({"errors": {"detail": detail}}, status=response.status_code)
 
         if isinstance(response.data, dict):
@@ -75,8 +81,13 @@ def custom_exception_handler(exc, context):
                 return Response({"errors": response.data}, status=response.status_code)
             return Response({"errors": response.data}, status=response.status_code)
         if isinstance(response.data, list):
-            return Response({"errors": {"non_field_errors": response.data}}, status=response.status_code)
-        return Response({"errors": {"detail": response.data}}, status=response.status_code)
+            return Response(
+                {"errors": {"non_field_errors": response.data}},
+                status=response.status_code,
+            )
+        return Response(
+            {"errors": {"detail": response.data}}, status=response.status_code
+        )
 
     if isinstance(exc, Http404):
         return Response({"errors": {"detail": "Not found."}}, status=404)
@@ -85,10 +96,14 @@ def custom_exception_handler(exc, context):
         if hasattr(exc, "message_dict"):
             return Response({"errors": exc.message_dict}, status=400)
         if hasattr(exc, "messages"):
-            return Response({"errors": {"non_field_errors": list(exc.messages)}}, status=400)
+            return Response(
+                {"errors": {"non_field_errors": list(exc.messages)}}, status=400
+            )
         return Response({"errors": {"non_field_errors": [str(exc)]}}, status=400)
 
-    logger.exception("Unhandled exception", extra={"exception_class": exc.__class__.__name__})
+    logger.exception(
+        "Unhandled exception", extra={"exception_class": exc.__class__.__name__}
+    )
 
     if settings.DEBUG:
         return Response(
@@ -96,4 +111,6 @@ def custom_exception_handler(exc, context):
             status=500,
         )
 
-    return Response({"errors": {"detail": "An internal server error occurred."}}, status=500)
+    return Response(
+        {"errors": {"detail": "An internal server error occurred."}}, status=500
+    )
