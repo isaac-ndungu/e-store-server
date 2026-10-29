@@ -145,6 +145,19 @@ class ReturnApproveSerializer(serializers.Serializer):
     restocking_fee = serializers.DecimalField(
         max_digits=12, decimal_places=2, required=False, allow_null=True
     )
+    note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+    def validate_refund_method(self, value):
+        """Sanitize the refund method."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_note(self, value):
+        """Sanitize the note."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
 
 
 class ReturnRejectSerializer(serializers.Serializer):

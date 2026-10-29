@@ -8,6 +8,7 @@ itself is handled by ``simplejwt``'s ``TokenObtainPairSerializer`` (which
 reads ``USERNAME_FIELD`` = email), so no login serializer is defined here.
 """
 
+import bleach
 from rest_framework import serializers
 
 from apps.accounts.models import Address, User
@@ -164,6 +165,7 @@ class UserSerializer(serializers.ModelSerializer):
         Raises:
             serializers.ValidationError: if another user already has the name.
         """
+        value = bleach.clean(value, tags=set(), strip=True).strip()
         queryset = User.objects.filter(username=value)
         if self.instance is not None:
             queryset = queryset.exclude(pk=self.instance.pk)
@@ -182,6 +184,7 @@ class UserSerializer(serializers.ModelSerializer):
         Returns:
             str: the normalized, validated E.164 number.
         """
+        value = bleach.clean(str(value), tags=set(), strip=True).strip()
         return validate_phone_number(value)
 
 
@@ -248,8 +251,44 @@ class AddressSerializer(serializers.ModelSerializer):
             other_defaults = other_defaults.exclude(pk=keep_pk)
         other_defaults.update(is_default=False)
 
+    def validate_label(self, value):
+        """Sanitize the label."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_recipient_name(self, value):
+        """Sanitize the recipient name."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_county(self, value):
+        """Sanitize the county."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_area_name(self, value):
+        """Sanitize the area name."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_landmark_description(self, value):
+        """Sanitize the landmark description."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_building_or_estate(self, value):
+        """Sanitize the building or estate."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
     def validate_phone_number(self, value):
-        """Normalize and validate the address delivery-contact phone number.
+        """Sanitize and normalize and validate the address delivery-contact phone number.
 
         Args:
             value (str): the raw submitted number.
@@ -257,4 +296,7 @@ class AddressSerializer(serializers.ModelSerializer):
         Returns:
             str: the normalized, validated E.164 number.
         """
+        if value is None:
+            return value
+        value = bleach.clean(str(value), tags=set(), strip=True).strip()
         return validate_phone_number(value)

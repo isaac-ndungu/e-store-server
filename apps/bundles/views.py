@@ -15,6 +15,7 @@ from apps.bundles.serializers import (
     BundleSerializer,
 )
 from apps.bundles.services import get_bundle_price
+from apps.core.permissions import IsStaffUser
 
 # Public views
 
@@ -113,7 +114,7 @@ class AdminBundleListCreateView(generics.ListCreateAPIView):
     trigger one query per bundle.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = BundleSerializer
@@ -130,7 +131,7 @@ class AdminBundleDetailView(generics.RetrieveUpdateDestroyAPIView):
     payload does not cause extra queries.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = BundleSerializer
@@ -147,7 +148,7 @@ class AdminBundleItemListCreateView(generics.ListCreateAPIView):
     be created against the bundle in the path.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = BundleItemSerializer
@@ -173,7 +174,7 @@ class AdminBundleItemDetailView(generics.RetrieveUpdateDestroyAPIView):
     through its own bundle.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = BundleItemSerializer

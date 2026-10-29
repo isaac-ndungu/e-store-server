@@ -11,6 +11,7 @@ update serializer whitelists.
 from rest_framework import generics, permissions
 from rest_framework.throttling import ScopedRateThrottle
 
+from apps.core.permissions import IsStaffUser
 from apps.core.selectors import get_site_config
 from apps.core.serializers import (
     LegalInformationSerializer,
@@ -43,7 +44,7 @@ class SiteConfigView(generics.RetrieveUpdateAPIView):
             list: the permission instances for the current request method.
         """
         if self.request.method in ("PUT", "PATCH"):
-            return [permissions.IsAdminUser()]
+            return [IsStaffUser()]
         return [permissions.AllowAny()]
 
     def get_throttles(self):

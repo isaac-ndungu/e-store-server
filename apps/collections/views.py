@@ -24,6 +24,7 @@ from apps.collections.serializers import (
     CollectionMembershipSerializer,
     CollectionSerializer,
 )
+from apps.core.permissions import IsStaffUser
 
 # Public views
 
@@ -111,7 +112,7 @@ class CollectionDetailView(generics.RetrieveAPIView):
 class AdminCollectionListCreateView(generics.ListCreateAPIView):
     """List all collections or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = CollectionSerializer
@@ -126,7 +127,7 @@ class AdminCollectionListCreateView(generics.ListCreateAPIView):
 class AdminCollectionDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a collection (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = CollectionSerializer
@@ -140,7 +141,7 @@ class AdminCollectionMembershipListCreateView(generics.ListCreateAPIView):
     smart collection is allowed so staff can hand-tune an auto collection.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = CollectionMembershipSerializer
@@ -157,7 +158,7 @@ class AdminCollectionMembershipListCreateView(generics.ListCreateAPIView):
 class AdminCollectionMembershipDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a collection membership row (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = CollectionMembershipSerializer

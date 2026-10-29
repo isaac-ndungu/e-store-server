@@ -10,7 +10,7 @@ computes aggregates from the source tables via ``apps.analytics.selectors``.
 """
 
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions, serializers
+from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -36,6 +36,7 @@ from apps.analytics.serializers import (
     SalesQuerySerializer,
     SummarySerializer,
 )
+from apps.core.permissions import IsStaffUser
 
 
 class AnalyticsAPIView(APIView):
@@ -46,7 +47,7 @@ class AnalyticsAPIView(APIView):
     resolve its query string through the shared serializer.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "analytics_read"
     query_serializer_class = AnalyticsQuerySerializer

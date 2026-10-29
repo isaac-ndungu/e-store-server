@@ -60,6 +60,7 @@ from apps.catalog.services import (
     compute_facet_counts,
     validate_facet_params,
 )
+from apps.core.permissions import IsStaffUser
 
 # Public browse views
 
@@ -378,7 +379,7 @@ class ProductPriceView(APIView):
 class AdminCategoryListCreateView(generics.ListCreateAPIView):
     """List all categories or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     serializer_class = CategoryWriteSerializer
 
@@ -398,7 +399,7 @@ class AdminCategoryListCreateView(generics.ListCreateAPIView):
 class AdminCategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a category (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     serializer_class = CategoryWriteSerializer
     queryset = Category.objects.all()
@@ -411,7 +412,7 @@ class AdminCategoryDetailView(generics.RetrieveUpdateDestroyAPIView):
 class AdminBrandListCreateView(generics.ListCreateAPIView):
     """List all brands or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
 
     def get_serializer_class(self):
@@ -426,7 +427,7 @@ class AdminBrandListCreateView(generics.ListCreateAPIView):
 class AdminBrandDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a brand (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     serializer_class = BrandWriteSerializer
     queryset = Brand.objects.all()
@@ -435,7 +436,7 @@ class AdminBrandDetailView(generics.RetrieveUpdateDestroyAPIView):
 class AdminProductListCreateView(generics.ListCreateAPIView):
     """List all products or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
 
     def get_serializer_class(self):
@@ -450,7 +451,7 @@ class AdminProductListCreateView(generics.ListCreateAPIView):
 class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a product (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     serializer_class = ProductWriteSerializer
 
@@ -464,7 +465,7 @@ class AdminProductImageListCreateView(generics.ListCreateAPIView):
     ``product`` is set from the URL, not the request body.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
 
     def get_serializer_class(self):
@@ -496,7 +497,7 @@ class AdminProductImageDeleteView(generics.DestroyAPIView):
     sibling product's data.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     queryset = ProductImage.objects.all()
 
@@ -508,7 +509,7 @@ class AdminProductImageDetailView(generics.RetrieveUpdateDestroyAPIView):
     addressed through its own product.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
 
     def get_serializer_class(self):
@@ -527,7 +528,7 @@ class AdminPricingTierListCreateView(generics.ListCreateAPIView):
     The ``product`` association comes from the URL, not the request body.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     serializer_class = PricingTierWriteSerializer
 
@@ -549,7 +550,7 @@ class AdminPricingTierListCreateView(generics.ListCreateAPIView):
 class AdminPricingTierDeleteView(generics.DestroyAPIView):
     """Delete a pricing tier (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     queryset = PricingTier.objects.all()
 
@@ -560,7 +561,7 @@ class AdminPricingTierDetailView(generics.RetrieveUpdateDestroyAPIView):
     Scoped so a tier can only be addressed through the product that owns it.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
 
     def get_serializer_class(self):
@@ -580,7 +581,7 @@ class AdminRelatedProductListCreateView(generics.ListCreateAPIView):
     differ from the parent.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
 
     def get_serializer_class(self):
@@ -614,7 +615,7 @@ class AdminRelatedProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     Scoped to the parent product in the URL.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
 
     def get_serializer_class(self):
@@ -638,7 +639,7 @@ class AdminRelatedProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 class AdminFacetDefinitionListCreateView(generics.ListCreateAPIView):
     """List all facet definitions or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     serializer_class = FacetDefinitionSerializer
     queryset = FacetDefinition.objects.all().order_by("sort_order", "name")
@@ -647,7 +648,7 @@ class AdminFacetDefinitionListCreateView(generics.ListCreateAPIView):
 class AdminFacetDefinitionDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a facet definition (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_scope = "admin"
     serializer_class = FacetDefinitionSerializer
     queryset = FacetDefinition.objects.all()

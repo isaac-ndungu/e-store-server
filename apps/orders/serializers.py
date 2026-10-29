@@ -13,6 +13,7 @@ staff type in the quoted amount and it is validated non-negative here.
 
 from decimal import Decimal
 
+import bleach
 from rest_framework import serializers
 
 from apps.orders.models import (
@@ -198,3 +199,9 @@ class OrderStatusUpdateSerializer(serializers.Serializer):
 
     to_status = serializers.ChoiceField(choices=Order.STATUS_CHOICES)
     note = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+    def validate_note(self, value):
+        """Sanitize the note."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()

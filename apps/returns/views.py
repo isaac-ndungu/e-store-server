@@ -14,13 +14,14 @@ money field directly.
 
 from django.http import Http404
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions, status
+from rest_framework import status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.permissions import IsStaffUser
 from apps.orders.selectors import get_order_for_staff
 from apps.orders.serializers import OrderDetailSerializer
 from apps.returns.selectors import (
@@ -88,7 +89,7 @@ def _staff_order_or_404(order_id):
 class OrderReturnRequestListCreateView(APIView):
     """List or file return requests for an order (staff only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -148,7 +149,7 @@ class OrderReturnRequestListCreateView(APIView):
 class OrderReturnRequestDetailView(APIView):
     """Retrieve a single return request on an order (staff only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -181,7 +182,7 @@ class OrderReturnRequestDetailView(APIView):
 class ReturnRequestStaffListView(APIView):
     """List every return request for managers and support staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -207,7 +208,7 @@ class ReturnRequestStaffListView(APIView):
 class ReturnRequestStaffDetailView(APIView):
     """Retrieve one return request for managers and support staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -236,7 +237,7 @@ class ReturnRequestStaffDetailView(APIView):
 class ReturnApproveView(APIView):
     """Approve a return request and fix its refund economics as staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -275,7 +276,7 @@ class ReturnApproveView(APIView):
 class ReturnRejectView(APIView):
     """Reject a return request as staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -315,7 +316,7 @@ class ReturnRejectView(APIView):
 class ReturnCloseView(APIView):
     """Close a return request without completing a refund or replacement."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -351,7 +352,7 @@ class ReturnCloseView(APIView):
 class ReturnReceiveItemView(APIView):
     """Record physical receipt of returned goods as staff."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None
@@ -388,7 +389,7 @@ class ReturnRefundView(APIView):
     response on a repeated request with the same key.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     schema = None
@@ -462,7 +463,7 @@ class OrderPreShipmentCancelView(APIView):
     Requires an ``Idempotency-Key``.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 

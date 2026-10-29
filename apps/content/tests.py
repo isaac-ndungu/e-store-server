@@ -532,11 +532,13 @@ class BannerAdminEndpointTests(APITestCase):
         """
         self._login_as("manager@example.com")
         for link_url in ("javascript:alert(1)", "//evil.com", "data:text/html,<svg>"):
+            image = _tiny_png()
+            image.name = "test.png"
             response = self.client.post(
                 self.create_url,
                 {
                     "title": "Unsafe",
-                    "image": _tiny_png(),
+                    "image": image,
                     "placement": "homepage_hero",
                     "link_url": link_url,
                 },
@@ -545,7 +547,8 @@ class BannerAdminEndpointTests(APITestCase):
             self.assertEqual(
                 response.status_code, status.HTTP_400_BAD_REQUEST, link_url
             )
-            self.assertIn("link_url", response.data)
+            errors = response.data.get("errors", response.data)
+            self.assertIn("link_url", errors)
 
     def test_manager_can_list_and_filter_banners(self):
         """The banner list supports active and placement filters."""

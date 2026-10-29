@@ -12,6 +12,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.core.http import client_ip
+from apps.core.permissions import IsStaffUser
 from apps.notifications.models import NotificationLog
 from apps.notifications.selectors import get_notification_logs
 from apps.notifications.serializers import (
@@ -114,7 +115,7 @@ class SendTestSMSView(APIView):
     money).
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "notification_send"
 
@@ -160,7 +161,7 @@ class NotificationLogListView(generics.ListAPIView):
     combination of which is applied together.  Results are paginated.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = NotificationLogSerializer
@@ -198,7 +199,7 @@ class NotificationLogDetailView(generics.RetrieveAPIView):
     full-history scan.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = NotificationLogSerializer
@@ -212,7 +213,7 @@ class FailedNotificationLogsView(generics.ListAPIView):
     retry tooling.
     """
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = NotificationLogSerializer

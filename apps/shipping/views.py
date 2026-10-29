@@ -10,6 +10,7 @@ parse input, call a selector, return a response.
 from rest_framework import generics, permissions
 from rest_framework.throttling import ScopedRateThrottle
 
+from apps.core.permissions import IsStaffUser
 from apps.shipping.models import DeliveryArea
 from apps.shipping.selectors import list_delivery_areas
 from apps.shipping.serializers import DeliveryAreaSerializer
@@ -42,7 +43,7 @@ class DeliveryAreaListView(generics.ListAPIView):
 class AdminDeliveryAreaListCreateView(generics.ListCreateAPIView):
     """List all delivery areas or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = DeliveryAreaSerializer
@@ -55,7 +56,7 @@ class AdminDeliveryAreaListCreateView(generics.ListCreateAPIView):
 class AdminDeliveryAreaDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a delivery area (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = DeliveryAreaSerializer

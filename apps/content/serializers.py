@@ -9,6 +9,7 @@ sanitised at the service boundary  -  the serializer enforces length and
 presence constraints only.
 """
 
+import bleach
 from django.utils.http import url_has_allowed_host_and_scheme
 from rest_framework import serializers
 
@@ -73,7 +74,7 @@ class ContentPageCreateSerializer(serializers.Serializer):
 
 
 class ContentPageUpdateSerializer(serializers.Serializer):
-    """Input for a staff member updating a content page.
+    """Input for updating a legal/static page.
 
     Every field is optional  -  only supplied fields are applied.
     """
@@ -86,6 +87,24 @@ class ContentPageUpdateSerializer(serializers.Serializer):
         max_length=PAGE_TITLE_MAX_LENGTH, required=False, allow_blank=True
     )
     meta_description = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_title(self, value):
+        """Sanitize title."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_meta_title(self, value):
+        """Sanitize meta title."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_meta_description(self, value):
+        """Sanitize meta description."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
 
 
 class BannerStorefrontSerializer(serializers.ModelSerializer):
@@ -122,18 +141,24 @@ class BannerCreateSerializer(serializers.Serializer):
     title = serializers.CharField(
         max_length=BANNER_TITLE_MAX_LENGTH, required=False, allow_blank=True, default=""
     )
-    image = serializers.ImageField(validators=[validate_image_upload])
     link_url = serializers.CharField(
         max_length=BANNER_LINK_URL_MAX_LENGTH,
         required=False,
         allow_blank=True,
         default="",
     )
+    image = serializers.ImageField(validators=[validate_image_upload])
     placement = serializers.CharField(max_length=50)
     sort_order = serializers.IntegerField(min_value=0, default=0)
     starts_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
     ends_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
     is_active = serializers.BooleanField(default=True)
+
+    def validate_title(self, value):
+        """Sanitize title."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
 
     def validate_link_url(self, value):
         """Return the link URL after rejecting unsafe schemes.
@@ -174,10 +199,10 @@ class BannerUpdateSerializer(serializers.Serializer):
     title = serializers.CharField(
         max_length=BANNER_TITLE_MAX_LENGTH, required=False, allow_blank=True
     )
-    image = serializers.ImageField(required=False, validators=[validate_image_upload])
     link_url = serializers.CharField(
         max_length=BANNER_LINK_URL_MAX_LENGTH, required=False, allow_blank=True
     )
+    image = serializers.ImageField(required=False, validators=[validate_image_upload])
     placement = serializers.CharField(max_length=50, required=False)
     sort_order = serializers.IntegerField(min_value=0, required=False)
     starts_at = serializers.DateTimeField(required=False, allow_null=True)

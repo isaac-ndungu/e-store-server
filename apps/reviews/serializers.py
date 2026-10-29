@@ -13,6 +13,7 @@ caller's own identity, so a random URL or a stranger's photo cannot be
 planted on a review.
 """
 
+import bleach
 from rest_framework import serializers
 
 from apps.reviews.constants import (
@@ -116,6 +117,18 @@ class SubmitterSerializer(serializers.Serializer):
     submitter_name = serializers.CharField(max_length=255)
     submitter_contact = serializers.CharField(max_length=255)
 
+    def validate_submitter_name(self, value):
+        """Sanitize the submitter name."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_submitter_contact(self, value):
+        """Sanitize the submitter contact."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
 
 class ReviewCreateSerializer(SubmitterSerializer):
     """Input for posting a review.
@@ -151,17 +164,41 @@ class ReviewCreateSerializer(SubmitterSerializer):
         required=False, allow_null=True, min_value=1
     )
 
+    def validate_title(self, value):
+        """Sanitize the title."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
+    def validate_body(self, value):
+        """Sanitize the body."""
+        if value is None or value == "":
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
 
 class QuestionCreateSerializer(SubmitterSerializer):
     """Input for asking a product question."""
 
     question = serializers.CharField(max_length=QUESTION_MAX_LENGTH)
 
+    def validate_question(self, value):
+        """Sanitize the question."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
+
 
 class AnswerCreateSerializer(serializers.Serializer):
     """Input for a staff member answering a product question."""
 
     answer = serializers.CharField(max_length=ANSWER_MAX_LENGTH)
+
+    def validate_answer(self, value):
+        """Sanitize the answer."""
+        if value is None:
+            return value
+        return bleach.clean(value, tags=set(), strip=True).strip()
 
 
 class ReviewModerationSerializer(serializers.ModelSerializer):

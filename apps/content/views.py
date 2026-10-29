@@ -70,6 +70,7 @@ from apps.content.services import (
     update_page,
 )
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.permissions import IsStaffUser
 
 
 def _page_or_404(slug):
@@ -206,7 +207,7 @@ class BannerStorefrontView(APIView):
 class ContentPageAdminListView(APIView):
     """List all content pages for staff management."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -234,7 +235,7 @@ class ContentPageAdminListView(APIView):
 class ContentPageAdminCreateView(APIView):
     """Create a content page as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -271,7 +272,7 @@ class ContentPageAdminCreateView(APIView):
 class ContentPageAdminDetailView(APIView):
     """Retrieve a content page for staff management by id."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -297,7 +298,7 @@ class ContentPageAdminDetailView(APIView):
 class ContentPageAdminUpdateView(APIView):
     """Update a content page as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -330,7 +331,7 @@ class ContentPageAdminUpdateView(APIView):
 class ContentPageAdminDeleteView(APIView):
     """Delete a content page as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -356,7 +357,7 @@ class ContentPageAdminDeleteView(APIView):
 class BannerAdminListView(APIView):
     """List all banners for staff management."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -385,7 +386,7 @@ class BannerAdminListView(APIView):
 class BannerAdminCreateView(APIView):
     """Create a banner as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -428,7 +429,7 @@ class BannerAdminCreateView(APIView):
 class BannerAdminDetailView(APIView):
     """Retrieve a banner for staff management by id."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -454,7 +455,7 @@ class BannerAdminDetailView(APIView):
 class BannerAdminUpdateView(APIView):
     """Update a banner as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -487,7 +488,7 @@ class BannerAdminUpdateView(APIView):
 class BannerAdminDeleteView(APIView):
     """Delete a banner as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -766,7 +767,7 @@ class BlogTagListView(APIView):
 class BlogPostAdminListView(APIView):
     """List all blog posts for staff management."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -793,7 +794,7 @@ class BlogPostAdminListView(APIView):
 class BlogPostAdminCreateView(APIView):
     """Create a blog post as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -840,7 +841,7 @@ class BlogPostAdminCreateView(APIView):
 class BlogPostAdminDetailView(APIView):
     """Retrieve a blog post for staff management by id."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -866,7 +867,7 @@ class BlogPostAdminDetailView(APIView):
 class BlogPostAdminUpdateView(APIView):
     """Update a blog post as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -899,7 +900,7 @@ class BlogPostAdminUpdateView(APIView):
 class BlogPostAdminDeleteView(APIView):
     """Delete a blog post as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -925,7 +926,7 @@ class BlogPostAdminDeleteView(APIView):
 class BlogCategoryAdminListView(APIView):
     """List blog categories for staff management."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -950,7 +951,7 @@ class BlogCategoryAdminListView(APIView):
 class BlogCategoryAdminCreateView(APIView):
     """Create a blog category as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -980,7 +981,7 @@ class BlogCategoryAdminCreateView(APIView):
 class BlogCategoryAdminUpdateView(APIView):
     """Update a blog category as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -1015,7 +1016,7 @@ class BlogCategoryAdminUpdateView(APIView):
 class BlogCategoryAdminDeleteView(APIView):
     """Delete a blog category as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -1044,7 +1045,7 @@ class BlogCategoryAdminDeleteView(APIView):
 class BlogTagAdminCreateView(APIView):
     """Create a blog tag as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 
@@ -1072,7 +1073,7 @@ class BlogTagAdminCreateView(APIView):
 class BlogTagAdminDeleteView(APIView):
     """Delete a blog tag as a manager."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
 

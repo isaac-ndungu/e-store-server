@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.core.permissions import IsStaffUser
 from apps.promotions.selectors import list_coupons, list_discounts
 from apps.promotions.serializers import (
     CouponSerializer,
@@ -60,7 +61,7 @@ class CouponValidateView(APIView):
 class AdminDiscountListCreateView(generics.ListCreateAPIView):
     """List all discounts or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = DiscountSerializer
@@ -73,7 +74,7 @@ class AdminDiscountListCreateView(generics.ListCreateAPIView):
 class AdminDiscountDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a discount (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = DiscountSerializer
@@ -86,7 +87,7 @@ class AdminDiscountDetailView(generics.RetrieveUpdateDestroyAPIView):
 class AdminCouponListCreateView(generics.ListCreateAPIView):
     """List all coupons or create a new one (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = CouponSerializer
@@ -101,7 +102,7 @@ class AdminCouponListCreateView(generics.ListCreateAPIView):
 class AdminCouponDetailView(generics.RetrieveUpdateDestroyAPIView):
     """Retrieve, update, or delete a coupon (admin only)."""
 
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStaffUser]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "admin"
     serializer_class = CouponSerializer

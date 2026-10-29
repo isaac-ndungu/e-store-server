@@ -7,6 +7,7 @@ cookie, never from the client). Outputs declare a fixed shape so the frontend
 can rely on stable field names.
 """
 
+import bleach
 from rest_framework import serializers
 
 from apps.social_proof.constants import BATCH_VIEWERS_MAX_SLUGS, RECENT_SALES_MAX_ITEMS
@@ -40,6 +41,9 @@ class BatchViewersQuerySerializer(serializers.Serializer):
             serializers.ValidationError: when no slug remains, or more than
                 the configured maximum were supplied.
         """
+        if value is None:
+            raise serializers.ValidationError("At least one product slug is required.")
+        value = bleach.clean(value, tags=set(), strip=True)
         slugs = [part.strip() for part in value.split(",") if part.strip()]
         if not slugs:
             raise serializers.ValidationError("At least one product slug is required.")
