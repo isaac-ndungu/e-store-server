@@ -96,6 +96,7 @@ class CategoryWriteSerializer(serializers.ModelSerializer):
     slug = serializers.SlugField(
         required=False,
         allow_blank=True,
+        max_length=Category._meta.get_field("slug").max_length,
         validators=[
             UniqueValidator(
                 queryset=Category.objects.all(),
@@ -254,6 +255,7 @@ class BrandWriteSerializer(serializers.ModelSerializer):
     slug = serializers.SlugField(
         required=False,
         allow_blank=True,
+        max_length=Brand._meta.get_field("slug").max_length,
         validators=[
             UniqueValidator(
                 queryset=Brand.objects.all(),
@@ -682,6 +684,7 @@ class ProductWriteSerializer(serializers.ModelSerializer):
     slug = serializers.SlugField(
         required=False,
         allow_blank=True,
+        max_length=Product._meta.get_field("slug").max_length,
         validators=[
             UniqueValidator(
                 queryset=Product.objects.all(),
@@ -690,12 +693,13 @@ class ProductWriteSerializer(serializers.ModelSerializer):
         ],
     )
     sku = serializers.CharField(
+        max_length=Product._meta.get_field("sku").max_length,
         validators=[
             UniqueValidator(
                 queryset=Product.objects.all(),
                 message="A product with this SKU already exists.",
             )
-        ]
+        ],
     )
 
     def validate_manual_pdf(self, value):

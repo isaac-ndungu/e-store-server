@@ -1082,6 +1082,38 @@ class ProductAdminTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_overlong_slug_rejected(self):
+        """A slug longer than the model field returns a 400, not a server error."""
+        response = self.client.post(
+            URLS["admin_products"],
+            {
+                "name": "Long Slug Product",
+                "slug": "a" * 51,
+                "sku": "LONG-SLUG-1",
+                "description": "d",
+                "price": "45000.00",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Product.objects.count(), 0)
+
+    def test_overlong_sku_rejected(self):
+        """A SKU longer than the model field returns a 400, not a server error."""
+        response = self.client.post(
+            URLS["admin_products"],
+            {
+                "name": "Long SKU Product",
+                "slug": "long-sku-product",
+                "sku": "S" * 101,
+                "description": "d",
+                "price": "45000.00",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Product.objects.count(), 0)
+
     def test_admin_can_update_product(self):
         """An admin can update a product."""
         product = _make_product()
@@ -1417,6 +1449,26 @@ class SlugServiceTests(APITestCase):
         Category.objects.create(name="Fridge", slug="fridge")
         slug2 = generate_unique_slug(Category(name="Fridge"), "Fridge")
         self.assertEqual(slug2, "fridge-1")
+
+    def test_generated_slug_respects_field_max_length(self):
+        """Long names are truncated before the uniqueness suffix is applied."""
+        from apps.catalog.services import generate_unique_slug
+
+        name = "Signature SG-B219 2-in-1 Countertop Blender & Grinder Mill 500W"
+        max_length = Product._meta.get_field("slug").max_length
+        first = generate_unique_slug(Product(name=name), name)
+        Product.objects.create(
+            name=name,
+            slug=first,
+            sku="LONG-SLUG-1",
+            price="4500.00",
+            description="d",
+        )
+        second = generate_unique_slug(Product(name=name), name)
+
+        self.assertLessEqual(len(first), max_length)
+        self.assertLessEqual(len(second), max_length)
+        self.assertNotEqual(first, second)
 
 
 class ModelValidationTests(APITestCase):
