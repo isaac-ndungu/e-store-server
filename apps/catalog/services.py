@@ -42,7 +42,8 @@ def generate_unique_slug(instance, value, slug_field="slug"):
     """Generate a URL-safe unique slug from ``value``.
 
     Strips accents, lowercases, replaces non-alphanumeric characters with
-    hyphens, and appends a numeric suffix if the slug already exists.
+    hyphens, truncates to the model field's maximum length, and appends a
+    numeric suffix if the slug already exists.
 
     Args:
         instance: the model instance (excluded from uniqueness check on
@@ -58,6 +59,10 @@ def generate_unique_slug(instance, value, slug_field="slug"):
     slug = re.sub(r"[-\s]+", "-", slug).strip("-")
     slug = slug.lower()
 
+    max_length = instance.__class__._meta.get_field(slug_field).max_length
+    if max_length:
+        slug = slug[:max_length].rstrip("-")
+
     base_slug = slug
     counter = 1
     queryset = instance.__class__._default_manager.all()
@@ -65,7 +70,12 @@ def generate_unique_slug(instance, value, slug_field="slug"):
         queryset = queryset.exclude(pk=instance.pk)
 
     while queryset.filter(**{slug_field: slug}).exists():
-        slug = f"{base_slug}-{counter}"
+        suffix = f"-{counter}"
+        if max_length:
+            prefix = base_slug[: max(max_length - len(suffix), 0)].rstrip("-")
+            slug = f"{prefix}{suffix}"
+        else:
+            slug = f"{base_slug}-{counter}"
         counter += 1
 
     return slug
