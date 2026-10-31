@@ -20,6 +20,8 @@ media_test/
 
 # Environment
 .env
+.env.*
+!.env.example
 
 # Test / coverage
 .pytest_cache/
