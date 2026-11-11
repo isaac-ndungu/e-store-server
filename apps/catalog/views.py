@@ -21,6 +21,7 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.catalog import cache as catalog_cache
+from apps.catalog.filters import AdminProductFilter, ProductFilter
 from apps.catalog.models import (
     Brand,
     Category,
@@ -230,8 +231,8 @@ class ProductListView(generics.ListAPIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public_catalog"
     serializer_class = ProductListSerializer
+    filterset_class = ProductFilter
     search_fields = ["name", "description", "short_description", "sku"]
-    filterset_fields = ["category", "brand", "is_featured", "product_type", "tax_class"]
     ordering_fields = ["name", "created_at", "average_rating", "review_count"]
 
     def get_queryset(self):
@@ -438,6 +439,8 @@ class AdminProductListCreateView(generics.ListCreateAPIView):
 
     permission_classes = [IsStaffUser]
     throttle_scope = "admin"
+    filterset_class = AdminProductFilter
+    search_fields = ["name", "sku", "slug"]
 
     def get_serializer_class(self):
         if self.request.method == "GET":
