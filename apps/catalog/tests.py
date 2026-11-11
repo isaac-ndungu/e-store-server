@@ -121,6 +121,7 @@ def _make_category(**kwargs):
         name=name,
         slug=slug,
         is_active=kwargs.get("is_active", True),
+        parent=kwargs.get("parent"),
         sort_order=kwargs.get("sort_order", 0),
     )
 
@@ -508,6 +509,15 @@ class ProductListBrowseTests(APITestCase):
         brand = Brand.objects.get(slug="samsung")
         response = self.client.get(URLS["products"], {"brand": brand.id})
         self.assertEqual(response.data["count"], 3)
+
+    def test_filter_by_parent_category_includes_descendants(self):
+        """A parent category lists products assigned to its subcategories."""
+        parent = _make_category(name="Kitchen", slug="kitchen")
+        child = _make_category(name="Blenders", slug="blenders", parent=parent)
+        _make_product(name="Blender", slug="blender", sku="BLN-1", category=child)
+        response = self.client.get(URLS["products"], {"category": parent.id})
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["slug"], "blender")
 
     def test_ordering_by_price_is_not_allowed(self):
         """Price ordering is not offered on the list."""
@@ -1150,6 +1160,52 @@ class ProductAdminTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         product.refresh_from_db()
         self.assertEqual(product.stock_status, "out_of_stock")
+
+    def test_admin_product_list_searches_by_name_and_sku(self):
+        """Admin list search matches product names and SKUs."""
+        product = _make_product(name="Coffee Maker", slug="coffee-maker", sku="COF-42")
+        _make_product(name="Desk Fan", slug="desk-fan", sku="FAN-7")
+        by_name = self.client.get(URLS["admin_products"], {"search": "Coffee"})
+        self.assertEqual(by_name.data["count"], 1)
+        self.assertEqual(by_name.data["results"][0]["id"], product.id)
+        by_sku = self.client.get(URLS["admin_products"], {"search": "FAN-7"})
+        self.assertEqual(by_sku.data["count"], 1)
+        self.assertEqual(by_sku.data["results"][0]["sku"], "FAN-7")
+
+    def test_admin_product_list_filters_by_fields(self):
+        """Admin list filters narrow results by category, brand, status, and stock."""
+        category = _make_category(name="Kitchen", slug="kitchen")
+        brand = _make_brand(name="Acme", slug="acme")
+        active = _make_product(
+            name="Active Blender",
+            slug="active-blender",
+            sku="ACT-1",
+            category=category,
+            brand=brand,
+            is_active=True,
+            stock_status="in_stock",
+        )
+        _make_product(
+            name="Retired Blender",
+            slug="retired-blender",
+            sku="RET-1",
+            category=category,
+            brand=brand,
+            is_active=False,
+            stock_status="out_of_stock",
+        )
+        by_status = self.client.get(URLS["admin_products"], {"is_active": "true"})
+        self.assertEqual(by_status.data["count"], 1)
+        self.assertEqual(by_status.data["results"][0]["id"], active.id)
+        by_stock = self.client.get(
+            URLS["admin_products"], {"stock_status": "out_of_stock"}
+        )
+        self.assertEqual(by_stock.data["count"], 1)
+        self.assertEqual(by_stock.data["results"][0]["sku"], "RET-1")
+        by_category = self.client.get(URLS["admin_products"], {"category": category.id})
+        self.assertEqual(by_category.data["count"], 2)
+        by_brand = self.client.get(URLS["admin_products"], {"brand": brand.id})
+        self.assertEqual(by_brand.data["count"], 2)
 
 
 class NestedResourceOwnershipTests(APITestCase):
