@@ -19,6 +19,7 @@ from rest_framework.views import APIView
 from apps.cart.selectors import build_cart_snapshot, get_cart_from_cookie
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.core.permissions import IsStaffUser
+from apps.inquiries.email import resend_order_intake_email
 from apps.inquiries.selectors import list_inquiries
 from apps.inquiries.serializers import (
     InquiryCreateSerializer,
@@ -75,6 +76,7 @@ class InquiryCreateView(APIView):
             cart_snapshot=cart_snapshot,
             contact_hint=data.get("contact_hint", ""),
         )
+        inquiry.refresh_from_db()
         return Response(InquiryDetailSerializer(inquiry).data, status=201)
 
 
@@ -104,6 +106,7 @@ class InquiryListView(APIView):
         queryset = list_inquiries(
             status=request.query_params.get("status") or None,
             channel=request.query_params.get("channel") or None,
+            email_status=request.query_params.get("email_status") or None,
             search=request.query_params.get("search") or None,
         )
         paginator = PageNumberPagination()
@@ -171,3 +174,61 @@ class InquiryStatusUpdateView(APIView):
             inquiry, input_serializer.validated_data["to_status"]
         )
         return Response(InquiryDetailSerializer(updated).data)
+
+
+class InquiryResendEmailView(APIView):
+    """Resend an email inquiry's order-intake email (staff only).
+
+    The send is synchronous so the staff member sees the provider outcome
+    immediately; the audit row and inquiry delivery fields are updated either
+    way. WhatsApp inquiries have no mailbox copy to resend.
+    """
+
+    permission_classes = [IsStaffUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "inquiry_resend"
+
+    def get_object(self, inquiry_id):
+        """Return the inquiry or raise 404.
+
+        Args:
+            inquiry_id (int): the inquiry pk.
+
+        Returns:
+            Inquiry: the row.
+
+        Raises:
+            Http404: when missing.
+        """
+        from apps.inquiries.models import Inquiry
+
+        try:
+            return Inquiry.objects.select_related("converted_order").get(pk=inquiry_id)
+        except Inquiry.DoesNotExist as exc:
+            raise Http404 from exc
+
+    @extend_schema(
+        operation_id="inquiry_resend_email",
+        request=None,
+        responses={200: InquiryDetailSerializer},
+        tags=["inquiries"],
+    )
+    def post(self, request, inquiry_id):
+        """Resend the order-intake email and return the updated inquiry.
+
+        Args:
+            request: the POST request.
+            inquiry_id (int): the inquiry pk.
+
+        Returns:
+            Response: ``200 OK`` with the inquiry's latest delivery state.
+        """
+        inquiry = self.get_object(inquiry_id)
+        if inquiry.channel != "email":
+            return Response(
+                {"detail": "Only email inquiries can be resent."},
+                status=400,
+            )
+        resend_order_intake_email(inquiry, sent_by=request.user)
+        inquiry.refresh_from_db()
+        return Response(InquiryDetailSerializer(inquiry).data)

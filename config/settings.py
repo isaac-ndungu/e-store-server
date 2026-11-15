@@ -309,6 +309,7 @@ REST_FRAMEWORK = {
         "dashboard_read": "60/min",
         "inquiry_write": "20/min",
         "inquiry_read": "60/min",
+        "inquiry_resend": "10/min",
         "cart_read": "100/min",
         "cart_write": "60/min",
         "order_intake": "30/min",
@@ -462,7 +463,7 @@ RESET_LINK_BASE = config("RESET_LINK_BASE", default="http://localhost:3000/reset
 WHATSAPP_BUSINESS_NUMBER = config("WHATSAPP_BUSINESS_NUMBER", default="")
 ORDER_INTAKE_EMAIL = config("ORDER_INTAKE_EMAIL", default="")
 RESEND_API_KEY = config("RESEND_API_KEY", default="")
-ORDER_FROM_EMAIL = config("ORDER_FROM_EMAIL", default="orders@estore.local")
+ORDER_FROM_EMAIL = config("ORDER_FROM_EMAIL", default="")
 
 
 STORAGES = {

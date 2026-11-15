@@ -70,6 +70,8 @@ services:
         sync: false # same value as the web service (worker sends the intake email via Celery)
       - key: ORDER_FROM_EMAIL
         sync: false # same value as the web service
+      - key: ORDER_INTAKE_EMAIL
+        sync: false # same fallback mailbox as the web service
       - key: CLOUDINARY_CLOUD_NAME
         sync: false # same values as the web service so tasks can read uploaded media
       - key: CLOUDINARY_API_KEY

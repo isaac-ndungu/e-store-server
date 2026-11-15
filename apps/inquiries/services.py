@@ -1,12 +1,11 @@
 """Business logic for the inquiries app.
 
-Inquiry capture is intentionally dumb: validate, store, return. No pricing,
-no stock, no notifications happen here  -  the endpoint is fire-and-forget
-from the storefront's perspective, and anything slow would punish visitors
-on patchy connections. Queue movement is the only mutation, guarded by a
-small allowed-transition map so an inquiry cannot skip from new to converted
-without staff contact in between  -  except the direct new-to-abandoned spam
-path.
+Inquiry capture stores the row and queues the shop notification only when the
+inquiry came through the email channel. Pricing and stock stay outside this
+path so the public endpoint remains fast on patchy connections. Queue movement
+is guarded by a small allowed-transition map so an inquiry cannot skip from
+new to converted without staff contact in between  -  except the direct
+new-to-abandoned spam path.
 """
 
 from decimal import Decimal, InvalidOperation
@@ -24,7 +23,7 @@ _ALLOWED_TRANSITIONS = {
 
 
 def record_inquiry(*, channel, cart_snapshot, contact_hint=""):
-    """Store a hand-off capture row.
+    """Store a hand-off capture row and queue the email hand-off when needed.
 
     Args:
         channel (str): ``whatsapp`` or ``email``.
@@ -34,11 +33,17 @@ def record_inquiry(*, channel, cart_snapshot, contact_hint=""):
     Returns:
         Inquiry: the created row.
     """
-    return Inquiry.objects.create(
+    inquiry = Inquiry.objects.create(
         channel=channel,
         cart_snapshot=cart_snapshot,
         contact_hint=contact_hint or "",
+        email_status="pending" if channel == "email" else "not_required",
     )
+    if inquiry.channel == "email":
+        from apps.inquiries.email import queue_order_intake_email
+
+        queue_order_intake_email(inquiry)
+    return inquiry
 
 
 def transition_inquiry(inquiry, to_status):

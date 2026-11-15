@@ -25,6 +25,7 @@ class NotificationLog(models.Model):
     PURPOSE_CHOICES = (
         ("test", "Internal Test"),
         ("order_update", "Order Status Update"),
+        ("order_intake", "Order Intake"),
         ("promotional", "Promotional"),
         ("transactional", "Transactional"),
     )
