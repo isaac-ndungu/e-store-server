@@ -39,6 +39,12 @@ class Inquiry(models.Model):
         ("converted", "Converted"),
         ("abandoned", "Abandoned"),
     )
+    EMAIL_STATUS_CHOICES = (
+        ("not_required", "Not required"),
+        ("pending", "Pending"),
+        ("sent", "Sent"),
+        ("failed", "Failed"),
+    )
 
     REFERENCE_PREFIX = "INQ"
 
@@ -46,6 +52,37 @@ class Inquiry(models.Model):
     cart_snapshot = models.JSONField(default=list)
     contact_hint = models.CharField(max_length=255, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="new")
+    email_status = models.CharField(
+        max_length=20,
+        choices=EMAIL_STATUS_CHOICES,
+        default="not_required",
+        help_text="Delivery state of the order-intake email for email inquiries.",
+    )
+    email_error = models.TextField(
+        blank=True,
+        default="",
+        help_text="Last delivery error, blank after a successful send.",
+    )
+    email_provider_message_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Provider message id returned by the last successful send.",
+    )
+    email_attempts = models.PositiveIntegerField(
+        default=0,
+        help_text="Number of order-intake email delivery attempts recorded.",
+    )
+    email_last_attempt_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the most recent delivery attempt was made.",
+    )
+    email_sent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the order-intake email was last sent successfully.",
+    )
     converted_order = models.ForeignKey(
         "orders.Order",
         null=True,
@@ -64,6 +101,10 @@ class Inquiry(models.Model):
             ),
             models.Index(
                 fields=["channel", "-created_at"], name="inq_channel_created_idx"
+            ),
+            models.Index(
+                fields=["email_status", "-created_at"],
+                name="inq_email_status_created_idx",
             ),
             models.Index(fields=["created_at"], name="inq_created_idx"),
         ]

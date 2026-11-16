@@ -12,7 +12,6 @@ computes aggregates from the source tables via ``apps.analytics.selectors``.
 from drf_spectacular.utils import extend_schema
 from rest_framework import serializers
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.analytics.selectors import (
@@ -37,6 +36,7 @@ from apps.analytics.serializers import (
     SummarySerializer,
 )
 from apps.core.permissions import IsStaffUser
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 
 
 class AnalyticsAPIView(APIView):

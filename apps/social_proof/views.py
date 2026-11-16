@@ -21,9 +21,9 @@ from django.conf import settings
 from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, status
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 from apps.social_proof.constants import (
     BOT_USER_AGENT_PATTERN,
     VISITOR_COOKIE,

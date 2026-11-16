@@ -15,7 +15,6 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.accounts.models import User
@@ -31,6 +30,7 @@ from apps.core.idempotency import (
     store_result,
 )
 from apps.core.permissions import IsStaffUser
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 from apps.orders.selectors import get_order_for_staff
 from apps.returns.models import ReturnRequest
 from apps.support.selectors import (

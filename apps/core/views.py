@@ -9,7 +9,6 @@ update serializer whitelists.
 """
 
 from rest_framework import generics, permissions
-from rest_framework.throttling import ScopedRateThrottle
 
 from apps.core.permissions import IsStaffUser
 from apps.core.selectors import get_site_config
@@ -18,6 +17,7 @@ from apps.core.serializers import (
     SiteConfigSerializer,
     SiteConfigUpdateSerializer,
 )
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 
 
 class SiteConfigView(generics.RetrieveUpdateAPIView):

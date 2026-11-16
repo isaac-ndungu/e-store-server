@@ -283,7 +283,7 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": _DEFAULT_RENDERER_CLASSES,
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
-    "DEFAULT_THROTTLE_CLASSES": ["rest_framework.throttling.ScopedRateThrottle"],
+    "DEFAULT_THROTTLE_CLASSES": ["apps.core.throttling.ClientIPScopedRateThrottle"],
     "NUM_PROXIES": config("NUM_PROXIES", default=0, cast=int),
     "DEFAULT_THROTTLE_RATES": {
         "public": "100/min",
@@ -293,6 +293,7 @@ REST_FRAMEWORK = {
         "auth_read": "60/min",
         "notification_send": "5/min",
         "public_catalog": "100/min",
+        "product_price": "300/min",
         "coupon_validate": "5/min",
         "admin": "300/min",
         "order_write": "5/min",
@@ -309,6 +310,7 @@ REST_FRAMEWORK = {
         "dashboard_read": "60/min",
         "inquiry_write": "20/min",
         "inquiry_read": "60/min",
+        "inquiry_resend": "10/min",
         "cart_read": "100/min",
         "cart_write": "60/min",
         "order_intake": "30/min",
@@ -316,6 +318,16 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.core.exceptions.handlers.custom_exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
+
+# Trust Cloudflare's CF-Connecting-IP header only when the immediate peer is a
+# Cloudflare edge address. Enable this on deployments whose public traffic comes
+# through Cloudflare; leave it off for local development and direct origins.
+TRUST_CLOUDFLARE_HEADERS = config("TRUST_CLOUDFLARE_HEADERS", default=False, cast=bool)
+# Optional override of the peer ranges allowed to assert CF-Connecting-IP,
+# comma separated. Add the OpenLiteSpeed address if it is the immediate peer.
+CLOUDFLARE_TRUSTED_IP_RANGES = config(
+    "CLOUDFLARE_TRUSTED_IP_RANGES", default="", cast=Csv()
+)
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "E-Store API",
@@ -462,7 +474,7 @@ RESET_LINK_BASE = config("RESET_LINK_BASE", default="http://localhost:3000/reset
 WHATSAPP_BUSINESS_NUMBER = config("WHATSAPP_BUSINESS_NUMBER", default="")
 ORDER_INTAKE_EMAIL = config("ORDER_INTAKE_EMAIL", default="")
 RESEND_API_KEY = config("RESEND_API_KEY", default="")
-ORDER_FROM_EMAIL = config("ORDER_FROM_EMAIL", default="orders@estore.local")
+ORDER_FROM_EMAIL = config("ORDER_FROM_EMAIL", default="")
 
 
 STORAGES = {

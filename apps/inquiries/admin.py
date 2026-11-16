@@ -9,7 +9,23 @@ from apps.inquiries.models import Inquiry
 class InquiryAdmin(admin.ModelAdmin):
     """Staff queue editor for captured hand-offs."""
 
-    list_display = ("id", "channel", "status", "contact_hint", "created_at")
-    list_filter = ("channel", "status", "created_at")
+    list_display = (
+        "id",
+        "channel",
+        "status",
+        "email_status",
+        "contact_hint",
+        "created_at",
+    )
+    list_filter = ("channel", "status", "email_status", "created_at")
     search_fields = ("contact_hint",)
-    readonly_fields = ("created_at", "updated_at")
+    readonly_fields = (
+        "email_status",
+        "email_error",
+        "email_provider_message_id",
+        "email_attempts",
+        "email_last_attempt_at",
+        "email_sent_at",
+        "created_at",
+        "updated_at",
+    )

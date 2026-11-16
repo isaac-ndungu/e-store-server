@@ -17,7 +17,6 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.catalog import cache as catalog_cache
@@ -62,6 +61,7 @@ from apps.catalog.services import (
     validate_facet_params,
 )
 from apps.core.permissions import IsStaffUser
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 
 # Public browse views
 
@@ -311,12 +311,13 @@ class ProductPriceView(APIView):
     """Return the effective price of a product.
 
     Public endpoint showing the base price, compare-at price, and volume
-    pricing tiers. Used by the storefront's pricing display.
+    pricing tiers. The storefront can call this once per listing card, so it
+    has its own per-IP budget rather than sharing the catalog read budget.
     """
 
     permission_classes = [permissions.AllowAny]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "public_catalog"
+    throttle_scope = "product_price"
 
     @extend_schema(
         operation_id="product_price",
