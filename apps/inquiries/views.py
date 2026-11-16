@@ -13,12 +13,12 @@ from rest_framework import permissions
 from rest_framework import serializers as drf_serializers
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.cart.selectors import build_cart_snapshot, get_cart_from_cookie
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.core.permissions import IsStaffUser
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 from apps.inquiries.email import resend_order_intake_email
 from apps.inquiries.selectors import list_inquiries
 from apps.inquiries.serializers import (

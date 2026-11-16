@@ -14,7 +14,6 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.content import cache as content_cache
@@ -71,6 +70,7 @@ from apps.content.services import (
 )
 from apps.core.api import service_error_to_400 as _service_error_to_400
 from apps.core.permissions import IsStaffUser
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 
 
 def _page_or_404(slug):

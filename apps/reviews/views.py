@@ -29,7 +29,6 @@ from drf_spectacular.utils import extend_schema
 from rest_framework import exceptions, permissions, serializers, status
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from apps.catalog.images import (
@@ -50,6 +49,7 @@ from apps.core.idempotency import (
     store_result,
 )
 from apps.core.permissions import IsStaffUser
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 from apps.reviews.constants import (
     MAX_UNATTACHED_PHOTOS_PER_SESSION,
     MAX_UNATTACHED_PHOTOS_PER_USER,

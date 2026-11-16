@@ -11,7 +11,6 @@ from rest_framework import generics, permissions
 from rest_framework.exceptions import NotFound
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 
 from apps.catalog.serializers import ProductListSerializer
 from apps.collections.models import Collection, CollectionMembership
@@ -25,6 +24,7 @@ from apps.collections.serializers import (
     CollectionSerializer,
 )
 from apps.core.permissions import IsStaffUser
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 
 # Public views
 

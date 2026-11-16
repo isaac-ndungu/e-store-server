@@ -12,7 +12,6 @@ from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -37,6 +36,7 @@ from apps.accounts.services import (
     send_password_reset_email,
 )
 from apps.core.permissions import IsStaffUser
+from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 
 
 class LoginView(TokenObtainPairView):

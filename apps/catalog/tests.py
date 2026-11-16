@@ -2025,3 +2025,35 @@ class ProductDetailQueryTests(APITestCase):
         self.assertEqual(response.data["category"]["name"], product.category.name)
         # Product, tier prefetch, and image prefetch.
         self.assertLessEqual(len(ctx.captured_queries), 4)
+
+
+class ProductPriceThrottleTests(APITestCase):
+    """The card-price endpoint has its own budget, separate from catalog reads."""
+
+    def setUp(self):
+        cache.clear()
+        self.product = _make_product(
+            name="Price Burst", slug="price-burst", sku="PR-BURST"
+        )
+        self.url = reverse("api:catalog:product-price", args=[self.product.slug])
+
+    def test_a_listing_page_price_burst_is_not_rejected(self):
+        """Six card lookups in one page load all succeed."""
+        for _ in range(6):
+            response = self.client.get(self.url)
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_price_endpoint_scope_and_rate_are_configured(self):
+        """The price scope is dedicated and generous while auth stays strict."""
+        from rest_framework.settings import api_settings
+
+        from apps.catalog.views import ProductPriceView
+
+        rates = api_settings.DEFAULT_THROTTLE_RATES
+        self.assertEqual(ProductPriceView.throttle_scope, "product_price")
+        self.assertEqual(rates["product_price"], "300/min")
+        self.assertNotEqual(rates["product_price"], rates["public_catalog"])
+        self.assertEqual(rates["auth_login"], "3/min")
+        self.assertEqual(rates["auth_reauth"], "10/min")
+        self.assertEqual(rates["inquiry_write"], "20/min")
+        self.assertEqual(rates["order_write"], "5/min")
