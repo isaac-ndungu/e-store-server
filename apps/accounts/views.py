@@ -35,6 +35,7 @@ from apps.accounts.services import (
     reset_password,
     send_password_reset_email,
 )
+from apps.accounts.throttling import PasswordResetEmailThrottle
 from apps.core.permissions import IsStaffUser
 from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 
@@ -139,12 +140,12 @@ class RequestPasswordResetView(APIView):
     Public (``AllowAny``) by design  -  the requested action precedes login. The
     response is always the same success message whether or not the email exists,
     so the endpoint cannot be used to enumerate registered accounts. Rate
-    limited with the ``auth_reauth`` scope.
+    limited per caller IP and per submitted email address.
     """
 
     permission_classes = [permissions.AllowAny]
-    throttle_classes = [ScopedRateThrottle]
-    throttle_scope = "auth_reauth"
+    throttle_classes = [ScopedRateThrottle, PasswordResetEmailThrottle]
+    throttle_scope = "password_reset_ip"
     serializer_class = RequestPasswordResetSerializer
 
     def post(self, request):

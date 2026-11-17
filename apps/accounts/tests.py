@@ -8,9 +8,15 @@ throttle scopes. Public registration is gone  -  posting to the retired path
 returns 404 and creates nothing.
 """
 
+from datetime import datetime, timedelta
+from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
+
+from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core import mail
 from django.core.cache import cache
+from django.test import override_settings
 from django.urls import reverse
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
@@ -18,6 +24,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from apps.accounts.models import Address, User
+from apps.accounts.services import build_password_reset_url
 
 LOGIN_URL = reverse("api:accounts:login")
 REFRESH_URL = reverse("api:accounts:refresh")
@@ -28,8 +35,10 @@ PASSWORD_CHANGE_URL = reverse("api:accounts:password-change")
 ME_URL = reverse("api:accounts:me")
 ADDRESS_LIST_URL = reverse("api:accounts:address-list-create")
 
-# Throttle scope configured in settings.py; keep in sync.
+# Throttle scopes configured in settings.py; keep in sync.
 AUTH_LOGIN_RATE_LIMIT = 3
+PASSWORD_RESET_IP_RATE_LIMIT = 5
+PASSWORD_RESET_EMAIL_RATE_LIMIT = 3
 
 
 class RegistrationRemovedTests(APITestCase):
@@ -720,6 +729,128 @@ class PasswordResetTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
         self.assertEqual(len(mail.outbox), 0)
+
+    @override_settings(
+        RESET_LINK_BASE="https://staff.vifaar.co.ke/reset-password/confirm"
+    )
+    def test_request_builds_confirm_page_query_link(self):
+        """The emailed link targets the confirm page with uid/token in the query."""
+        response = self.client.post(
+            PASSWORD_RESET_URL, {"email": "staff@example.com"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+
+        body = mail.outbox[0].body
+        url = next(
+            line.strip()
+            for line in body.splitlines()
+            if line.strip().startswith("https://")
+        )
+        parts = urlsplit(url)
+        self.assertEqual(parts.scheme, "https")
+        self.assertEqual(parts.netloc, "staff.vifaar.co.ke")
+        self.assertEqual(parts.path, "/reset-password/confirm")
+
+        query = parse_qs(parts.query)
+        self.assertEqual(
+            query["uid"][0], urlsafe_base64_encode(force_bytes(self.user.pk))
+        )
+        self.assertTrue(
+            default_token_generator.check_token(self.user, query["token"][0])
+        )
+
+    def test_build_password_reset_url_encodes_reserved_characters(self):
+        """uid and token are URL-encoded rather than pasted into the path."""
+        url = build_password_reset_url(
+            "https://staff.vifaar.co.ke/reset-password/confirm?source=email",
+            "abc==",
+            "token with space",
+        )
+        self.assertEqual(
+            url,
+            "https://staff.vifaar.co.ke/reset-password/confirm"
+            "?source=email&uid=abc%3D%3D&token=token+with+space",
+        )
+
+    @override_settings(
+        RESET_LINK_BASE="https://staff.vifaar.co.ke/reset-password/confirm"
+    )
+    def test_request_sends_multipart_email(self):
+        """The message carries a plain-text body plus an HTML alternative."""
+        self.client.post(
+            PASSWORD_RESET_URL, {"email": "staff@example.com"}, format="json"
+        )
+        message = mail.outbox[0]
+
+        self.assertEqual(message.content_subtype, "plain")
+        self.assertIn("reset", message.body.lower())
+        self.assertNotIn("<html", message.body.lower())
+        self.assertEqual(len(message.alternatives), 1)
+
+        html_body, mimetype = message.alternatives[0]
+        self.assertEqual(mimetype, "text/html")
+        self.assertIn("<html", html_body.lower())
+        self.assertIn("/reset-password/confirm?", html_body)
+
+    @override_settings(PASSWORD_RESET_TIMEOUT=3600)
+    def test_confirm_accepts_token_inside_validity_window(self):
+        """A token presented just before the timeout still resets the password."""
+        uid, token = self._uid_token()
+        inside_window = datetime.now() + timedelta(
+            seconds=settings.PASSWORD_RESET_TIMEOUT - 1
+        )
+        with patch.object(default_token_generator, "_now", return_value=inside_window):
+            response = self.client.post(
+                PASSWORD_RESET_CONFIRM_URL,
+                {"uid": uid, "token": token, "new_password": "NewPass123!"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    @override_settings(PASSWORD_RESET_TIMEOUT=3600)
+    def test_confirm_rejects_token_after_validity_window(self):
+        """A token presented after the timeout is rejected without a password change."""
+        uid, token = self._uid_token()
+        after_window = datetime.now() + timedelta(
+            seconds=settings.PASSWORD_RESET_TIMEOUT + 1
+        )
+        with patch.object(default_token_generator, "_now", return_value=after_window):
+            response = self.client.post(
+                PASSWORD_RESET_CONFIRM_URL,
+                {"uid": uid, "token": token, "new_password": "NewPass123!"},
+                format="json",
+            )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("OldPass123!"))
+
+    def test_request_is_throttled_per_ip(self):
+        """Distinct emails from one IP still exhaust the shared IP budget."""
+        for index in range(PASSWORD_RESET_IP_RATE_LIMIT):
+            response = self.client.post(
+                PASSWORD_RESET_URL,
+                {"email": f"person{index}@example.com"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+
+        response = self.client.post(
+            PASSWORD_RESET_URL, {"email": "another@example.com"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_request_is_throttled_per_email(self):
+        """Repeated requests for one address exhaust that address's budget."""
+        for _ in range(PASSWORD_RESET_EMAIL_RATE_LIMIT):
+            response = self.client.post(
+                PASSWORD_RESET_URL, {"email": "staff@example.com"}, format="json"
+            )
+            self.assertEqual(response.status_code, status.HTTP_202_ACCEPTED)
+
+        response = self.client.post(
+            PASSWORD_RESET_URL, {"email": "STAFF@example.com"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
 
     def test_confirm_sets_new_password(self):
         """A valid uid + token changes the password so the new one logs in."""
