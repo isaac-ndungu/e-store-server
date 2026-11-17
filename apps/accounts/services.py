@@ -5,6 +5,7 @@ revocation live here so every caller uses the same entry point.
 """
 
 import re
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 from django.contrib.auth.password_validation import validate_password
@@ -132,6 +133,29 @@ def mask_email(value):
     return f"{local[0]}{'*' * (len(local) - 2)}{local[-1]}@{domain}"
 
 
+def build_password_reset_url(base_url, uid, token):
+    """Build the staff-console reset link with uid and token as query parameters.
+
+    The base URL points at the console's reset-confirm page; the uid and token
+    are encoded with ``urllib.parse`` so reserved characters in either value
+    cannot break the link.
+
+    Args:
+        base_url (str): full URL of the reset-confirm page.
+        uid (str): URL-safe base64 user id.
+        token (str): one-time reset token.
+
+    Returns:
+        str: the base URL carrying the ``uid`` and ``token`` query parameters.
+    """
+    parts = urlsplit(base_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query.update({"uid": uid, "token": token})
+    return urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment)
+    )
+
+
 def send_password_reset_email(email, request):
     """Send a password-reset link to ``email`` if an account exists.
 
@@ -153,16 +177,21 @@ def send_password_reset_email(email, request):
     uid = urlsafe_base64_encode(force_bytes(user.pk))
     token = default_token_generator.make_token(user)
     domain = get_current_site(request).domain
-    reset_url = f"{settings.RESET_LINK_BASE}{uid}/{token}/"
+    reset_url = build_password_reset_url(settings.RESET_LINK_BASE, uid, token)
 
     subject = render_to_string(
         "accounts/password_reset_subject.txt", {"user": user}
     ).strip()
-    message = render_to_string(
-        "accounts/password_reset_email.html",
-        {"user": user, "reset_url": reset_url, "domain": domain},
+    context = {"user": user, "reset_url": reset_url, "domain": domain}
+    text_message = render_to_string("accounts/password_reset_email.txt", context)
+    html_message = render_to_string("accounts/password_reset_email.html", context)
+    return send_mail(
+        subject,
+        text_message,
+        settings.DEFAULT_FROM_EMAIL,
+        [email],
+        html_message=html_message,
     )
-    return send_mail(subject, message, settings.DEFAULT_FROM_EMAIL, [email])
 
 
 def decode_uid(uid):

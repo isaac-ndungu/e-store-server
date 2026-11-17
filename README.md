@@ -64,7 +64,8 @@ need no external services.
 | `RENDER_EXTERNAL_HOSTNAME` | Auto-set by Render; trusted for hosts/CSRF without listing it in `ALLOWED_HOSTS` |
 | `REDIS_URL` | General-purpose Redis handle; `CACHE_REDIS_URL` / `CELERY_*` fall back to it when unset |
 | `CACHE_REDIS_URL` / `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Django cache + Celery broker/backend (unset = use `REDIS_URL`) |
-| `FRONTEND_URL` / `RESET_LINK_BASE` | Storefront URL + password-reset link target |
+| `FRONTEND_URL` / `RESET_LINK_BASE` | Storefront URL + full staff-console password-reset confirm page URL |
+| `PASSWORD_RESET_TIMEOUT` | Password-reset link lifetime in seconds (default 3600) |
 | `WHATSAPP_BUSINESS_NUMBER` / `ORDER_INTAKE_EMAIL` | Assisted-sales hand-off contact points |
 | `CORS_ALLOWED_ORIGINS` / `CORS_ALLOW_CREDENTIALS` / `CSRF_TRUSTED_ORIGINS` | Browser origins allowed to call the API |
 | `EMAIL_HOST` / `EMAIL_PORT` / `EMAIL_USE_TLS` / `EMAIL_HOST_USER` / `EMAIL_HOST_PASSWORD` / `EMAIL_BACKEND` / `DEFAULT_FROM_EMAIL` | SMTP delivery + from-address |

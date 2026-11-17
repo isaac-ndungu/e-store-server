@@ -233,6 +233,10 @@ if TESTING and not config("TEST_USE_POSTGRES", default=False, cast=bool):
         }
     }
 
+# Reset links stay valid for one hour by default so a leaked mailbox cannot be
+# replayed indefinitely without making the normal reset flow feel rushed.
+PASSWORD_RESET_TIMEOUT = config("PASSWORD_RESET_TIMEOUT", default=3600, cast=int)
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
@@ -289,6 +293,8 @@ REST_FRAMEWORK = {
         "public": "100/min",
         "auth_login": "3/min",
         "auth_reauth": "10/min",
+        "password_reset_ip": "5/min",
+        "password_reset_email": "3/min",
         "auth_write": "10/min",
         "auth_read": "60/min",
         "notification_send": "5/min",
@@ -470,7 +476,10 @@ EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="no-reply@estore.local")
 FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
-RESET_LINK_BASE = config("RESET_LINK_BASE", default="http://localhost:3000/reset/")
+RESET_LINK_BASE = config(
+    "RESET_LINK_BASE",
+    default="http://localhost:5173/reset-password/confirm",
+)
 WHATSAPP_BUSINESS_NUMBER = config("WHATSAPP_BUSINESS_NUMBER", default="")
 ORDER_INTAKE_EMAIL = config("ORDER_INTAKE_EMAIL", default="")
 RESEND_API_KEY = config("RESEND_API_KEY", default="")
