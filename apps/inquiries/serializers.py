@@ -8,12 +8,62 @@ and is validated line by line. Staff serializers expose the queue fields
 and the status-transition input.
 """
 
+import re
+
 import bleach
+from django.utils import timezone
 from rest_framework import serializers
 
+from apps.accounts.services import normalize_email, validate_phone_number
 from apps.inquiries.models import Inquiry
 
 MAX_SNAPSHOT_LINES = 100
+MAX_ORDER_NOTES = 2000
+MIN_FORM_FILL_SECONDS = 2
+KENYAN_MOBILE_PATTERN = re.compile(r"^\+254[17][0-9]{8}$")
+
+
+def _clean_text(value, *, max_length=None):
+    """Return plain text with markup and surrounding whitespace removed.
+
+    Args:
+        value (str): the raw submitted text.
+        max_length (int | None): optional defensive length cap.
+
+    Returns:
+        str: the sanitized text.
+    """
+    cleaned = bleach.clean(value or "", tags=set(), strip=True).strip()
+    if max_length is not None:
+        cleaned = cleaned[:max_length]
+    return cleaned
+
+
+def _normalize_phone(value):
+    """Normalize a Kenyan mobile number to ``+254`` form.
+
+    Args:
+        value (str): the submitted phone number.
+
+    Returns:
+        str: the normalized E.164 number, or an empty string when blank.
+
+    Raises:
+        serializers.ValidationError: when the number is not a Kenyan mobile.
+    """
+    raw = (value or "").strip()
+    if raw == "":
+        return ""
+    digits = "".join(character for character in raw if character.isdigit())
+    if len(digits) == 9 and digits[0] in "17":
+        raw = f"0{digits}"
+    normalized = validate_phone_number(raw)
+    if not KENYAN_MOBILE_PATTERN.match(normalized):
+        raise serializers.ValidationError(
+            "Enter a Kenyan mobile number, e.g. 0712345678 or +254712345678."
+        )
+    return normalized
+
 
 
 def _validate_snapshot(value):
@@ -69,6 +119,31 @@ class InquiryCreateSerializer(serializers.Serializer):
     contact_hint = serializers.CharField(
         max_length=255, required=False, allow_blank=True, default=""
     )
+    customer_name = serializers.CharField(
+        max_length=120, required=False, allow_blank=True, default=""
+    )
+    customer_phone = serializers.CharField(
+        max_length=30, required=False, allow_blank=True, default=""
+    )
+    customer_email = serializers.EmailField(
+        max_length=254, required=False, allow_blank=True, default=""
+    )
+    delivery_location = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, default=""
+    )
+    order_notes = serializers.CharField(
+        max_length=MAX_ORDER_NOTES, required=False, allow_blank=True, default=""
+    )
+    company_website = serializers.CharField(
+        max_length=255,
+        required=False,
+        allow_blank=True,
+        default="",
+        write_only=True,
+    )
+    form_started_at = serializers.DateTimeField(
+        required=False, allow_null=True, default=None, write_only=True
+    )
 
     def validate_contact_hint(self, value):
         """Sanitize the optional contact hint.
@@ -79,9 +154,27 @@ class InquiryCreateSerializer(serializers.Serializer):
         Returns:
             str: the sanitized contact hint.
         """
-        if not value:
-            return ""
-        return bleach.clean(value, tags=set(), strip=True).strip()
+        return _clean_text(value, max_length=255)
+
+    def validate_customer_name(self, value):
+        """Sanitize the optional visitor name."""
+        return _clean_text(value, max_length=120)
+
+    def validate_customer_phone(self, value):
+        """Normalize the optional mobile number to ``+254`` form."""
+        return _normalize_phone(value)
+
+    def validate_customer_email(self, value):
+        """Normalize the optional reply-to email."""
+        return normalize_email(value) if value else ""
+
+    def validate_delivery_location(self, value):
+        """Sanitize the optional delivery area or landmark."""
+        return _clean_text(value, max_length=255)
+
+    def validate_order_notes(self, value):
+        """Sanitize the optional order notes."""
+        return _clean_text(value, max_length=MAX_ORDER_NOTES)
 
     def validate_cart_snapshot(self, value):
         """Validate the fallback snapshot lines.
@@ -105,6 +198,25 @@ class InquiryCreateSerializer(serializers.Serializer):
                 line["sku"] = bleach.clean(line["sku"], tags=set(), strip=True).strip()
         return cleaned
 
+    def validate(self, attrs):
+        """Reject obvious bot submissions without storing a row.
+
+        The hidden field is never shown to a person, and a form filled faster
+        than the minimum interval is treated the same way. Both checks stay
+        optional so older storefront builds remain compatible during a
+        staggered deploy.
+        """
+        if attrs.get("company_website"):
+            raise serializers.ValidationError("This submission could not be accepted.")
+        started_at = attrs.get("form_started_at")
+        if started_at is not None:
+            elapsed = (timezone.now() - started_at).total_seconds()
+            if 0 <= elapsed < MIN_FORM_FILL_SECONDS:
+                raise serializers.ValidationError(
+                    "This submission could not be accepted."
+                )
+        return attrs
+
 
 class InquiryDetailSerializer(serializers.ModelSerializer):
     """Staff-facing read shape for an inquiry."""
@@ -120,6 +232,11 @@ class InquiryDetailSerializer(serializers.ModelSerializer):
             "channel",
             "cart_snapshot",
             "contact_hint",
+            "customer_name",
+            "customer_phone",
+            "customer_email",
+            "delivery_location",
+            "order_notes",
             "status",
             "email_status",
             "email_error",

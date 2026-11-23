@@ -77,6 +77,12 @@ class SiteConfig(models.Model):
         blank=True,
         help_text="Mailbox that receives customer order emails.",
     )
+    inquiry_response_promise = models.CharField(
+        max_length=200,
+        blank=True,
+        default="We reply within 15 minutes, 8am to 8pm.",
+        help_text="Reply-time promise shown on the inquiry confirmation screen.",
+    )
     facebook_url = models.URLField(
         blank=True,
         default="",

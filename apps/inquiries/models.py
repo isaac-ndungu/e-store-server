@@ -18,10 +18,10 @@ class Inquiry(models.Model):
     ``cart_snapshot`` is staff reference data only  -  products, quantities,
     and displayed prices at click time, copied from the server-side cart.
     Prices are never re-charged from it; the staff intake view reprices
-    everything server-side. ``contact_hint``
-    is whatever the storefront knew (a typed phone/email), blank when the
-    visitor gave nothing. ``converted_order`` is set when staff turn the
-    conversation into a real order.
+    everything server-side. ``contact_hint`` is the legacy combined summary,
+    while the structured ``customer_*`` and delivery fields keep each fact
+    addressable for staff search and the order-intake email. ``converted_order``
+    is set when staff turn the conversation into a real order.
 
     ``reference`` (``INQ-000123``) is the code the storefront embeds in the
     pre-filled WhatsApp/email message so staff can match an incoming chat to
@@ -51,6 +51,25 @@ class Inquiry(models.Model):
     channel = models.CharField(max_length=10, choices=CHANNEL_CHOICES)
     cart_snapshot = models.JSONField(default=list)
     contact_hint = models.CharField(max_length=255, blank=True)
+    customer_name = models.CharField(max_length=120, blank=True, default="")
+    customer_phone = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="Normalized Kenyan mobile number in +254 form.",
+    )
+    customer_email = models.EmailField(blank=True, default="")
+    delivery_location = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Area or landmark the visitor typed for delivery.",
+    )
+    order_notes = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional instructions the visitor added with the inquiry.",
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="new")
     email_status = models.CharField(
         max_length=20,

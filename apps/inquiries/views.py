@@ -17,6 +17,17 @@ from rest_framework.views import APIView
 
 from apps.cart.selectors import build_cart_snapshot, get_cart_from_cookie
 from apps.core.api import service_error_to_400 as _service_error_to_400
+from apps.core.http import client_ip
+from apps.core.idempotency import (
+    IDEMPOTENCY_HEADER,
+    acquire_processing_lock,
+    conflicting_key_response,
+    payload_conflict,
+    read_cached_result,
+    release_processing_lock,
+    request_fingerprint,
+    store_result,
+)
 from apps.core.permissions import IsStaffUser
 from apps.core.throttling import ClientIPScopedRateThrottle as ScopedRateThrottle
 from apps.inquiries.email import resend_order_intake_email
@@ -51,7 +62,9 @@ class InquiryCreateView(APIView):
         """Store the hand-off snapshot.
 
         The lines come from the visitor's server-side cart; a
-        client-submitted snapshot is used only when no cart exists.
+        client-submitted snapshot is used only when no cart exists. When an
+        ``Idempotency-Key`` is supplied, a repeated submission replays the
+        first row instead of creating a duplicate.
 
         Args:
             request: the POST request with channel + optional snapshot.
@@ -59,25 +72,61 @@ class InquiryCreateView(APIView):
         Returns:
             Response: ``201 Created`` with the stored inquiry.
         """
-        input_serializer = InquiryCreateSerializer(data=request.data)
-        input_serializer.is_valid(raise_exception=True)
-        data = input_serializer.validated_data
         cart = get_cart_from_cookie(request.COOKIES)
-        if cart is not None and cart.items.exists():
-            cart_snapshot = build_cart_snapshot(cart)
-        elif data.get("cart_snapshot"):
-            cart_snapshot = data["cart_snapshot"]
-        else:
-            raise drf_serializers.ValidationError(
-                {"cart_snapshot": "No items in the cart to inquire about."}
+        idempotency_key = request.headers.get(IDEMPOTENCY_HEADER)
+        scope = f"cart:{cart.pk}" if cart is not None else f"ip:{client_ip(request)}"
+        fingerprint = request_fingerprint(request) if idempotency_key else None
+        lock_acquired = False
+
+        if idempotency_key:
+            cached = read_cached_result(scope, idempotency_key)
+            if cached is not None:
+                if payload_conflict(cached, fingerprint):
+                    return conflicting_key_response()
+                return Response(cached["data"], status=cached["status"])
+            lock_acquired = acquire_processing_lock(scope, idempotency_key)
+            if not lock_acquired:
+                return Response(
+                    {"detail": "This request is already being processed."},
+                    status=409,
+                )
+
+        try:
+            input_serializer = InquiryCreateSerializer(data=request.data)
+            input_serializer.is_valid(raise_exception=True)
+            data = input_serializer.validated_data
+            if cart is not None and cart.items.exists():
+                cart_snapshot = build_cart_snapshot(cart)
+            elif data.get("cart_snapshot"):
+                cart_snapshot = data["cart_snapshot"]
+            else:
+                raise drf_serializers.ValidationError(
+                    {"cart_snapshot": "No items in the cart to inquire about."}
+                )
+            inquiry = record_inquiry(
+                channel=data["channel"],
+                cart_snapshot=cart_snapshot,
+                contact_hint=data.get("contact_hint", ""),
+                customer_name=data.get("customer_name", ""),
+                customer_phone=data.get("customer_phone", ""),
+                customer_email=data.get("customer_email", ""),
+                delivery_location=data.get("delivery_location", ""),
+                order_notes=data.get("order_notes", ""),
             )
-        inquiry = record_inquiry(
-            channel=data["channel"],
-            cart_snapshot=cart_snapshot,
-            contact_hint=data.get("contact_hint", ""),
-        )
-        inquiry.refresh_from_db()
-        return Response(InquiryDetailSerializer(inquiry).data, status=201)
+            inquiry.refresh_from_db()
+            response_data = dict(InquiryDetailSerializer(inquiry).data)
+            if idempotency_key:
+                store_result(
+                    scope,
+                    idempotency_key,
+                    201,
+                    response_data,
+                    payload_hash=fingerprint,
+                )
+            return Response(response_data, status=201)
+        finally:
+            if idempotency_key and lock_acquired:
+                release_processing_lock(scope, idempotency_key)
 
 
 class InquiryListView(APIView):

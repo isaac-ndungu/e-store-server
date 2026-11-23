@@ -40,6 +40,7 @@ def get_site_config():
             "support_phone": obj.support_phone,
             "whatsapp_number": obj.whatsapp_number,
             "order_intake_email": obj.order_intake_email,
+            "inquiry_response_promise": obj.inquiry_response_promise,
             "facebook_url": obj.facebook_url,
             "instagram_url": obj.instagram_url,
             "tiktok_url": obj.tiktok_url,

@@ -64,6 +64,15 @@ class SiteConfigEndpointTests(APITestCase):
         self.assertIn("meta_pixel_id", response.data)
         self.assertEqual(response.data["meta_pixel_id"], "")
 
+    def test_site_config_exposes_default_inquiry_promise(self):
+        """The confirmation promise is public and has a sensible default."""
+        response = self.client.get(SITE_CONFIG_URL)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            response.data["inquiry_response_promise"],
+            "We reply within 15 minutes, 8am to 8pm.",
+        )
+
     def test_legal_endpoint_returns_legal_fields_only(self):
         """The legal endpoint returns trust/legal copy and not storefront JSON."""
         response = self.client.get(LEGAL_URL)
@@ -220,6 +229,20 @@ class SiteConfigUpdateEndpointTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         config = SiteConfig.objects.get()
         self.assertEqual(config.meta_pixel_id, "")
+
+    def test_staff_can_update_inquiry_response_promise(self):
+        """Staff can set the reply-time promise shown after an inquiry."""
+        self.client.force_authenticate(user=self.staff)
+        response = self.client.patch(
+            SITE_CONFIG_URL,
+            {"inquiry_response_promise": "We reply within 30 minutes."},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config = SiteConfig.objects.get()
+        self.assertEqual(
+            config.inquiry_response_promise, "We reply within 30 minutes."
+        )
 
     def test_staff_can_partially_update_contact_facts(self):
         """A PATCH with one field leaves the other fields untouched."""

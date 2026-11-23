@@ -22,21 +22,78 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
-def record_inquiry(*, channel, cart_snapshot, contact_hint=""):
+def build_contact_hint(
+    *,
+    customer_name="",
+    customer_phone="",
+    delivery_location="",
+    customer_email="",
+    order_notes="",
+):
+    """Combine the structured contact facts into the legacy display line.
+
+    Args:
+        customer_name (str): visitor name.
+        customer_phone (str): normalized mobile number.
+        delivery_location (str): area or landmark.
+        customer_email (str): reply-to email.
+        order_notes (str): optional instructions.
+
+    Returns:
+        str: pipe-separated contact summary, blank when every part is blank.
+    """
+    parts = [
+        (customer_name or "").strip(),
+        (customer_phone or "").strip(),
+        (delivery_location or "").strip(),
+        (customer_email or "").strip(),
+        (order_notes or "").strip(),
+    ]
+    return " | ".join(part for part in parts if part)[:255]
+
+
+def record_inquiry(
+    *,
+    channel,
+    cart_snapshot,
+    contact_hint="",
+    customer_name="",
+    customer_phone="",
+    customer_email="",
+    delivery_location="",
+    order_notes="",
+):
     """Store a hand-off capture row and queue the email hand-off when needed.
 
     Args:
         channel (str): ``whatsapp`` or ``email``.
         cart_snapshot (list): validated snapshot lines.
-        contact_hint (str): optional visitor-supplied phone/email.
+        contact_hint (str): optional combined contact summary.
+        customer_name (str): optional visitor name.
+        customer_phone (str): optional normalized mobile number.
+        customer_email (str): optional reply-to email.
+        delivery_location (str): optional delivery area or landmark.
+        order_notes (str): optional order instructions.
 
     Returns:
         Inquiry: the created row.
     """
+    hint = contact_hint or build_contact_hint(
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        delivery_location=delivery_location,
+        customer_email=customer_email,
+        order_notes=order_notes,
+    )
     inquiry = Inquiry.objects.create(
         channel=channel,
         cart_snapshot=cart_snapshot,
-        contact_hint=contact_hint or "",
+        contact_hint=hint,
+        customer_name=customer_name or "",
+        customer_phone=customer_phone or "",
+        customer_email=customer_email or "",
+        delivery_location=delivery_location or "",
+        order_notes=order_notes or "",
         email_status="pending" if channel == "email" else "not_required",
     )
     if inquiry.channel == "email":

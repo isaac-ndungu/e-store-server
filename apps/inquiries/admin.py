@@ -14,11 +14,19 @@ class InquiryAdmin(admin.ModelAdmin):
         "channel",
         "status",
         "email_status",
+        "customer_name",
+        "customer_phone",
         "contact_hint",
         "created_at",
     )
     list_filter = ("channel", "status", "email_status", "created_at")
-    search_fields = ("contact_hint",)
+    search_fields = (
+        "contact_hint",
+        "customer_name",
+        "customer_phone",
+        "customer_email",
+        "delivery_location",
+    )
     readonly_fields = (
         "email_status",
         "email_error",

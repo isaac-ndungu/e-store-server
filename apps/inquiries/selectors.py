@@ -36,10 +36,15 @@ def list_inquiries(*, status=None, channel=None, email_status=None, search=None)
     if search:
         lookup = search.strip()
         candidate_pk = Inquiry.parse_reference(lookup)
+        contact_match = (
+            Q(contact_hint__icontains=lookup)
+            | Q(customer_name__icontains=lookup)
+            | Q(customer_phone__icontains=lookup)
+            | Q(customer_email__icontains=lookup)
+            | Q(delivery_location__icontains=lookup)
+        )
         if candidate_pk is not None:
-            queryset = queryset.filter(
-                Q(pk=candidate_pk) | Q(contact_hint__icontains=lookup)
-            )
+            queryset = queryset.filter(Q(pk=candidate_pk) | contact_match)
         else:
-            queryset = queryset.filter(Q(contact_hint__icontains=lookup))
+            queryset = queryset.filter(contact_match)
     return queryset
