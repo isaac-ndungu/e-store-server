@@ -27,6 +27,8 @@ computation when the cache is cold; the TTL is a safety net, not the
 primary freshness mechanism.
 """
 
+import hashlib
+
 from django.core.cache import cache
 
 _CATEGORY_TTL_SECONDS = 30 * 60
@@ -39,6 +41,9 @@ _FACET_COUNTS_TTL_SECONDS = 5 * 60
 
 _PRODUCT_LIST_GENERATION_KEY = "catalog:product_list_generation"
 _PRODUCT_LIST_TTL_SECONDS = 60
+
+_SUGGESTION_TTL_SECONDS = 30
+_SUGGESTION_CACHE_VERSION = 1
 
 
 def _list_key(generation):
@@ -255,3 +260,41 @@ def cache_product_list_page(generation, query_hash, payload):
     cache.set(
         _product_list_key(generation, query_hash), payload, _PRODUCT_LIST_TTL_SECONDS
     )
+
+
+def _suggestion_key(normalized_term):
+    """Return the cache key for one normalized suggestion query.
+
+    Args:
+        normalized_term (str): the normalized search term.
+
+    Returns:
+        str: the cache key.
+    """
+    digest = hashlib.sha1(normalized_term.encode()).hexdigest()
+    return f"catalog:suggestions:v{_SUGGESTION_CACHE_VERSION}:{digest}"
+
+
+def get_cached_suggestions(normalized_term):
+    """Return cached suggestion payloads for a query, if warm.
+
+    Args:
+        normalized_term (str): the normalized search term.
+
+    Returns:
+        dict | None: the cached payload, or None when cold.
+    """
+    return cache.get(_suggestion_key(normalized_term))
+
+
+def cache_suggestions(normalized_term, payload):
+    """Store a suggestion payload for a short window.
+
+    Suggestions are cheap to recompute and change as products change, so they
+    use a short TTL rather than the generation counters that back full pages.
+
+    Args:
+        normalized_term (str): the normalized search term.
+        payload (dict): the serialized suggestion response.
+    """
+    cache.set(_suggestion_key(normalized_term), payload, _SUGGESTION_TTL_SECONDS)

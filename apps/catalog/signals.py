@@ -19,7 +19,14 @@ from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
 from apps.catalog import cache as catalog_cache
-from apps.catalog.models import Category, FacetDefinition, Product, ProductImage
+from apps.catalog.models import (
+    Category,
+    FacetDefinition,
+    Product,
+    ProductFAQ,
+    ProductImage,
+)
+from apps.catalog.tasks import schedule_storefront_product_revalidation
 
 
 @receiver(post_save, sender=Category)
@@ -70,6 +77,20 @@ def on_product_image_saved(sender, instance, **kwargs):
 def on_product_image_deleted(sender, instance, **kwargs):
     """Invalidate cached product-list pages when an image is deleted."""
     catalog_cache.bump_product_list_generation()
+
+
+@receiver(post_save, sender=ProductFAQ)
+def on_product_faq_saved(sender, instance, **kwargs):
+    """Invalidate cached product pages when a FAQ changes."""
+    catalog_cache.bump_product_list_generation()
+    schedule_storefront_product_revalidation(instance.product_id)
+
+
+@receiver(post_delete, sender=ProductFAQ)
+def on_product_faq_deleted(sender, instance, **kwargs):
+    """Invalidate cached product pages when a FAQ is deleted."""
+    catalog_cache.bump_product_list_generation()
+    schedule_storefront_product_revalidation(instance.product_id)
 
 
 @receiver(post_save, sender=FacetDefinition)

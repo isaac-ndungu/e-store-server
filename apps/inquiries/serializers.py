@@ -134,6 +134,15 @@ class InquiryCreateSerializer(serializers.Serializer):
     order_notes = serializers.CharField(
         max_length=MAX_ORDER_NOTES, required=False, allow_blank=True, default=""
     )
+    reference_code = serializers.CharField(
+        max_length=16, required=False, allow_blank=True, default=""
+    )
+    page_url = serializers.URLField(
+        max_length=500, required=False, allow_blank=True, default=""
+    )
+    is_test = serializers.BooleanField(
+        required=False, default=False, write_only=True
+    )
     company_website = serializers.CharField(
         max_length=255,
         required=False,
@@ -237,7 +246,9 @@ class InquiryDetailSerializer(serializers.ModelSerializer):
             "customer_email",
             "delivery_location",
             "order_notes",
+            "page_url",
             "status",
+            "message_received_at",
             "email_status",
             "email_error",
             "email_provider_message_id",
@@ -263,7 +274,9 @@ class InquiryDetailSerializer(serializers.ModelSerializer):
         from apps.inquiries.services import build_handoff_message
 
         return build_handoff_message(
-            cart_snapshot=obj.cart_snapshot, reference=obj.reference
+            cart_snapshot=obj.cart_snapshot,
+            reference=obj.reference,
+            page_url=obj.page_url,
         )
 
 
@@ -271,3 +284,56 @@ class InquiryStatusUpdateSerializer(serializers.Serializer):
     """Input for a staff user moving an inquiry through the queue."""
 
     to_status = serializers.ChoiceField(choices=Inquiry.STATUS_CHOICES)
+
+
+class InquiryRecoveryContactSerializer(serializers.Serializer):
+    """Input for attaching optional name and phone from the recovery box."""
+
+    customer_name = serializers.CharField(
+        max_length=120, required=False, allow_blank=True, default=""
+    )
+    customer_phone = serializers.CharField(
+        max_length=30, required=False, allow_blank=True, default=""
+    )
+    recovery_token = serializers.CharField(
+        max_length=64, required=False, allow_blank=True, default="", write_only=True
+    )
+
+    def validate_customer_name(self, value):
+        """Sanitize the optional visitor name."""
+        return _clean_text(value, max_length=120)
+
+    def validate_customer_phone(self, value):
+        """Normalize the optional Kenyan mobile number to ``+254`` form."""
+        return _normalize_phone(value)
+
+    def validate(self, attrs):
+        """Require at least one contact field when submitting the recovery form."""
+        if not attrs.get("customer_name") and not attrs.get("customer_phone"):
+            raise serializers.ValidationError(
+                "Provide a name or phone number to save."
+            )
+        return attrs
+
+
+class InquiryMarkReceivedSerializer(serializers.Serializer):
+    """Input for marking an inquiry as message_received by reference code."""
+
+    reference = serializers.CharField(max_length=32)
+
+    def validate_reference(self, value):
+        """Strip surrounding whitespace from the scanned or pasted reference."""
+        cleaned = _clean_text(value, max_length=32)
+        if not cleaned:
+            raise serializers.ValidationError("Enter a reference code.")
+        return cleaned
+
+
+class InquiryBulkSpamSerializer(serializers.Serializer):
+    """Input for bulk-marking test or spam inquiries."""
+
+    inquiry_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        min_length=1,
+        max_length=200,
+    )

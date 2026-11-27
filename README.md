@@ -30,6 +30,18 @@ PostgreSQL before deploying.
 `requirements.txt` is the production set (what Docker and Render install);
 `requirements-dev.txt` adds lint/format/audit/load-test tooling on top.
 
+## Regenerating product image variants
+
+Run the command with a Celery worker available. The dry run reports the number
+of images that would be queued; the normal run queues every product image.
+Regeneration can also be limited to one product.
+
+```bash
+python manage.py regenerate_product_image_variants --dry-run
+python manage.py regenerate_product_image_variants
+python manage.py regenerate_product_image_variants --product-id 123
+```
+
 ## Quick start (Docker, full stack)
 
 ```bash
@@ -65,6 +77,8 @@ need no external services.
 | `REDIS_URL` | General-purpose Redis handle; `CACHE_REDIS_URL` / `CELERY_*` fall back to it when unset |
 | `CACHE_REDIS_URL` / `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND` | Django cache + Celery broker/backend (unset = use `REDIS_URL`) |
 | `FRONTEND_URL` / `RESET_LINK_BASE` | Storefront URL + full staff-console password-reset confirm page URL |
+| `INTERNAL_API_TOKEN` | Shared secret for trusted storefront server-side reads (blank disables the internal render scope) |
+| `STOREFRONT_REVALIDATE_URL` / `STOREFRONT_REVALIDATE_SECRET` | Optional on-demand ISR revalidation webhook for FAQ edits |
 | `PASSWORD_RESET_TIMEOUT` | Password-reset link lifetime in seconds (default 3600) |
 | `WHATSAPP_BUSINESS_NUMBER` / `ORDER_INTAKE_EMAIL` | Assisted-sales hand-off contact points |
 | `CORS_ALLOWED_ORIGINS` / `CORS_ALLOW_CREDENTIALS` / `CSRF_TRUSTED_ORIGINS` | Browser origins allowed to call the API |
@@ -91,6 +105,23 @@ need no external services.
 
 The frontend only needs the web service URL as its API base URL
 (e.g. `https://e-store-api.onrender.com`).
+
+### Trusted storefront server reads
+
+The storefront renders on its own host and fetches this API server-side. Those
+requests send `X-Internal-Token` with the shared `INTERNAL_API_TOKEN` and read
+the catalogue at the higher `internal_render` rate instead of sharing the public
+per-IP budget. Browser-origin requests, missing tokens, and invalid tokens keep
+the normal public limits, and login, password reset, inquiry, coupon, and SMS
+endpoints stay strict regardless of the header. Deploy order:
+
+1. Set `INTERNAL_API_TOKEN` on the API and restart it (the value can be any
+   high-entropy string; generate one with `secrets.token_urlsafe(64)`).
+2. Set the same `INTERNAL_API_TOKEN` on the storefront server environment.
+3. Point the storefront's `API_INTERNAL_URL` at loopback
+   (`http://127.0.0.1:8000/api/v1`) and restart/redeploy the storefront.
+4. Verify with the storefront crawl check; a missing token only reduces the
+   limit, so a token mismatch does not break rendering.
 
 ## Production data bootstrap
 

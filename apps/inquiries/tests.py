@@ -61,7 +61,7 @@ class InquiryCreateTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(Inquiry.objects.count(), 1)
         inquiry = Inquiry.objects.get()
-        self.assertEqual(inquiry.status, "new")
+        self.assertEqual(inquiry.status, "clicked")
         self.assertEqual(inquiry.cart_snapshot[0]["sku"], "KTL-1-V")
 
     def test_capture_rejects_unknown_channel(self):
@@ -391,7 +391,7 @@ class InquiryReferenceTests(APITestCase):
         )
 
     def test_create_response_carries_reference(self):
-        """The capture response includes the code for the message text."""
+        """The capture response includes the short VF code for the message text."""
         response = self.client.post(
             CREATE_URL,
             {"channel": "whatsapp", "cart_snapshot": SNAPSHOT},
@@ -400,16 +400,22 @@ class InquiryReferenceTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         created = Inquiry.objects.get(pk=response.data["id"])
         self.assertEqual(response.data["reference"], created.reference)
-        self.assertEqual(
-            Inquiry.parse_reference(response.data["reference"]), created.pk
-        )
+        self.assertRegex(created.reference, r"^VF-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4,8}$")
 
-    def test_reference_format_matches_pk(self):
-        """The code embeds the pk staff search by."""
-        self.assertEqual(self.inquiry.reference, f"INQ-{self.inquiry.pk:06d}")
-        self.assertEqual(
-            Inquiry.parse_reference(self.inquiry.reference), self.inquiry.pk
-        )
+    def test_reference_format_uses_unambiguous_alphabet(self):
+        """Generated short codes exclude 0, O, 1, I, L and stay unique."""
+        from apps.inquiries.models import REFERENCE_ALPHABET
+
+        codes = set()
+        for _ in range(25):
+            row = Inquiry.objects.create(channel="whatsapp", cart_snapshot=SNAPSHOT)
+            self.assertTrue(row.reference.startswith("VF-"))
+            suffix = row.reference.split("-", 1)[1]
+            self.assertTrue(all(ch in REFERENCE_ALPHABET for ch in suffix))
+            for ambiguous in ("0", "O", "1", "I", "L"):
+                self.assertNotIn(ambiguous, suffix)
+            codes.add(row.reference)
+        self.assertEqual(len(codes), 25)
 
     def test_queue_search_by_reference(self):
         """Staff find the row by pasting the code from an incoming chat."""
@@ -529,3 +535,164 @@ class OrderIntakeEmailBodyTests(APITestCase):
         body = _order_intake_body(inquiry)
 
         self.assertIn("Customer contact: buyer@example.com", body)
+
+
+class WhatsAppTrackingWorkflowTests(APITestCase):
+    """Covers deduplication, recovery contact, staff exclusion, filters, and statuses."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_db_deduplication_even_when_cache_cleared(self):
+        """Repeating an Idempotency-Key returns the same Inquiry even after cache flush."""
+        headers = {"HTTP_IDEMPOTENCY_KEY": "wa-tap-window-key"}
+        first = self.client.post(
+            CREATE_URL,
+            {
+                "channel": "whatsapp",
+                "cart_snapshot": SNAPSHOT,
+                "page_url": "https://vifaar.example/products/kettle",
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        cache.clear()
+        second = self.client.post(
+            CREATE_URL,
+            {
+                "channel": "whatsapp",
+                "cart_snapshot": SNAPSHOT,
+                "page_url": "https://vifaar.example/products/kettle",
+            },
+            format="json",
+            **headers,
+        )
+        self.assertEqual(second.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(first.data["reference"], second.data["reference"])
+        self.assertEqual(Inquiry.objects.count(), 1)
+
+    def test_message_text_includes_page_url_and_reference(self):
+        """The canonical message embeds both the page link and Ref code."""
+        response = self.client.post(
+            CREATE_URL,
+            {
+                "channel": "whatsapp",
+                "cart_snapshot": SNAPSHOT,
+                "page_url": "https://vifaar.example/products/kettle",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        message = response.data["message_text"]
+        self.assertIn("https://vifaar.example/products/kettle", message)
+        self.assertIn(f"Ref {response.data['reference']}", message)
+
+    def test_recovery_contact_updates_with_valid_token_and_normalizes_phone(self):
+        """Recovery box PATCH validates Kenyan phone and requires recovery_token."""
+        created = self.client.post(
+            CREATE_URL,
+            {"channel": "whatsapp", "cart_snapshot": SNAPSHOT},
+            format="json",
+        )
+        ref = created.data["reference"]
+        token = created.data["recovery_token"]
+        url = reverse("api:inquiries:inquiry-recovery-contact", kwargs={"reference": ref})
+
+        forbidden = self.client.patch(
+            url, {"customer_phone": "0712345678"}, format="json"
+        )
+        self.assertEqual(forbidden.status_code, status.HTTP_403_FORBIDDEN)
+
+        invalid_phone = self.client.patch(
+            url,
+            {"customer_phone": "123", "recovery_token": token},
+            format="json",
+        )
+        self.assertEqual(invalid_phone.status_code, status.HTTP_400_BAD_REQUEST)
+
+        ok = self.client.patch(
+            url,
+            {
+                "customer_name": "Amina",
+                "customer_phone": "0712 345 678",
+                "recovery_token": token,
+            },
+            format="json",
+        )
+        self.assertEqual(ok.status_code, status.HTTP_200_OK)
+        self.assertEqual(ok.data["customer_phone"], "+254712345678")
+        self.assertEqual(ok.data["customer_name"], "Amina")
+
+    def test_staff_clicks_and_test_flags_are_excluded(self):
+        """Logged-in staff or requests with test flags create no Inquiry rows."""
+        self.client.post(
+            CREATE_URL,
+            {"channel": "whatsapp", "cart_snapshot": SNAPSHOT, "is_test": True},
+            format="json",
+        )
+        self.client.post(
+            CREATE_URL,
+            {"channel": "whatsapp", "cart_snapshot": SNAPSHOT},
+            format="json",
+            HTTP_X_TEST_INQUIRY="1",
+        )
+        self.assertEqual(Inquiry.objects.count(), 0)
+
+        _make_user("staff-click@example.com", is_staff=True)
+        _login(self.client, "staff-click@example.com")
+        staff_res = self.client.post(
+            CREATE_URL,
+            {"channel": "whatsapp", "cart_snapshot": SNAPSHOT},
+            format="json",
+        )
+        self.assertEqual(staff_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(staff_res.data["excluded"])
+        self.assertEqual(Inquiry.objects.count(), 0)
+
+    def test_mark_received_status_flow_filters_and_bulk_spam(self):
+        """Staff can mark received by code, filter queue, and bulk-mark spam."""
+        old_click = Inquiry.objects.create(
+            channel="whatsapp",
+            cart_snapshot=[{"sku": "FRIDGE-1", "name": "Fridge", "quantity": 1}],
+            status="clicked",
+        )
+        Inquiry.objects.filter(pk=old_click.pk).update(
+            created_at=timezone.now() - timedelta(hours=2)
+        )
+        with_phone = Inquiry.objects.create(
+            channel="whatsapp",
+            cart_snapshot=[{"sku": "OVEN-2", "name": "Oven", "quantity": 1}],
+            customer_phone="+254712345678",
+            status="clicked",
+        )
+
+        _make_user("staff-ops@example.com", is_staff=True)
+        _login(self.client, "staff-ops@example.com")
+
+        no_msg = self.client.get(QUEUE_URL, {"no_message_after_1h": "true"})
+        self.assertEqual(no_msg.status_code, status.HTTP_200_OK)
+        self.assertEqual([r["id"] for r in no_msg.data["results"]], [old_click.pk])
+
+        has_phone = self.client.get(QUEUE_URL, {"has_phone": "true"})
+        self.assertEqual([r["id"] for r in has_phone.data["results"]], [with_phone.pk])
+
+        by_product = self.client.get(QUEUE_URL, {"product": "FRIDGE-1"})
+        self.assertEqual([r["id"] for r in by_product.data["results"]], [old_click.pk])
+
+        mark_url = reverse("api:inquiries:inquiry-mark-received")
+        marked = self.client.post(
+            mark_url, {"reference": with_phone.reference.lower()}, format="json"
+        )
+        self.assertEqual(marked.status_code, status.HTTP_200_OK)
+        self.assertEqual(marked.data["status"], "message_received")
+        self.assertIsNotNone(marked.data["message_received_at"])
+
+        spam_url = reverse("api:inquiries:inquiry-bulk-spam")
+        spammed = self.client.post(
+            spam_url, {"inquiry_ids": [old_click.pk]}, format="json"
+        )
+        self.assertEqual(spammed.status_code, status.HTTP_200_OK)
+        self.assertEqual(spammed.data["updated_count"], 1)
+        old_click.refresh_from_db()
+        self.assertEqual(old_click.status, "spam")

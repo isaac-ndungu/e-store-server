@@ -8,6 +8,7 @@ from apps.catalog.models import (
     FacetDefinition,
     PricingTier,
     Product,
+    ProductFAQ,
     ProductImage,
     RelatedProduct,
 )
@@ -303,9 +304,9 @@ class ProductImageSerializer(serializers.ModelSerializer):
     """Read serializer for product images with processed-variant info.
 
     ``default_image`` is the URL the storefront should display and ``srcset``
-    lists the responsive variants (width + format + URL) generated from the
-    upload. Browsers pick from ``srcset``; the original upload is not meant
-    to be served to customers.
+    lists the responsive variants (width, height, format, and URL) generated
+    from the upload. Browsers pick from ``srcset``; the original upload is
+    not meant to be served to customers.
     """
 
     default_image = serializers.SerializerMethodField()
@@ -487,10 +488,8 @@ class RelatedProductWriteSerializer(serializers.ModelSerializer):
 class ProductListSerializer(serializers.ModelSerializer):
     """Slim product representation for list/search endpoints.
 
-    Carries the sellable fields the catalog cards render directly (price,
-    availability) but omits heavy nested data (pricing tiers, images beyond
-    the primary) to keep list payloads small. Discounted amounts still come
-    from the price endpoint, never from local math.
+    Carries the sellable fields the catalog cards render directly, including
+    the server-computed effective price, while omitting heavy nested data.
     """
 
     category_name = serializers.CharField(
@@ -500,6 +499,7 @@ class ProductListSerializer(serializers.ModelSerializer):
         source="brand.name", read_only=True, default=None
     )
     primary_image = serializers.SerializerMethodField()
+    effective_price = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -509,6 +509,7 @@ class ProductListSerializer(serializers.ModelSerializer):
             "slug",
             "sku",
             "price",
+            "effective_price",
             "compare_at_price",
             "stock_status",
             "short_description",
@@ -526,6 +527,15 @@ class ProductListSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+    def get_effective_price(self, obj):
+        """Return the server-computed price used by product cards."""
+        from apps.promotions.services import get_effective_prices
+
+        prices = self.context.get("effective_prices")
+        if prices is None:
+            prices = get_effective_prices([obj])
+        return prices[obj.pk]["price"]
 
     def get_primary_image(self, obj):
         """Return the display URL for a product's primary image, or None.
@@ -565,6 +575,110 @@ class ProductListSerializer(serializers.ModelSerializer):
             return None
 
 
+class CategorySuggestionSerializer(serializers.ModelSerializer):
+    """Minimal category row for the search suggestion dropdown."""
+
+    class Meta:
+        model = Category
+        fields = ["id", "name", "slug"]
+        read_only_fields = fields
+
+
+class ProductSuggestionSerializer(ProductListSerializer):
+    """Slim product row for the search suggestion dropdown.
+
+    Carries only the thumbnail and the server-owned price fields the dropdown
+    renders, keeping the per-keystroke response small on metered connections.
+    """
+
+    class Meta(ProductListSerializer.Meta):
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "price",
+            "effective_price",
+            "compare_at_price",
+            "primary_image",
+            "brand_name",
+        ]
+        read_only_fields = fields
+
+
+class ProductFAQPublicSerializer(serializers.ModelSerializer):
+    """Read-only FAQ row shown on the public product detail page."""
+
+    class Meta:
+        model = ProductFAQ
+        fields = ["id", "question", "answer"]
+        read_only_fields = fields
+
+
+class ProductFAQStaffSerializer(serializers.ModelSerializer):
+    """FAQ row returned to the staff editor, including its display position."""
+
+    class Meta:
+        model = ProductFAQ
+        fields = ["id", "question", "answer", "position"]
+        read_only_fields = fields
+
+
+class ProductFAQListSerializer(serializers.Serializer):
+    """Envelope returned by the staff FAQ endpoint."""
+
+    faqs = ProductFAQStaffSerializer(many=True)
+
+
+class ProductFAQWriteSerializer(serializers.Serializer):
+    """One editable FAQ row in a staff replace request.
+
+    Both text fields are optional so a blank editor row can be submitted and
+    ignored rather than failing validation. ``id`` is present for a row that
+    already exists; omitting it creates a new row.
+    """
+
+    id = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    question = serializers.CharField(
+        max_length=ProductFAQ._meta.get_field("question").max_length,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+    answer = serializers.CharField(
+        max_length=ProductFAQ._meta.get_field("answer").max_length,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
+
+
+class ProductFAQReplaceSerializer(serializers.Serializer):
+    """Validated full replacement of a product's ordered FAQ list."""
+
+    faqs = ProductFAQWriteSerializer(many=True, allow_empty=True)
+
+    def validate_faqs(self, rows):
+        """Normalize rows and raise row-indexed errors for invalid content.
+
+        Args:
+            rows (list[dict]): the submitted FAQ rows.
+
+        Returns:
+            list[dict]: normalized rows with compact positions.
+
+        Raises:
+            serializers.ValidationError: when any row fails validation.
+        """
+        from apps.catalog.services import validate_product_faq_rows
+
+        cleaned_rows, errors = validate_product_faq_rows(
+            rows, product=self.context.get("product")
+        )
+        if errors:
+            raise serializers.ValidationError(errors)
+        return cleaned_rows
+
+
 class ProductDetailCategorySerializer(serializers.ModelSerializer):
     """Category fields for product-detail nesting.
 
@@ -591,16 +705,103 @@ class ProductDetailBrandSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class RelatedProductDetailSerializer(serializers.ModelSerializer):
+    """Slim representation of a related product for inline display.
+
+    Embeds just enough data for the storefront to render related-product
+    cards without a separate API call: name, slug, image, price, and the
+    relation type. The effective price is computed server-side so the
+    storefront never shows a stale or discount-ignoring amount.
+    """
+
+    name = serializers.CharField(source="related_product.name", read_only=True)
+    slug = serializers.CharField(source="related_product.slug", read_only=True)
+    price = serializers.DecimalField(
+        source="related_product.price",
+        max_digits=12,
+        decimal_places=2,
+        read_only=True,
+    )
+    stock_status = serializers.CharField(
+        source="related_product.stock_status", read_only=True
+    )
+    primary_image = serializers.SerializerMethodField()
+    effective_price = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RelatedProduct
+        fields = [
+            "id",
+            "relation_type",
+            "sort_order",
+            "name",
+            "slug",
+            "price",
+            "stock_status",
+            "primary_image",
+            "effective_price",
+        ]
+        read_only_fields = fields
+
+    def get_primary_image(self, obj):
+        """Return the display URL for the related product's primary image.
+
+        Args:
+            obj (RelatedProduct): the related-product link.
+
+        Returns:
+            str | None: the primary image display URL, or None.
+        """
+        from apps.catalog.images import preferred_image_url
+
+        primary = getattr(obj.related_product, "primary_images", None)
+        if primary:
+            try:
+                image = primary[0]
+                return preferred_image_url(image.image.name, image.image_sources)
+            except (ValueError, IndexError):
+                return None
+        return None
+
+    def get_effective_price(self, obj):
+        """Return the server-computed effective price for the related product.
+
+        Args:
+            obj (RelatedProduct): the related-product link.
+
+        Returns:
+            str: the effective price as a decimal string.
+        """
+        prices = self.context.get("related_prices", {})
+        entry = prices.get(obj.related_product_id)
+        if entry:
+            return entry["price"]
+        from apps.promotions.services import get_effective_prices
+
+        return get_effective_prices([obj.related_product])[obj.related_product_id][
+            "price"
+        ]
+
+
 class ProductDetailSerializer(serializers.ModelSerializer):
-    """Full product representation with nested pricing tiers and images."""
+    """Full product representation with nested pricing tiers, images, and related products.
+
+    Includes related products inline to avoid separate API calls during page
+    render. The storefront renders related-product cards directly from this
+    payload without additional requests.
+    """
 
     category = ProductDetailCategorySerializer(read_only=True)
     brand = ProductDetailBrandSerializer(read_only=True)
     pricing_tiers = PricingTierSerializer(many=True, read_only=True)
     images = ProductImageSerializer(many=True, read_only=True)
+    faqs = ProductFAQPublicSerializer(many=True, read_only=True)
+    related_products = serializers.SerializerMethodField()
     replacement_product_name = serializers.CharField(
         source="replacement_product.name", read_only=True, default=None
     )
+    effective_pricing = serializers.SerializerMethodField()
+    json_ld = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -614,6 +815,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "sku",
             "supplier_sku",
             "price",
+            "effective_pricing",
             "compare_at_price",
             "cost_price",
             "barcode",
@@ -662,6 +864,9 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "gtin",
             "pricing_tiers",
             "images",
+            "faqs",
+            "related_products",
+            "json_ld",
             "created_at",
             "updated_at",
         ]
@@ -672,6 +877,109 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_effective_pricing(self, obj):
+        """Return the effective price and discount for the product detail."""
+        from apps.promotions.services import get_effective_prices
+
+        return get_effective_prices([obj])[obj.pk]
+
+    def get_related_products(self, obj):
+        """Return related products inline, pre-computed with effective prices.
+
+        Uses the prefetched ``related_from`` links to avoid extra queries.
+
+        Args:
+            obj (Product): the product instance.
+
+        Returns:
+            list[dict]: the serialized related product cards.
+        """
+        from apps.promotions.services import get_effective_prices
+
+        links = list(obj.related_from.all())
+        if not links:
+            return []
+        related = [link.related_product for link in links]
+        prices = get_effective_prices(related)
+        return RelatedProductDetailSerializer(
+            links,
+            many=True,
+            context={**self.context, "related_prices": prices},
+        ).data
+
+    def get_json_ld(self, obj):
+        """Return a schema.org Product JSON-LD object for SEO and crawlers.
+
+        Includes priceCurrency KES and availability, so the storefront can
+        inject this directly into a ``<script type="application/ld+json">``
+        tag without computing it client-side.
+
+        Args:
+            obj (Product): the product instance.
+
+        Returns:
+            dict: the JSON-LD structured data.
+        """
+        from apps.promotions.services import get_effective_prices
+
+        pricing = get_effective_prices([obj])[obj.pk]
+        effective_price = pricing["price"]
+
+        stock_map = {
+            "in_stock": "https://schema.org/InStock",
+            "out_of_stock": "https://schema.org/OutOfStock",
+            "pre_order": "https://schema.org/PreOrder",
+            "backorder": "https://schema.org/BackOrder",
+            "discontinued": "https://schema.org/Discontinued",
+        }
+        availability = stock_map.get(
+            obj.stock_status, "https://schema.org/InStock"
+        )
+
+        ld = {
+            "@context": "https://schema.org",
+            "@type": "Product",
+            "name": obj.name,
+            "sku": obj.sku,
+            "description": obj.short_description or obj.description or "",
+            "offers": {
+                "@type": "Offer",
+                "priceCurrency": "KES",
+                "price": str(effective_price),
+                "availability": availability,
+            },
+        }
+
+        if obj.brand:
+            ld["brand"] = {"@type": "Brand", "name": obj.brand.name}
+
+        if obj.gtin:
+            ld["gtin"] = obj.gtin
+
+        images = list(obj.images.all())
+        if images:
+            from apps.catalog.images import preferred_image_url
+
+            image_urls = []
+            for img in images:
+                try:
+                    url = preferred_image_url(img.image.name, img.image_sources)
+                    if url:
+                        image_urls.append(url)
+                except ValueError:
+                    continue
+            if image_urls:
+                ld["image"] = image_urls
+
+        if obj.average_rating and obj.review_count:
+            ld["aggregateRating"] = {
+                "@type": "AggregateRating",
+                "ratingValue": str(obj.average_rating),
+                "reviewCount": obj.review_count,
+            }
+
+        return ld
 
 
 class ProductWriteSerializer(serializers.ModelSerializer):

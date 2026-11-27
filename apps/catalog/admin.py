@@ -6,6 +6,7 @@ from apps.catalog.models import (
     FacetDefinition,
     PricingTier,
     Product,
+    ProductFAQ,
     ProductImage,
     RelatedProduct,
 )
@@ -17,6 +18,16 @@ class PricingTierInline(admin.TabularInline):
     model = PricingTier
     extra = 1
     ordering = ["min_quantity"]
+
+
+class ProductFAQInline(admin.TabularInline):
+    """Inline editor for a product's customer FAQs."""
+
+    model = ProductFAQ
+    extra = 1
+    max_num = 20
+    ordering = ["position"]
+    fields = ("position", "question", "answer")
 
 
 class ProductImageInline(admin.TabularInline):
@@ -74,7 +85,7 @@ class ProductAdmin(admin.ModelAdmin):
     )
     search_fields = ("name", "slug", "sku", "barcode", "manufacturer_model_number")
     prepopulated_fields = {"slug": ("name",)}
-    inlines = [PricingTierInline, ProductImageInline]
+    inlines = [PricingTierInline, ProductImageInline, ProductFAQInline]
     readonly_fields = ("created_at", "updated_at")
 
 
@@ -84,6 +95,16 @@ class ProductImageAdmin(admin.ModelAdmin):
 
     list_display = ("product", "is_primary", "sort_order")
     list_filter = ("is_primary",)
+
+
+@admin.register(ProductFAQ)
+class ProductFAQAdmin(admin.ModelAdmin):
+    """Admin page for product-specific FAQs."""
+
+    list_display = ("product", "question", "position")
+    list_filter = ("product",)
+    search_fields = ("question", "answer")
+    ordering = ["product", "position"]
 
 
 @admin.register(RelatedProduct)

@@ -4,18 +4,21 @@ Split into public browse views (``AllowAny``) and admin CRUD views
 (``IsAdminUser``). Every view delegates to a service or selector function
 and stays thin: parse input, call service, return response.
 
-Public product search uses DRF's ``SearchFilter`` (``icontains`` matching)
-as an interim implementation. Full-text search with autocomplete and typo
-tolerance (Meilisearch/Typesense) is planned for a later step.
+Public product search uses the catalog search module: synonym expansion,
+index-backed trigram matching on PostgreSQL, and relevance tiers (exact name,
+then prefix, then best similarity across name, brand, category, and SKU). The
+suggestions endpoint returns a small, cached payload for the storefront
+autocomplete.
 """
 
 import hashlib
 
-from django.db.models import Count, Prefetch
+from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import extend_schema
 from rest_framework import generics, permissions
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -30,13 +33,19 @@ from apps.catalog.models import (
     ProductImage,
     RelatedProduct,
 )
+from apps.catalog.search import (
+    expand_search_terms,
+    filter_products_by_search,
+    normalize_search_term,
+    order_products_by_search,
+)
 from apps.catalog.selectors import (
     get_active_brands,
     get_active_categories,
     get_all_products_admin,
     get_product_by_slug,
     get_product_list_queryset,
-    order_by_search_rank,
+    order_by_popularity,
 )
 from apps.catalog.serializers import (
     BrandDetailSerializer,
@@ -44,14 +53,19 @@ from apps.catalog.serializers import (
     BrandWriteSerializer,
     CategoryDetailSerializer,
     CategoryListSerializer,
+    CategorySuggestionSerializer,
     CategoryWriteSerializer,
     FacetDefinitionSerializer,
     PricingTierSerializer,
     PricingTierWriteSerializer,
     ProductDetailSerializer,
+    ProductFAQListSerializer,
+    ProductFAQReplaceSerializer,
+    ProductFAQStaffSerializer,
     ProductImageSerializer,
     ProductImageWriteSerializer,
     ProductListSerializer,
+    ProductSuggestionSerializer,
     ProductWriteSerializer,
     RelatedProductSerializer,
     RelatedProductWriteSerializer,
@@ -80,6 +94,18 @@ def _hash_query_params(query_params):
     """
     normalized = sorted((key, sorted(values)) for key, values in query_params.lists())
     return hashlib.sha1(repr(normalized).encode()).hexdigest()
+
+
+class CatalogPagination(PageNumberPagination):
+    """Bounded page-size control for storefront catalog reads.
+
+    Allows small rows for home/category shelves (``page_size=8``) without
+    letting a caller request an unbounded list.
+    """
+
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 40
 
 
 class CategoryListView(APIView):
@@ -209,15 +235,15 @@ class BrandDetailView(generics.RetrieveAPIView):
 class ProductListView(generics.ListAPIView):
     """List active products with search, filtering, ordering, and faceted counts.
 
-    Uses DRF's ``SearchFilter`` (``icontains`` on name, description,
-    short_description, sku) for matching, with Postgres full-text rank
-    ordering applied on top when the database supports it. A dedicated
-    external engine with typo tolerance and autocomplete stays deferred
-    until catalog size and traffic justify the extra service.
+    Search is typo-tolerant and synonym-aware on PostgreSQL, backed by the
+    trigram indexes on name, SKU, and descriptions. ``ordering=popular``
+    orders by real view counts from the last 30 days; an explicit ordering
+    always wins over relevance.
 
     Faceted filtering validates query params against active
     ``FacetDefinition`` rows before applying JSON field lookups, preventing
-    arbitrary or unregistered spec keys from being used as filters.
+    arbitrary or unregistered spec keys from being used as filters. Base
+    filters also cover brand, price range, and in-stock only.
 
     The response includes a ``facets`` dict with aggregate counts per active
     facet, computed from the currently-filtered queryset.
@@ -231,9 +257,15 @@ class ProductListView(generics.ListAPIView):
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = "public_catalog"
     serializer_class = ProductListSerializer
+    pagination_class = CatalogPagination
     filterset_class = ProductFilter
-    search_fields = ["name", "description", "short_description", "sku"]
-    ordering_fields = ["name", "created_at", "average_rating", "review_count"]
+    ordering_fields = [
+        "name",
+        "created_at",
+        "average_rating",
+        "review_count",
+        "price",
+    ]
 
     def get_queryset(self):
         """Return the optimised active-product queryset."""
@@ -242,9 +274,10 @@ class ProductListView(generics.ListAPIView):
     def list(self, request, *args, **kwargs):
         """Override to include faceted counts in the response.
 
-        Applies validated facet filters to the base queryset, orders text
-        searches by relevance unless the caller asked for an explicit
-        ordering, then computes aggregate counts for all active facets.
+        Applies validated facet filters to the base queryset, applies the
+        typo-tolerant search filter, orders text searches by relevance unless
+        the caller asked for an explicit ordering, then computes aggregate
+        counts for all active facets.
 
         The whole serialized page (rows, facets, pagination envelope) is
         identical for every anonymous caller asking the same filters, so it
@@ -260,16 +293,27 @@ class ProductListView(generics.ListAPIView):
 
         queryset = self.filter_queryset(self.get_queryset())
         queryset = queryset.filter(validate_facet_params(request.query_params))
-        if request.query_params.get("search") and not request.query_params.get(
-            "ordering"
-        ):
-            queryset = order_by_search_rank(
-                queryset, request.query_params.get("search")
-            )
+        search_term = (request.query_params.get("search") or "").strip()
+        ordering = (request.query_params.get("ordering") or "").strip()
+        if search_term:
+            queryset = filter_products_by_search(queryset, search_term)
+        if ordering == "popular":
+            queryset = order_by_popularity(queryset)
+        elif search_term and not ordering:
+            queryset = order_products_by_search(queryset, search_term)
 
         page = self.paginate_queryset(queryset)
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
+            from apps.promotions.services import get_effective_prices
+
+            serializer = self.get_serializer(
+                page,
+                many=True,
+                context={
+                    **self.get_serializer_context(),
+                    "effective_prices": get_effective_prices(page),
+                },
+            )
             facet_counts = compute_facet_counts(queryset)
             response = self.get_paginated_response(serializer.data)
             response.data["facets"] = facet_counts
@@ -277,10 +321,87 @@ class ProductListView(generics.ListAPIView):
             return response
 
         capped = queryset[: getattr(self.paginator, "page_size", 20)]
-        serializer = self.get_serializer(capped, many=True)
+        from apps.promotions.services import get_effective_prices
+
+        products = list(capped)
+        serializer = self.get_serializer(
+            products,
+            many=True,
+            context={
+                **self.get_serializer_context(),
+                "effective_prices": get_effective_prices(products),
+            },
+        )
         facet_counts = compute_facet_counts(queryset)
         payload = {"results": serializer.data, "facets": facet_counts}
         catalog_cache.cache_product_list_page(generation, query_hash, payload)
+        return Response(payload)
+
+
+class ProductSuggestionView(APIView):
+    """Return a small autocomplete payload for the storefront search box.
+
+    The query must be at least two normalized characters; shorter input gets
+    an empty payload instead of a database query. Results are the top six
+    matching products (thumbnail and server price only) plus up to four
+    matching categories, cached briefly per normalized query. The endpoint has
+    its own throttle scope well above the catalog read budget because the
+    storefront calls it as the visitor types.
+    """
+
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "catalog_suggest"
+
+    @extend_schema(
+        operation_id="product_suggestions",
+        responses={200: dict},
+    )
+    def get(self, request):
+        """Return products and categories matching the query.
+
+        Args:
+            request: the GET request with the ``q`` query parameter.
+
+        Returns:
+            Response: ``200 OK`` with ``query``, ``products``, and
+                ``categories``. The product list is empty below the minimum
+                query length.
+        """
+        raw_query = (request.query_params.get("q") or "").strip()
+        normalized = normalize_search_term(raw_query)
+        if len(normalized) < 2:
+            return Response({"query": raw_query, "products": [], "categories": []})
+
+        cached = catalog_cache.get_cached_suggestions(normalized)
+        if cached is not None:
+            return Response(cached)
+
+        products = list(
+            order_products_by_search(
+                filter_products_by_search(get_product_list_queryset(), normalized),
+                normalized,
+            )[:6]
+        )
+
+        category_query = Q()
+        for term in expand_search_terms(normalized):
+            category_query |= Q(name__icontains=term)
+        categories = Category.objects.filter(category_query, is_active=True).order_by(
+            "sort_order", "name"
+        )[:4]
+        from apps.promotions.services import get_effective_prices
+
+        payload = {
+            "query": raw_query,
+            "products": ProductSuggestionSerializer(
+                products,
+                many=True,
+                context={"effective_prices": get_effective_prices(products)},
+            ).data,
+            "categories": CategorySuggestionSerializer(categories, many=True).data,
+        }
+        catalog_cache.cache_suggestions(normalized, payload)
         return Response(payload)
 
 
@@ -299,7 +420,9 @@ class ProductDetailView(generics.RetrieveAPIView):
 
     def get_object(self):
         """Return the active product by slug, or 404."""
-        product = get_product_by_slug(self.kwargs["slug"], include_inactive=False)
+        product = get_product_by_slug(
+            self.kwargs["slug"], include_inactive=False, include_faqs=True
+        )
         if product is None:
             from django.http import Http404
 
@@ -340,7 +463,7 @@ class ProductPriceView(APIView):
         """
         from apps.promotions.services import get_effective_price
 
-        product = get_product_by_slug(slug, include_inactive=False)
+        product = get_product_by_slug(slug, include_inactive=False, include_faqs=False)
         if product is None:
             from django.http import Http404
 
@@ -461,6 +584,71 @@ class AdminProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return get_all_products_admin()
+
+
+class AdminProductFAQView(APIView):
+    """Read or fully replace the ordered FAQ list for one product (staff only).
+
+    The parent product is taken from the URL, so a caller cannot write FAQs
+    to a product they did not address. Replacement is atomic: validation
+    happens before any row is deleted.
+    """
+
+    permission_classes = [IsStaffUser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "admin"
+
+    def get_product(self):
+        """Return the parent product from the URL, or 404.
+
+        Returns:
+            Product: the addressed product.
+        """
+        return get_object_or_404(Product, pk=self.kwargs["product_pk"])
+
+    @extend_schema(
+        operation_id="admin_product_faq_list",
+        responses={200: ProductFAQListSerializer},
+    )
+    def get(self, request, product_pk):
+        """Return the product's FAQs in display order.
+
+        Args:
+            request: the GET request.
+            product_pk (int): the parent product primary key.
+
+        Returns:
+            Response: ``200 OK`` with ``{"faqs": [...]}``.
+        """
+        product = self.get_product()
+        faqs = product.faqs.all()
+        return Response({"faqs": ProductFAQStaffSerializer(faqs, many=True).data})
+
+    @extend_schema(
+        operation_id="admin_product_faq_replace",
+        request=ProductFAQReplaceSerializer,
+        responses={200: ProductFAQListSerializer},
+    )
+    def put(self, request, product_pk):
+        """Replace all FAQs for the product.
+
+        Args:
+            request: the PUT request with a ``faqs`` list.
+            product_pk (int): the parent product primary key.
+
+        Returns:
+            Response: ``200 OK`` with the saved FAQ list.
+        """
+        product = self.get_product()
+        serializer = ProductFAQReplaceSerializer(
+            data=request.data, context={"product": product}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        from apps.catalog.services import replace_product_faqs
+
+        faqs = replace_product_faqs(product, serializer.validated_data["faqs"])
+        return Response({"faqs": ProductFAQStaffSerializer(faqs, many=True).data})
 
 
 class AdminProductImageListCreateView(generics.ListCreateAPIView):

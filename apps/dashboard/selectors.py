@@ -27,7 +27,7 @@ from django.db.models import (
     Q,
     Sum,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 
 from apps.analytics.selectors import (
@@ -179,27 +179,63 @@ def inquiry_conversion_dashboard(from_time=None, to_time=None):
     """Return the inquiry-conversion funnel widget for the period.
 
     Wraps the shared inquiry aggregate and adds funnel rates: contacted and
-    converted shares of total hand-offs, so staff see how much of the
-    WhatsApp/email queue turns into real orders.
+    converted shares of total hand-offs, plus the daily WhatsApp
+    click-to-message rate (excluding spam).
 
     Args:
         from_time (datetime | None): inclusive lower bound, or None.
         to_time (datetime | None): inclusive upper bound, or None.
 
     Returns:
-        dict: the inquiry aggregate plus a ``funnel`` rate breakdown.
+        dict: the inquiry aggregate plus ``funnel`` and
+            ``daily_click_to_message`` breakdowns.
     """
     aggregate = inquiries_summary(from_time, to_time)
     total = aggregate["total"]
     by_status = {row["status"]: row["count"] for row in aggregate["by_status"]}
     contacted = by_status.get("contacted", 0) + by_status.get("converted", 0)
+
+    whatsapp_qs = apply_period(
+        Inquiry.objects.filter(channel="whatsapp").exclude(status="spam"),
+        from_time,
+        to_time,
+        field="created_at",
+    )
+    received_q = Q(status__in=("message_received", "contacted", "converted")) | Q(
+        message_received_at__isnull=False
+    )
+    daily_rows = (
+        whatsapp_qs.annotate(day=TruncDate("created_at"))
+        .values("day")
+        .annotate(
+            clicked=Count("pk"),
+            message_received=Count("pk", filter=received_q),
+        )
+        .order_by("day")
+    )
+    daily_click_to_message = [
+        {
+            "date": row["day"].isoformat() if row["day"] else "",
+            "clicked": row["clicked"],
+            "message_received": row["message_received"],
+            "rate_percent": _as_percent(row["message_received"], row["clicked"]),
+        }
+        for row in daily_rows
+    ]
+    wa_total = sum(row["clicked"] for row in daily_click_to_message)
+    wa_received = sum(row["message_received"] for row in daily_click_to_message)
+
     return {
         **aggregate,
         "funnel": {
             "contacted": contacted,
             "contacted_rate_percent": _as_percent(contacted, total),
             "converted_rate_percent": aggregate["conversion_rate_percent"],
+            "whatsapp_clicked": wa_total,
+            "whatsapp_received": wa_received,
+            "click_to_message_rate_percent": _as_percent(wa_received, wa_total),
         },
+        "daily_click_to_message": daily_click_to_message,
     }
 
 
@@ -669,7 +705,7 @@ def alerts():
         )
 
     stale_inquiries = Inquiry.objects.filter(
-        status="new", created_at__lt=now - _INQUIRY_STALE_AGE
+        status__in=("new", "clicked"), created_at__lt=now - _INQUIRY_STALE_AGE
     ).order_by("created_at")
     stale_inquiry_count = stale_inquiries.count()
     if stale_inquiry_count:

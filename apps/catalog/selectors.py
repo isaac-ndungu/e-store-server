@@ -6,10 +6,16 @@ reference for how catalog data is fetched. Every queryset uses
 queries.
 """
 
-from django.db import connection
-from django.db.models import Count, Prefetch
+from datetime import timedelta
 
-from apps.catalog.models import Brand, Category, Product, ProductImage
+from django.db.models import Count, Prefetch, Q
+from django.utils import timezone
+
+from apps.catalog.models import Brand, Category, Product, ProductImage, RelatedProduct
+
+# Popularity is measured over a rolling window so a product that was viewed
+# heavily once does not stay pinned to the top forever.
+POPULARITY_WINDOW_DAYS = 30
 
 
 def get_active_categories():
@@ -86,7 +92,7 @@ def get_product_list_queryset():
     )
 
 
-def get_product_by_slug(slug, include_inactive=False):
+def get_product_by_slug(slug, include_inactive=False, include_faqs=True):
     """Return a product by slug with all detail prefetches, or ``None``.
 
     For public endpoints, ``include_inactive`` is ``False`` so inactive or
@@ -96,6 +102,8 @@ def get_product_by_slug(slug, include_inactive=False):
     Args:
         slug (str): the product slug.
         include_inactive (bool): whether to include inactive products.
+        include_faqs (bool): whether to prefetch the product's FAQs. Callers
+            that do not serialize FAQs skip that query.
 
     Returns:
         Product | None: the matching product with prefetched relations.
@@ -107,7 +115,24 @@ def get_product_by_slug(slug, include_inactive=False):
     ).prefetch_related(
         "pricing_tiers",
         "images",
+        Prefetch(
+            "related_from",
+            queryset=RelatedProduct.objects.select_related(
+                "related_product__category",
+                "related_product__brand",
+            )
+            .prefetch_related(
+                Prefetch(
+                    "related_product__images",
+                    queryset=ProductImage.objects.filter(is_primary=True),
+                    to_attr="primary_images",
+                )
+            )
+            .order_by("sort_order"),
+        ),
     )
+    if include_faqs:
+        qs = qs.prefetch_related("faqs")
     if not include_inactive:
         qs = qs.filter(is_active=True, is_discontinued=False)
     return qs.filter(slug=slug).first()
@@ -132,35 +157,25 @@ def get_all_products_admin():
     )
 
 
-def order_by_search_rank(queryset, term):
-    """Order a filtered product queryset by full-text relevance.
+def order_by_popularity(queryset):
+    """Order products by real view counts from the last 30 days.
 
-    On PostgreSQL the queryset is annotated with a weighted ``SearchRank``
-    (name weighted above sku/short description, description lowest) and
-    ordered best match first. On any other backend the queryset is
-    returned unchanged so tests running on SQLite keep passing. Filtering
-    itself stays with DRF's ``SearchFilter``; this only improves ordering.
+    Uses the durable ``ProductViewEvent`` history (exposed through the
+    ``view_events`` reverse relation) rather than inventing a popularity
+    score. Ties fall back to review volume and recency so a catalog with no
+    view history still has a stable order.
 
     Args:
-        queryset: the already-filtered product queryset.
-        term (str): the raw ``search`` query param.
+        queryset (QuerySet): the already-filtered product queryset.
 
     Returns:
-        QuerySet: the queryset ordered by relevance when supported.
+        QuerySet: the queryset annotated with ``view_count`` and ordered most
+            viewed first.
     """
-    if not term or not term.strip() or connection.vendor != "postgresql":
-        return queryset
-    try:
-        from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
-    except ImportError:
-        return queryset
-    vector = (
-        SearchVector("name", weight="A")
-        + SearchVector("sku", weight="B")
-        + SearchVector("short_description", weight="B")
-        + SearchVector("description", weight="C")
-    )
-    query = SearchQuery(term.strip())
-    return queryset.annotate(search_rank=SearchRank(vector, query)).order_by(
-        "-search_rank", "-created_at"
-    )
+    since = timezone.now() - timedelta(days=POPULARITY_WINDOW_DAYS)
+    return queryset.annotate(
+        view_count=Count(
+            "view_events",
+            filter=Q(view_events__created_at__gte=since),
+        )
+    ).order_by("-view_count", "-review_count", "-created_at")

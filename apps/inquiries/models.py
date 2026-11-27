@@ -9,7 +9,51 @@ the staff intake view, which gives reporting a click-to-order conversion
 funnel.
 """
 
+import re
+import secrets
+
 from django.db import models
+
+REFERENCE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+SHORT_REFERENCE_PATTERN = re.compile(
+    rf"^VF-?([{REFERENCE_ALPHABET}]{{4,8}})$"
+)
+
+
+def generate_reference_code():
+    """Generate a unique short reference code such as ``VF-4821``.
+
+    Uses an unambiguous character set (excluding ``0``, ``O``, ``1``, ``I``,
+    ``L``) so staff and customers never misread characters over chat.
+
+    Returns:
+        str: a unique ``VF-XXXX`` reference code.
+    """
+    for length in (4, 4, 4, 5, 6):
+        suffix = "".join(secrets.choice(REFERENCE_ALPHABET) for _ in range(length))
+        code = f"VF-{suffix}"
+        if not Inquiry.objects.filter(reference_code=code).exists():
+            return code
+    suffix = "".join(secrets.choice(REFERENCE_ALPHABET) for _ in range(8))
+    return f"VF-{suffix}"
+
+
+def normalize_short_reference(value):
+    """Normalize a staff-entered short reference code to ``VF-XXXX`` form.
+
+    Args:
+        value: raw input string (for example ``vf 4k8p`` or ``VF-4K8P``).
+
+    Returns:
+        str | None: normalized ``VF-XXXX`` code, or ``None`` when invalid.
+    """
+    if value is None:
+        return None
+    compact = re.sub(r"[\s-]+", "", str(value).strip().upper())
+    match = SHORT_REFERENCE_PATTERN.match(compact)
+    if not match:
+        return None
+    return f"VF-{match.group(1)}"
 
 
 class Inquiry(models.Model):
@@ -23,10 +67,9 @@ class Inquiry(models.Model):
     addressable for staff search and the order-intake email. ``converted_order``
     is set when staff turn the conversation into a real order.
 
-    ``reference`` (``INQ-000123``) is the code the storefront embeds in the
-    pre-filled WhatsApp/email message so staff can match an incoming chat to
-    its queue row instead of eyeballing cart contents. It derives from the
-    pk, so no extra column or uniqueness machinery is needed.
+    ``reference_code`` (``VF-4K8P``) is a short, unique code embedded in the
+    pre-filled WhatsApp/email message and page link so staff can match an
+    incoming chat to its queue row.
     """
 
     CHANNEL_CHOICES = (
@@ -34,10 +77,13 @@ class Inquiry(models.Model):
         ("email", "Email"),
     )
     STATUS_CHOICES = (
+        ("clicked", "Clicked"),
+        ("message_received", "Message received"),
         ("new", "New"),
         ("contacted", "Contacted"),
         ("converted", "Converted"),
         ("abandoned", "Abandoned"),
+        ("spam", "Spam"),
     )
     EMAIL_STATUS_CHOICES = (
         ("not_required", "Not required"),
@@ -49,6 +95,33 @@ class Inquiry(models.Model):
     REFERENCE_PREFIX = "INQ"
 
     channel = models.CharField(max_length=10, choices=CHANNEL_CHOICES)
+    reference_code = models.CharField(
+        max_length=16,
+        unique=True,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Short unique code (e.g. VF-4K8P) embedded in hand-off messages.",
+    )
+    idempotency_key = models.CharField(
+        max_length=128,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text="Client-supplied idempotency key for tap deduplication.",
+    )
+    recovery_token = models.CharField(
+        max_length=64,
+        blank=True,
+        default="",
+        help_text="Opaque token authorizing post-tap recovery contact updates.",
+    )
+    page_url = models.URLField(
+        max_length=500,
+        blank=True,
+        default="",
+        help_text="Storefront page URL where the visitor initiated the hand-off.",
+    )
     cart_snapshot = models.JSONField(default=list)
     contact_hint = models.CharField(max_length=255, blank=True)
     customer_name = models.CharField(max_length=120, blank=True, default="")
@@ -70,7 +143,12 @@ class Inquiry(models.Model):
         default="",
         help_text="Optional instructions the visitor added with the inquiry.",
     )
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="new")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="clicked")
+    message_received_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When staff confirmed the customer's chat message arrived.",
+    )
     email_status = models.CharField(
         max_length=20,
         choices=EMAIL_STATUS_CHOICES,
@@ -132,13 +210,23 @@ class Inquiry(models.Model):
         """Return a compact label with channel and status."""
         return f"Inquiry #{self.pk} ({self.channel}/{self.status})"
 
+    def save(self, *args, **kwargs):
+        """Ensure every inquiry has a unique short reference code and recovery token."""
+        if not self.reference_code:
+            self.reference_code = generate_reference_code()
+        if not self.recovery_token:
+            self.recovery_token = secrets.token_urlsafe(24)
+        super().save(*args, **kwargs)
+
     @property
     def reference(self):
         """Return the customer-facing reference code for this row.
 
         Returns:
-            str: ``INQ-000123`` once saved, else an empty string.
+            str: ``VF-XXXX`` (or legacy ``INQ-000123`` if unmigrated).
         """
+        if self.reference_code:
+            return self.reference_code
         if self.pk is None:
             return ""
         return f"{self.REFERENCE_PREFIX}-{self.pk:06d}"

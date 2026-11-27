@@ -9,13 +9,20 @@ callers.
 """
 
 import io
+import json
+from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.core.cache import cache
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.db import connection
+from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.text import slugify
 from PIL import Image
 from rest_framework import status
@@ -29,14 +36,17 @@ from apps.catalog.models import (
     FacetDefinition,
     PricingTier,
     Product,
+    ProductFAQ,
     ProductImage,
     RelatedProduct,
 )
+from apps.social_proof.models import ProductViewEvent
 
 URLS = {
     "categories": reverse("api:catalog:category-list"),
     "brands": reverse("api:catalog:brand-list"),
     "products": reverse("api:catalog:product-list"),
+    "suggestions": reverse("api:catalog:product-suggestions"),
     "admin_categories": reverse("api:catalog:admin-category-list-create"),
     "admin_brands": reverse("api:catalog:admin-brand-list-create"),
     "admin_products": reverse("api:catalog:admin-product-list-create"),
@@ -486,6 +496,107 @@ class ProductListBrowseTests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["slug"], "fridge-300l")
 
+    def test_blank_search_returns_everything(self):
+        """A whitespace-only search is treated as no search at all."""
+        response = self.client.get(URLS["products"], {"search": "   "})
+        self.assertEqual(response.data["count"], 3)
+
+    def test_search_matches_brand_name(self):
+        """A brand name search returns that brand's products."""
+        response = self.client.get(URLS["products"], {"search": "samsung"})
+        self.assertEqual(response.data["count"], 3)
+
+    def test_search_synonyms(self):
+        """Common synonyms match the catalog's preferred wording."""
+        _make_product(
+            name="Refrigerator 500L",
+            slug="refrigerator-500l",
+            sku="REF-500",
+            description="Cold storage for a large household.",
+        )
+        response = self.client.get(URLS["products"], {"search": "fridge"})
+        slugs = {p["slug"] for p in response.data["results"]}
+        self.assertIn("refrigerator-500l", slugs)
+
+    def test_search_tolerates_typos_on_postgres(self):
+        """A one-character typo still finds the product on PostgreSQL."""
+        if connection.vendor != "postgresql":
+            self.skipTest("Trigram matching applies only on PostgreSQL.")
+        response = self.client.get(URLS["products"], {"search": "frige"})
+        slugs = {p["slug"] for p in response.data["results"]}
+        self.assertIn("fridge-200l", slugs)
+
+    def test_search_filter_is_backed_by_trigram_indexes_on_postgres(self):
+        """Fuzzy search uses the ``%`` operator and has GIN indexes to serve it."""
+        if connection.vendor != "postgresql":
+            self.skipTest("Trigram indexes exist only on PostgreSQL.")
+        from apps.catalog.search import filter_products_by_search
+
+        sql = str(filter_products_by_search(Product.objects.all(), "frige").query)
+        self.assertIn("%", sql)
+
+        with connection.cursor() as cursor:
+            constraints = connection.introspection.get_constraints(
+                cursor, Product._meta.db_table
+            )
+        for index_name in (
+            "prod_name_trgm_idx",
+            "prod_sku_trgm_idx",
+            "prod_short_desc_trgm_idx",
+            "prod_desc_trgm_idx",
+        ):
+            self.assertIn(index_name, constraints)
+
+    def test_filter_in_stock(self):
+        """``in_stock=true`` hides out-of-stock products; false does not."""
+        Product.objects.filter(slug="washer").update(stock_status="out_of_stock")
+        in_stock = self.client.get(URLS["products"], {"in_stock": "true"})
+        self.assertEqual(in_stock.data["count"], 2)
+        all_products = self.client.get(URLS["products"], {"in_stock": "false"})
+        self.assertEqual(all_products.data["count"], 3)
+
+    def test_filter_by_price_range(self):
+        """``price_min`` and ``price_max`` bound the base price."""
+        Product.objects.filter(slug="washer").update(price=Decimal("30000.00"))
+        Product.objects.filter(slug="fridge-300l").update(price=Decimal("60000.00"))
+        response = self.client.get(
+            URLS["products"], {"price_min": "40000", "price_max": "50000"}
+        )
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["slug"], "fridge-200l")
+
+    def test_order_by_popularity_uses_recent_views(self):
+        """Popular ordering counts recent durable view events only."""
+        from django.utils import timezone
+
+        washer = Product.objects.get(slug="washer")
+        fridge = Product.objects.get(slug="fridge-200l")
+        stale = Product.objects.get(slug="fridge-300l")
+        for index in range(3):
+            ProductViewEvent.objects.create(
+                product=washer, session_key=f"recent-{index}"
+            )
+        ProductViewEvent.objects.create(product=fridge, session_key="recent-fridge")
+        old_date = timezone.now() - timedelta(days=60)
+        for index in range(2):
+            event = ProductViewEvent.objects.create(
+                product=stale, session_key=f"stale-{index}"
+            )
+            ProductViewEvent.objects.filter(pk=event.pk).update(created_at=old_date)
+
+        response = self.client.get(URLS["products"], {"ordering": "popular"})
+        self.assertEqual(
+            [p["slug"] for p in response.data["results"]],
+            ["washer", "fridge-200l", "fridge-300l"],
+        )
+
+    def test_page_size_is_bounded(self):
+        """Callers can request small pages but not unbounded ones."""
+        small = self.client.get(URLS["products"], {"page_size": 2})
+        self.assertEqual(len(small.data["results"]), 2)
+        huge = self.client.get(URLS["products"], {"page_size": 500})
+        self.assertEqual(len(huge.data["results"]), 3)
+
     def test_inactive_products_excluded_from_list(self):
         """Inactive and discontinued products do not appear in the list."""
         _make_product(name="Hidden", slug="hidden", sku="HID-1", is_active=False)
@@ -519,11 +630,22 @@ class ProductListBrowseTests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["slug"], "blender")
 
-    def test_ordering_by_price_is_not_allowed(self):
-        """Price ordering is not offered on the list."""
-        response = self.client.get(URLS["products"], {"ordering": "price"})
-        # Unknown orderings are silently ignored, not an error.
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+    def test_ordering_by_price(self):
+        """Products can be ordered by base price in either direction."""
+        Product.objects.filter(slug="washer").update(price=Decimal("30000.00"))
+        Product.objects.filter(slug="fridge-300l").update(price=Decimal("60000.00"))
+
+        ascending = self.client.get(URLS["products"], {"ordering": "price"})
+        self.assertEqual(
+            [p["slug"] for p in ascending.data["results"]],
+            ["washer", "fridge-200l", "fridge-300l"],
+        )
+
+        descending = self.client.get(URLS["products"], {"ordering": "-price"})
+        self.assertEqual(
+            [p["slug"] for p in descending.data["results"]],
+            ["fridge-300l", "fridge-200l", "washer"],
+        )
 
     def test_ordering_by_name(self):
         """Products can be ordered by name."""
@@ -541,41 +663,26 @@ class ProductListBrowseTests(APITestCase):
         names = [p["name"] for p in response.data["results"]]
         self.assertEqual(names, sorted(names))
 
-    def test_search_rank_helper_passes_through_off_postgres(self):
-        """Off PostgreSQL the rank helper returns the queryset unchanged."""
-        from django.db import connection
+    def test_search_rank_puts_exact_name_first_on_postgres(self):
+        """The exact name match ranks above a similar sibling product."""
+        if connection.vendor != "postgresql":
+            self.skipTest("Relevance ranking applies only on PostgreSQL.")
+        response = self.client.get(URLS["products"], {"search": "Fridge 300L"})
+        self.assertEqual(response.data["results"][0]["slug"], "fridge-300l")
 
-        from apps.catalog.selectors import order_by_search_rank
+    def test_search_rank_is_noop_off_postgres(self):
+        """Off PostgreSQL the relevance helper leaves the order unchanged."""
+        from apps.catalog.search import order_products_by_search
 
         if connection.vendor == "postgresql":
             self.skipTest("Pass-through applies only off PostgreSQL.")
         queryset = Product.objects.all()
         self.assertEqual(
-            list(order_by_search_rank(queryset, "Fridge").values_list("pk", flat=True)),
-            list(queryset.values_list("pk", flat=True)),
-        )
-        self.assertEqual(
-            list(order_by_search_rank(queryset, "").values_list("pk", flat=True)),
-            list(queryset.values_list("pk", flat=True)),
-        )
-
-    def test_search_rank_helper_orders_by_relevance_on_postgres(self):
-        """On PostgreSQL matching products rank above non-matching ones."""
-        from django.db import connection
-
-        from apps.catalog.selectors import order_by_search_rank
-
-        if connection.vendor != "postgresql":
-            self.skipTest("Relevance ranking applies only on PostgreSQL.")
-        queryset = Product.objects.all()
-        ranked_pks = list(
-            order_by_search_rank(queryset, "Fridge").values_list("pk", flat=True)
-        )
-        washer_pk = Product.objects.get(slug="washer").pk
-        self.assertEqual(ranked_pks[-1], washer_pk)
-        self.assertEqual(len(ranked_pks), 3)
-        self.assertEqual(
-            list(order_by_search_rank(queryset, "").values_list("pk", flat=True)),
+            list(
+                order_products_by_search(queryset, "Fridge").values_list(
+                    "pk", flat=True
+                )
+            ),
             list(queryset.values_list("pk", flat=True)),
         )
 
@@ -610,11 +717,13 @@ class ProductListCacheTests(APITestCase):
             category=self.category,
             brand=self.brand,
         )
+        laundry = _make_category(name="Laundry", slug="laundry")
         _make_product(
             name="Washer",
             slug="washer",
             sku="WSH-100",
-            category=self.category,
+            description="A washing machine.",
+            category=laundry,
             brand=self.brand,
         )
 
@@ -644,7 +753,7 @@ class ProductListCacheTests(APITestCase):
 
     def test_distinct_filters_cached_separately(self):
         """Different filter combinations do not share a cached page."""
-        other_category = _make_category(name="Laundry", slug="laundry")
+        other_category = _make_category(name="Cooking", slug="cooking")
         plain = self.client.get(URLS["products"])
         filtered = self.client.get(URLS["products"], {"category": other_category.id})
         self.assertEqual(plain.data["count"], 2)
@@ -687,6 +796,75 @@ class ProductListCacheTests(APITestCase):
         )
         second = self.client.get(URLS["products"])
         self.assertIn("Capacity", second.data["facets"])
+
+
+class ProductSuggestionTests(APITestCase):
+    """Exercises the storefront search autocomplete endpoint."""
+
+    def setUp(self):
+        cache.clear()
+        self.category = _make_category(name="Refrigerators", slug="refrigerators")
+        self.brand = _make_brand()
+        _make_product(
+            name="Fridge 200L",
+            slug="fridge-200l",
+            sku="FRG-200",
+            category=self.category,
+            brand=self.brand,
+        )
+        laundry = _make_category(name="Laundry", slug="laundry")
+        _make_product(
+            name="Washer",
+            slug="washer",
+            sku="WSH-100",
+            description="A washing machine.",
+            category=laundry,
+        )
+
+    def test_short_query_returns_empty_payload(self):
+        """Queries under two normalized characters do not hit the catalog."""
+        response = self.client.get(URLS["suggestions"], {"q": "f"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["products"], [])
+        self.assertEqual(response.data["categories"], [])
+
+    def test_matching_products_and_categories(self):
+        """Products and categories matching the query are both returned."""
+        response = self.client.get(URLS["suggestions"], {"q": "fridge"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["query"], "fridge")
+        self.assertEqual(
+            {p["slug"] for p in response.data["products"]}, {"fridge-200l"}
+        )
+        self.assertEqual(
+            {c["slug"] for c in response.data["categories"]}, {"refrigerators"}
+        )
+        product = response.data["products"][0]
+        self.assertEqual(
+            set(product),
+            {
+                "id",
+                "name",
+                "slug",
+                "price",
+                "compare_at_price",
+                "primary_image",
+                "brand_name",
+            },
+        )
+
+    def test_suggestion_payload_is_cached(self):
+        """A repeated query is served from the short-lived suggestion cache."""
+        first = self.client.get(URLS["suggestions"], {"q": "fridge"})
+        with self.assertNumQueries(0):
+            second = self.client.get(URLS["suggestions"], {"q": "fridge"})
+        self.assertEqual(second.data, first.data)
+
+    def test_suggestion_uses_own_throttle_scope(self):
+        """The autocomplete endpoint stays off the stricter catalog budget."""
+        from apps.catalog.views import ProductSuggestionView
+
+        self.assertEqual(ProductSuggestionView.throttle_scope, "catalog_suggest")
 
 
 class ProductDetailBrowseTests(APITestCase):
@@ -875,6 +1053,51 @@ class FacetSearchTests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["slug"], "fac-fridge-200")
 
+    def test_product_list_includes_effective_server_price(self):
+        """List rows include the effective price after active discounts."""
+        from apps.promotions.models import Discount
+
+        Discount.objects.create(
+            name="Catalog sale",
+            scope="sitewide",
+            discount_type="percent",
+            value=Decimal("10.00"),
+            starts_at=timezone.now() - timedelta(days=1),
+        )
+        cache.clear()
+        response = self.client.get(URLS["products"])
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        prices = {
+            item["slug"]: item["effective_price"] for item in response.data["results"]
+        }
+        self.assertEqual(prices["fridge-200l"], "45000.00")
+
+    def test_discount_change_invalidates_cached_product_list_prices(self):
+        """A new discount retires product-list pages with stale effective prices."""
+        from apps.promotions.models import Discount
+
+        first = self.client.get(URLS["products"])
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        first_item = first.data["results"][0]
+        base_price = Product.objects.get(slug=first_item["slug"]).price
+        self.assertEqual(first_item["effective_price"], str(base_price))
+        Discount.objects.create(
+            name="Catalog sale",
+            scope="sitewide",
+            discount_type="percent",
+            value=Decimal("10.00"),
+            starts_at=timezone.now() - timedelta(days=1),
+        )
+        second = self.client.get(URLS["products"])
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        second_prices = {
+            item["slug"]: item["effective_price"] for item in second.data["results"]
+        }
+        self.assertEqual(
+            second_prices[first_item["slug"]],
+            str(base_price * Decimal("0.90")),
+        )
+
     def test_unknown_facet_param_is_ignored(self):
         """An unrecognised facet param silently does not affect results."""
         response = self.client.get(URLS["products"], {"not_a_facet": "x"})
@@ -891,12 +1114,22 @@ class FacetSearchTests(APITestCase):
                 specs={"capacity": f"{600 + i}L"},
                 price="1000.00",
             )
+        from apps.promotions.models import Discount
+
+        Discount.objects.create(
+            name="Catalog sale",
+            scope="sitewide",
+            discount_type="percent",
+            value=Decimal("10.00"),
+            starts_at=timezone.now() - timedelta(days=1),
+        )
+        cache.clear()
         with CaptureQueriesContext(connection) as ctx:
             response = self.client.get(URLS["products"])
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         # Main query, image prefetch, pagination count, facet-definition
         # lookup, and one grouped aggregate per active facet (3 here).
-        self.assertLessEqual(len(ctx.captured_queries), 10)
+        self.assertLessEqual(len(ctx.captured_queries), 14)
         self.assertEqual(response.data["facets"]["Capacity"]["611L"], 1)
 
 
@@ -1832,7 +2065,7 @@ class ImageProcessingTests(APITestCase):
 
     def test_upload_generates_responsive_variants(self):
         """A large upload is processed into width/format variants."""
-        from apps.catalog.images import PROCESSED_IMAGE_WIDTHS
+        from apps.catalog.images import PROCESSED_IMAGE_WIDTHS, generate_variants
 
         url = reverse(
             "api:catalog:admin-product-image-list-create", args=[self.product.pk]
@@ -1849,6 +2082,14 @@ class ImageProcessingTests(APITestCase):
         self.assertIn("webp", formats)
         for source in image.image_sources:
             self.assertTrue(source["url"].startswith("/media/"))
+            self.assertEqual(
+                source["height"],
+                round(1200 * source["width"] / 1600),
+            )
+        self.assertEqual(
+            image.image_sources,
+            generate_variants(image.image.name),
+        )
 
         detail_url = reverse(
             "api:catalog:admin-product-image-detail",
@@ -1858,6 +2099,123 @@ class ImageProcessingTests(APITestCase):
         self.assertEqual(detail.status_code, status.HTTP_200_OK)
         self.assertTrue(detail.data["default_image"].endswith("--640w.webp"))
         self.assertTrue(all("--" in s["url"] for s in detail.data["srcset"]))
+        self.assertTrue(all("height" in source for source in detail.data["srcset"]))
+
+    def test_small_upload_is_not_upscaled(self):
+        """Only widths no larger than the source are generated."""
+        url = reverse(
+            "api:catalog:admin-product-image-list-create", args=[self.product.pk]
+        )
+        response = self.client.post(
+            url,
+            {"image": _png_upload(400, 800)},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        image = ProductImage.objects.get()
+        self.assertEqual({source["width"] for source in image.image_sources}, {320})
+        self.assertTrue(all(source["height"] == 640 for source in image.image_sources))
+
+    def test_forced_regeneration_is_idempotent(self):
+        """Forced runs refresh metadata without duplicating output files."""
+        from apps.catalog.tasks import generate_product_image_variants
+
+        product_image = ProductImage.objects.create(
+            product=self.product,
+            image=_png_upload(1600, 1200),
+            image_sources=[
+                {
+                    "width": 640,
+                    "format": "webp",
+                    "url": "/media/legacy--640w.webp",
+                }
+            ],
+        )
+
+        first_count = generate_product_image_variants.run(
+            product_image.pk,
+            product_image.image.name,
+            force=True,
+        )
+        product_image.refresh_from_db()
+        first_sources = product_image.image_sources
+        second_count = generate_product_image_variants.run(
+            product_image.pk,
+            product_image.image.name,
+            force=True,
+        )
+        product_image.refresh_from_db()
+
+        self.assertEqual(first_count, second_count)
+        self.assertEqual(first_sources, product_image.image_sources)
+        self.assertTrue(
+            all("height" in source for source in product_image.image_sources)
+        )
+
+    def test_delete_removes_original_and_current_variants(self):
+        """Deleting an image clears its original and fingerprinted variants."""
+        from django.core.files.storage import default_storage
+
+        from apps.catalog.images import delete_image_files, generate_variants
+
+        product_image = ProductImage.objects.create(
+            product=self.product,
+            image=_png_upload(1600, 1200),
+        )
+        variants = generate_variants(product_image.image.name)
+        self.assertTrue(variants)
+        variant_names = [source["url"].split("/media/", 1)[1] for source in variants]
+        self.assertTrue(all(default_storage.exists(name) for name in variant_names))
+
+        delete_image_files(product_image.image.name)
+
+        self.assertFalse(default_storage.exists(product_image.image.name))
+        self.assertFalse(any(default_storage.exists(name) for name in variant_names))
+
+    @mock.patch("apps.catalog.tasks.generate_product_image_variants.delay")
+    def test_regeneration_command_queues_existing_images(self, enqueue):
+        """The command queues forced regeneration without changing image rows."""
+        product_image = ProductImage.objects.create(
+            product=self.product,
+            image=_png_upload(),
+            image_sources=[
+                {
+                    "width": 640,
+                    "height": 480,
+                    "format": "webp",
+                    "url": "/media/old--640w.webp",
+                }
+            ],
+        )
+
+        call_command(
+            "regenerate_product_image_variants",
+            "--product-id",
+            str(self.product.pk),
+        )
+
+        enqueue.assert_called_once_with(
+            product_image.pk,
+            product_image.image.name,
+            force=True,
+        )
+
+    @mock.patch("apps.catalog.tasks.generate_product_image_variants.delay")
+    def test_regeneration_command_dry_run_does_not_enqueue(self, enqueue):
+        """A dry run reports candidates without sending Celery tasks."""
+        ProductImage.objects.create(
+            product=self.product,
+            image=_png_upload(),
+        )
+
+        output = io.StringIO()
+        call_command("regenerate_product_image_variants", "--dry-run", stdout=output)
+
+        enqueue.assert_not_called()
+        self.assertIn(
+            "Would queue variant regeneration for 1 image(s)", output.getvalue()
+        )
 
     def test_primary_image_in_list_uses_processed_variant(self):
         """The public list serves the processed variant, not the original."""
@@ -2009,6 +2367,387 @@ class CategoryIntegrityTests(APITestCase):
         self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class ProductFAQTests(APITestCase):
+    """Exercises product-specific FAQ reads, replacement, and validation."""
+
+    def setUp(self):
+        cache.clear()
+        _make_admin()
+        _login(self.client)
+        self.product = _make_product()
+        self.url = reverse("api:catalog:admin-product-faq", args=[self.product.pk])
+
+    def _faq_payload(self, *rows):
+        """Build a replace payload from ``(question, answer)`` pairs."""
+        return {
+            "faqs": [
+                {"question": question, "answer": answer} for question, answer in rows
+            ]
+        }
+
+    def test_public_detail_includes_ordered_faqs(self):
+        """Public product detail returns FAQs in position order."""
+        ProductFAQ.objects.create(
+            product=self.product,
+            question="Second question?",
+            answer="The second answer is here.",
+            position=1,
+        )
+        ProductFAQ.objects.create(
+            product=self.product,
+            question="First question?",
+            answer="The first answer is here.",
+            position=0,
+        )
+        detail_url = reverse("api:catalog:product-detail", args=[self.product.slug])
+        response = self.client.get(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            [faq["question"] for faq in response.data["faqs"]],
+            ["First question?", "Second question?"],
+        )
+        self.assertEqual(set(response.data["faqs"][0]), {"id", "question", "answer"})
+
+    def test_public_detail_returns_empty_faq_list(self):
+        """A product without FAQs still exposes an empty list."""
+        detail_url = reverse("api:catalog:product-detail", args=[self.product.slug])
+        response = self.client.get(detail_url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["faqs"], [])
+
+    def test_anonymous_cannot_read_staff_faqs(self):
+        """The staff FAQ endpoint requires authentication."""
+        self.client.credentials()
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_customer_cannot_read_staff_faqs(self):
+        """A non-staff user cannot read the staff FAQ endpoint."""
+        _make_user()
+        self.client.force_authenticate(user=User.objects.get(email="buyer@example.com"))
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_staff_can_read_faqs(self):
+        """Staff receive the ordered FAQ list with positions."""
+        ProductFAQ.objects.create(
+            product=self.product,
+            question="Is delivery free?",
+            answer="Delivery is free within Nairobi.",
+            position=0,
+        )
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["faqs"][0]["position"], 0)
+        self.assertEqual(response.data["faqs"][0]["question"], "Is delivery free?")
+
+    def test_replace_faqs_normalizes_and_orders_rows(self):
+        """Replacing FAQs trims text, preserves paragraphs, and sets positions."""
+        response = self.client.put(
+            self.url,
+            self._faq_payload(
+                ("  Does it come with a warranty?  ", "  Yes.\n\nTwo years.  "),
+                ("Can I pay on delivery?", "Yes, within Nairobi."),
+            ),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual([faq["position"] for faq in response.data["faqs"]], [0, 1])
+        self.assertEqual(
+            response.data["faqs"][0]["question"], "Does it come with a warranty?"
+        )
+        self.assertEqual(response.data["faqs"][0]["answer"], "Yes.\n\nTwo years.")
+
+    def test_replace_faqs_preserves_ids_when_content_and_order_change(self):
+        """Existing FAQ IDs survive edits and reordering so anchors stay stable."""
+        first = ProductFAQ.objects.create(
+            product=self.product,
+            question="First question?",
+            answer="The first answer is long enough.",
+            position=0,
+        )
+        second = ProductFAQ.objects.create(
+            product=self.product,
+            question="Second question?",
+            answer="The second answer is long enough.",
+            position=1,
+        )
+        response = self.client.put(
+            self.url,
+            {
+                "faqs": [
+                    {
+                        "id": second.pk,
+                        "question": "Second question updated?",
+                        "answer": "The second answer was updated.",
+                    },
+                    {
+                        "id": first.pk,
+                        "question": "First question updated?",
+                        "answer": "The first answer was updated.",
+                    },
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = {faq["id"]: faq for faq in response.data["faqs"]}
+        self.assertEqual(set(rows), {first.pk, second.pk})
+        self.assertEqual(rows[first.pk]["question"], "First question updated?")
+        self.assertEqual(rows[first.pk]["position"], 1)
+        self.assertEqual(rows[second.pk]["position"], 0)
+        self.assertEqual(ProductFAQ.objects.count(), 2)
+
+    def test_replace_faqs_creates_rows_without_ids(self):
+        """Rows without an id are inserted without disturbing existing ids."""
+        existing = ProductFAQ.objects.create(
+            product=self.product,
+            question="Existing question?",
+            answer="The existing answer is long enough.",
+            position=0,
+        )
+        response = self.client.put(
+            self.url,
+            {
+                "faqs": [
+                    {
+                        "id": existing.pk,
+                        "question": "Existing question?",
+                        "answer": "The existing answer is long enough.",
+                    },
+                    {
+                        "question": "New question?",
+                        "answer": "The new answer is long enough.",
+                    },
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [faq["id"] for faq in response.data["faqs"]]
+        self.assertIn(existing.pk, ids)
+        self.assertEqual(len(set(ids)), 2)
+
+    def test_replace_faqs_rejects_id_from_another_product(self):
+        """A row id cannot be used to move or edit another product's FAQ."""
+        other_product = _make_product(name="Other fridge")
+        other_faq = ProductFAQ.objects.create(
+            product=other_product,
+            question="Other product question?",
+            answer="The other product answer is long enough.",
+            position=0,
+        )
+        response = self.client.put(
+            self.url,
+            {
+                "faqs": [
+                    {
+                        "id": other_faq.pk,
+                        "question": "Attempted question?",
+                        "answer": "Attempted answer is long enough.",
+                    }
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("non_field_errors", response.data["errors"]["faqs"]["0"])
+        other_faq.refresh_from_db()
+        self.assertEqual(other_faq.question, "Other product question?")
+
+    def test_replace_faqs_drops_blank_rows(self):
+        """Rows with both fields empty are ignored instead of saved."""
+        response = self.client.put(
+            self.url,
+            {
+                "faqs": [
+                    {"question": "", "answer": ""},
+                    {"question": "Is it available?", "answer": "Yes, it is in stock."},
+                    {"question": "   ", "answer": "   "},
+                ]
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(ProductFAQ.objects.count(), 1)
+        self.assertEqual(response.data["faqs"][0]["position"], 0)
+
+    def test_replace_faqs_rejects_half_filled_row(self):
+        """A question without an answer is rejected with a field error."""
+        response = self.client.put(
+            self.url,
+            {"faqs": [{"question": "Is it available?", "answer": ""}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("answer", response.data["errors"]["faqs"]["0"])
+
+    def test_replace_faqs_rejects_duplicate_question_case_insensitively(self):
+        """The same question cannot appear twice with different casing."""
+        response = self.client.put(
+            self.url,
+            self._faq_payload(
+                ("Does it have a warranty?", "Yes, it has a warranty."),
+                ("does it have a WARRANTY?", "Yes, it has a warranty."),
+            ),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("question", response.data["errors"]["faqs"]["1"])
+
+    def test_replace_faqs_rejects_html(self):
+        """HTML in questions or answers is rejected."""
+        response = self.client.put(
+            self.url,
+            self._faq_payload(
+                ("Is it <b>new</b>?", "Yes, it is brand new."),
+                ("Can I return it?", "Yes <script>alert(1)</script>."),
+            ),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("question", response.data["errors"]["faqs"]["0"])
+        self.assertIn("answer", response.data["errors"]["faqs"]["1"])
+
+    def test_replace_faqs_rejects_short_content(self):
+        """Questions and answers below the minimum length are rejected."""
+        response = self.client.put(
+            self.url,
+            self._faq_payload(("Hi", "Too short")),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("question", response.data["errors"]["faqs"]["0"])
+        self.assertIn("answer", response.data["errors"]["faqs"]["0"])
+
+    def test_replace_faqs_rejects_more_than_twenty(self):
+        """The twenty-first non-empty row is rejected."""
+        rows = [
+            (f"Question number {index}?", f"Answer number {index} is long enough.")
+            for index in range(21)
+        ]
+        response = self.client.put(self.url, self._faq_payload(*rows), format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("non_field_errors", response.data["errors"]["faqs"]["20"])
+
+    def test_invalid_replacement_keeps_existing_faqs(self):
+        """A rejected replacement does not delete the current FAQ list."""
+        ProductFAQ.objects.create(
+            product=self.product,
+            question="Existing question?",
+            answer="This row must survive a rejected write.",
+            position=0,
+        )
+        response = self.client.put(
+            self.url,
+            self._faq_payload(("New question?", "")),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(ProductFAQ.objects.count(), 1)
+        self.assertEqual(ProductFAQ.objects.get().question, "Existing question?")
+
+    def test_replacement_bumps_product_list_generation(self):
+        """A successful replacement invalidates catalog caches."""
+        before = catalog_cache.get_product_list_generation()
+        response = self.client.put(
+            self.url,
+            self._faq_payload(("Is it in stock?", "Yes, it is in stock.")),
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertGreater(catalog_cache.get_product_list_generation(), before)
+
+    def test_model_clean_normalizes_and_rejects_invalid_rows(self):
+        """Admin/full_clean applies the same text rules as the API."""
+        faq = ProductFAQ(
+            product=self.product,
+            question="  What   is this?  ",
+            answer="  First line.\n\n\nSecond line.  ",
+            position=0,
+        )
+        faq.full_clean()
+        self.assertEqual(faq.question, "What is this?")
+        self.assertEqual(faq.answer, "First line.\n\nSecond line.")
+
+        faq.question = "Hi"
+        with self.assertRaises(ValidationError):
+            faq.full_clean()
+
+        faq.question = "Is it <b>new</b>?"
+        with self.assertRaises(ValidationError):
+            faq.full_clean()
+
+    def test_model_clean_rejects_duplicate_question_and_position(self):
+        """Admin validation catches conflicts before the database does."""
+        ProductFAQ.objects.create(
+            product=self.product,
+            question="Existing question?",
+            answer="The existing answer is long enough.",
+            position=0,
+        )
+        faq = ProductFAQ(
+            product=self.product,
+            question="existing QUESTION?",
+            answer="Another answer is long enough.",
+            position=1,
+        )
+        with self.assertRaises(ValidationError):
+            faq.full_clean()
+
+        faq.question = "Different question?"
+        faq.position = 0
+        with self.assertRaises(ValidationError):
+            faq.full_clean()
+
+    def test_deleting_product_cascades_faqs(self):
+        """Deleting a product removes its FAQ rows."""
+        ProductFAQ.objects.create(
+            product=self.product,
+            question="Will this remain?",
+            answer="No, it is removed with the product.",
+            position=0,
+        )
+        self.product.delete()
+        self.assertEqual(ProductFAQ.objects.count(), 0)
+
+
+class StorefrontRevalidationTests(APITestCase):
+    """Exercises the storefront webhook used after FAQ changes."""
+
+    def setUp(self):
+        cache.clear()
+        self.product = _make_product()
+
+    @override_settings(
+        STOREFRONT_REVALIDATE_URL="https://shop.example.com/api/revalidate",
+        STOREFRONT_REVALIDATE_SECRET="shared-secret",
+    )
+    @mock.patch("apps.catalog.tasks.urllib.request.urlopen")
+    def test_revalidation_posts_slug_and_secret(self, urlopen):
+        """The task sends the product slug and shared secret to the storefront."""
+        response = mock.MagicMock()
+        response.status = 200
+        urlopen.return_value.__enter__.return_value = response
+
+        from apps.catalog.tasks import revalidate_storefront_product
+
+        self.assertTrue(revalidate_storefront_product(self.product.pk))
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://shop.example.com/api/revalidate")
+        self.assertEqual(json.loads(request.data), {"slug": self.product.slug})
+        self.assertEqual(request.get_header("X-revalidate-secret"), "shared-secret")
+
+    @override_settings(STOREFRONT_REVALIDATE_URL="", STOREFRONT_REVALIDATE_SECRET="")
+    @mock.patch("apps.catalog.tasks.urllib.request.urlopen")
+    def test_revalidation_is_disabled_without_config(self, urlopen):
+        """No request is made when the webhook is not configured."""
+        from apps.catalog.tasks import revalidate_storefront_product
+
+        self.assertFalse(revalidate_storefront_product(self.product.pk))
+        urlopen.assert_not_called()
+
+
 class ProductDetailQueryTests(APITestCase):
     """Binds the product-detail endpoint to a fixed query count."""
 
@@ -2023,8 +2762,8 @@ class ProductDetailQueryTests(APITestCase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["category"]["name"], product.category.name)
-        # Product, tier prefetch, and image prefetch.
-        self.assertLessEqual(len(ctx.captured_queries), 4)
+        # Product, tier prefetch, image prefetch, and FAQ prefetch.
+        self.assertLessEqual(len(ctx.captured_queries), 5)
 
 
 class ProductPriceThrottleTests(APITestCase):
