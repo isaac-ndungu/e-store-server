@@ -65,15 +65,7 @@ def _discounts_for_product(product, within_bundle):
     Returns:
         list[Discount]: the applicable discounts.
     """
-    now = timezone.now()
-    queryset = (
-        Discount.objects.filter(is_active=True, starts_at__lte=now)
-        .filter(Q(ends_at__isnull=True) | Q(ends_at__gte=now))
-        .select_related("bundle")
-        .prefetch_related("products", "categories", "brands")
-    )
-    if within_bundle:
-        queryset = queryset.filter(applies_within_bundles=True)
+    queryset = _active_discounts(within_bundle)
 
     applicable = []
     for discount in queryset:
@@ -84,6 +76,20 @@ def _discounts_for_product(product, within_bundle):
         if _discount_matches(discount, product):
             applicable.append(discount)
     return applicable
+
+
+def _active_discounts(within_bundle=False):
+    """Return active discounts with their product-scope relations prefetched."""
+    now = timezone.now()
+    queryset = (
+        Discount.objects.filter(is_active=True, starts_at__lte=now)
+        .filter(Q(ends_at__isnull=True) | Q(ends_at__gte=now))
+        .select_related("bundle")
+        .prefetch_related("products", "categories", "brands")
+    )
+    if within_bundle:
+        queryset = queryset.filter(applies_within_bundles=True)
+    return queryset
 
 
 def _discount_matches(discount, product):
@@ -155,6 +161,14 @@ def _best_discount(product, within_bundle):
         Discount | None: the winning discount, or None when none apply.
     """
     candidates = _discounts_for_product(product, within_bundle)
+    return _best_discount_from(product, candidates)
+
+
+def _best_discount_from(product, discounts):
+    """Select the highest-priority applicable discount from a loaded set."""
+    candidates = [
+        discount for discount in discounts if _discount_matches(discount, product)
+    ]
     if not candidates:
         return None
     base = _money(product.price)
@@ -203,6 +217,86 @@ def get_effective_price(product, coupon=None, within_bundle=False):
         "badge_text": discount_data.get("badge_text"),
         "coupon_discount": str(coupon_savings),
         "within_bundle": within_bundle,
+    }
+
+
+def get_effective_prices(products):
+    """Return effective prices for multiple products with shared discount reads.
+
+    Args:
+        products (Iterable[Product]): products to price without coupons.
+
+    Returns:
+        dict[int, dict]: pricing data keyed by product id.
+    """
+    products = list(products)
+    generation = cache.get_discount_generation()
+    results = {}
+    uncached_products = []
+
+    for product in products:
+        cached = cache.get_cached_effective_price(product.pk, False, generation)
+        if cached is None:
+            uncached_products.append(product)
+            continue
+        results[product.pk] = _effective_price_result(
+            product,
+            _money(product.price),
+            Decimal(cached["price"]),
+            cached,
+        )
+
+    if not uncached_products:
+        return results
+
+    discounts = list(_active_discounts())
+    for product in uncached_products:
+        best_discount = _best_discount_from(
+            product,
+            [
+                discount
+                for discount in discounts
+                if discount.max_redemptions is None
+                or discount.redemption_count < discount.max_redemptions
+            ],
+        )
+        base_price = _money(product.price)
+        if best_discount is None:
+            discounted_price = base_price
+            metadata = {
+                "discount_type": None,
+                "discount_name": None,
+                "badge_text": None,
+                "price": str(base_price),
+            }
+        else:
+            discounted_price = _apply_discount(base_price, best_discount)
+            metadata = {
+                "discount_type": best_discount.discount_type,
+                "discount_name": best_discount.name,
+                "badge_text": best_discount.badge_text,
+                "price": str(discounted_price),
+            }
+        cache.cache_effective_price(product.pk, False, generation, metadata)
+        results[product.pk] = _effective_price_result(
+            product, base_price, discounted_price, metadata
+        )
+
+    return results
+
+
+def _effective_price_result(product, base_price, price, metadata):
+    """Build the public price payload shared by single and batch reads."""
+    return {
+        "product": product.pk,
+        "base_price": str(base_price),
+        "price": str(price),
+        "discount": str(_discount_savings(base_price, price)),
+        "discount_type": metadata.get("discount_type"),
+        "discount_name": metadata.get("discount_name"),
+        "badge_text": metadata.get("badge_text"),
+        "coupon_discount": "0.00",
+        "within_bundle": False,
     }
 
 

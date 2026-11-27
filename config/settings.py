@@ -299,7 +299,9 @@ REST_FRAMEWORK = {
         "auth_read": "60/min",
         "notification_send": "5/min",
         "public_catalog": "100/min",
+        "catalog_suggest": "600/min",
         "product_price": "300/min",
+        "internal_render": "3000/min",
         "coupon_validate": "5/min",
         "admin": "300/min",
         "order_write": "5/min",
@@ -476,6 +478,9 @@ EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
 DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="no-reply@estore.local")
 FRONTEND_URL = config("FRONTEND_URL", default="http://localhost:3000")
+INTERNAL_API_TOKEN = config("INTERNAL_API_TOKEN", default="")
+STOREFRONT_REVALIDATE_URL = config("STOREFRONT_REVALIDATE_URL", default="")
+STOREFRONT_REVALIDATE_SECRET = config("STOREFRONT_REVALIDATE_SECRET", default="")
 RESET_LINK_BASE = config(
     "RESET_LINK_BASE",
     default="http://localhost:5173/reset-password/confirm",

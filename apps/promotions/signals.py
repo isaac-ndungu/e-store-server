@@ -12,6 +12,7 @@ cleared too.
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
+from apps.catalog import cache as catalog_cache
 from apps.catalog.models import Product
 from apps.promotions import cache as promotions_cache
 from apps.promotions.models import Discount
@@ -21,9 +22,11 @@ def _invalidate_on_discount_change():
     """Bump the effective-price generation and clear bundle price caches.
 
     A discount change can affect any product and any bundle, so both caches
-    are invalidated wholesale rather than per-key.
+    are invalidated wholesale rather than per-key. Product-list responses
+    contain effective prices and must be refreshed under the same change.
     """
     promotions_cache.bump_discount_generation()
+    catalog_cache.bump_product_list_generation()
     from apps.bundles.cache import invalidate_all_bundle_prices
 
     invalidate_all_bundle_prices()

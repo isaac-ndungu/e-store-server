@@ -10,8 +10,9 @@ rounding errors in price and discount calculations.
 """
 
 from django.contrib.postgres.indexes import GinIndex
-from django.core.exceptions import ValidationError
+from django.core.exceptions import NON_FIELD_ERRORS, ValidationError
 from django.db import models
+from django.db.models.functions import Lower
 
 from apps.catalog.validators import validate_image_upload, validate_pdf_upload
 
@@ -323,6 +324,99 @@ class ProductImage(models.Model):
 
     def __str__(self):
         return f"Image for {self.product_id} ({self.sort_order})"
+
+
+class ProductFAQ(models.Model):
+    """A product-specific question and answer shown on the detail page.
+
+    FAQs are ordered by ``position`` and belong entirely to one product.
+    Deleting a product removes its FAQs. Questions are unique per product
+    ignoring case so staff cannot save the same question twice.
+    """
+
+    product = models.ForeignKey(Product, related_name="faqs", on_delete=models.CASCADE)
+    question = models.CharField(max_length=200)
+    answer = models.TextField(max_length=1500)
+    position = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["position", "id"]
+        indexes = [
+            models.Index(fields=["product", "position"], name="faq_prod_pos_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product", "position"],
+                name="unique_faq_position_per_product",
+            ),
+            models.UniqueConstraint(
+                "product",
+                Lower("question"),
+                name="unique_faq_question_per_product",
+            ),
+        ]
+
+    def __str__(self):
+        return self.question[:80]
+
+    def clean(self):
+        """Normalize FAQ text and enforce the API's content rules."""
+        super().clean()
+
+        from apps.catalog.services import (
+            FAQ_ANSWER_MIN_LENGTH,
+            FAQ_MAX_ITEMS,
+            FAQ_QUESTION_MIN_LENGTH,
+            normalize_faq_answer,
+            normalize_faq_question,
+        )
+
+        self.question = normalize_faq_question(self.question)
+        self.answer = normalize_faq_answer(self.answer)
+        errors = {}
+
+        if self.question:
+            if len(self.question) < FAQ_QUESTION_MIN_LENGTH:
+                errors["question"] = (
+                    f"Question must be at least {FAQ_QUESTION_MIN_LENGTH} characters."
+                )
+            elif "<" in self.question or ">" in self.question:
+                errors["question"] = "Use plain text only; HTML is not allowed."
+
+        if self.answer:
+            if len(self.answer) < FAQ_ANSWER_MIN_LENGTH:
+                errors["answer"] = (
+                    f"Answer must be at least {FAQ_ANSWER_MIN_LENGTH} characters."
+                )
+            elif "<" in self.answer or ">" in self.answer:
+                errors["answer"] = "Use plain text only; HTML is not allowed."
+
+        if self.product_id:
+            siblings = ProductFAQ.objects.filter(product_id=self.product_id)
+            if self.pk:
+                siblings = siblings.exclude(pk=self.pk)
+
+            if (
+                self.question
+                and siblings.filter(question__iexact=self.question).exists()
+            ):
+                errors["question"] = "This question is already used on this product."
+
+            if siblings.count() >= FAQ_MAX_ITEMS:
+                errors[NON_FIELD_ERRORS] = (
+                    f"A product can have at most {FAQ_MAX_ITEMS} questions."
+                )
+
+            if (
+                self.position is not None
+                and siblings.filter(position=self.position).exists()
+            ):
+                errors["position"] = "This position is already used on this product."
+
+        if errors:
+            raise ValidationError(errors)
 
 
 class RelatedProduct(models.Model):

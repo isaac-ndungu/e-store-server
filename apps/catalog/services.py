@@ -14,10 +14,12 @@ import hashlib
 import re
 import unicodedata
 from decimal import Decimal
+from uuid import uuid4
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from django.utils.text import slugify
 
 from apps.catalog import cache as catalog_cache
@@ -27,6 +29,7 @@ from apps.catalog.models import (
     FacetDefinition,
     PricingTier,
     Product,
+    ProductFAQ,
     ProductImage,
     RelatedProduct,
 )
@@ -251,6 +254,254 @@ def update_product(product, **data):
         setattr(product, field, value)
     product.save()
     return product
+
+
+# Product FAQ lifecycle
+
+FAQ_MAX_ITEMS = 20
+FAQ_QUESTION_MIN_LENGTH = 3
+FAQ_ANSWER_MIN_LENGTH = 10
+
+
+def normalize_faq_question(value):
+    """Return a single-line FAQ question with control characters removed.
+
+    Args:
+        value (str): the raw question text.
+
+    Returns:
+        str: the trimmed, whitespace-collapsed question.
+    """
+    text = "".join(
+        char for char in str(value or "") if unicodedata.category(char)[0] != "C"
+    )
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def normalize_faq_answer(value):
+    """Return FAQ answer text with control characters and excess blank lines removed.
+
+    Line breaks are preserved so staff can separate short paragraphs.
+
+    Args:
+        value (str): the raw answer text.
+
+    Returns:
+        str: the cleaned answer.
+    """
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = "".join(
+        char
+        for char in text
+        if char in {"\n", "\t"} or unicodedata.category(char)[0] != "C"
+    )
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def validate_product_faq_rows(rows, *, product=None):
+    """Validate and normalize an ordered list of FAQ rows.
+
+    Both-empty rows are ignored so the staff editor can leave a blank row
+    in place. Every other row must contain both fields. Questions are unique
+    per product ignoring case, and HTML angle brackets are rejected because
+    the storefront renders answers as plain text.
+
+    Args:
+        rows (list[dict]): raw rows with ``question``, ``answer``, and an
+            optional ``id`` for an existing row.
+        product (Product | None): parent product used to verify submitted
+            row IDs belong to it. When omitted, ownership is left to the
+            caller.
+
+    Returns:
+        tuple[list[dict], dict]: normalized rows and row-indexed errors.
+    """
+    errors = {}
+    cleaned_rows = []
+    seen_questions = {}
+    seen_ids = {}
+    id_rows = []
+
+    for index, row in enumerate(rows):
+        question = normalize_faq_question(row.get("question"))
+        answer = normalize_faq_answer(row.get("answer"))
+        row_id = row.get("id")
+
+        if not question and not answer:
+            continue
+
+        row_errors = {}
+        if row_id is not None:
+            if row_id in seen_ids:
+                row_errors["non_field_errors"] = (
+                    "This FAQ row is listed more than once."
+                )
+            else:
+                seen_ids[row_id] = index
+                id_rows.append((index, row_id))
+
+        if not question:
+            row_errors["question"] = "Enter a question or remove this row."
+        else:
+            if len(question) < FAQ_QUESTION_MIN_LENGTH:
+                row_errors["question"] = (
+                    f"Question must be at least {FAQ_QUESTION_MIN_LENGTH} characters."
+                )
+            elif "<" in question or ">" in question:
+                row_errors["question"] = "Use plain text only; HTML is not allowed."
+
+        if not answer:
+            row_errors["answer"] = "Enter an answer or remove this row."
+        else:
+            if len(answer) < FAQ_ANSWER_MIN_LENGTH:
+                row_errors["answer"] = (
+                    f"Answer must be at least {FAQ_ANSWER_MIN_LENGTH} characters."
+                )
+            elif "<" in answer or ">" in answer:
+                row_errors["answer"] = "Use plain text only; HTML is not allowed."
+
+        if question and answer:
+            normalized_question = question.casefold()
+            if normalized_question in seen_questions:
+                row_errors["question"] = (
+                    "This question is already used on this product."
+                )
+            else:
+                seen_questions[normalized_question] = index
+
+            if len(cleaned_rows) >= FAQ_MAX_ITEMS:
+                row_errors["non_field_errors"] = (
+                    f"A product can have at most {FAQ_MAX_ITEMS} questions."
+                )
+
+        if row_errors:
+            errors[str(index)] = row_errors
+            continue
+
+        cleaned_row = {
+            "question": question,
+            "answer": answer,
+            "position": len(cleaned_rows),
+        }
+        if row_id is not None:
+            cleaned_row["id"] = row_id
+        cleaned_rows.append(cleaned_row)
+
+    if product is not None and id_rows:
+        existing_ids = set(
+            ProductFAQ.objects.filter(
+                product=product, pk__in=[row_id for _, row_id in id_rows]
+            ).values_list("pk", flat=True)
+        )
+        for index, row_id in id_rows:
+            if row_id not in existing_ids:
+                row_errors = errors.setdefault(str(index), {})
+                row_errors["non_field_errors"] = (
+                    "This FAQ row no longer exists on this product. "
+                    "Refresh and try again."
+                )
+
+    return cleaned_rows, errors
+
+
+def replace_product_faqs(product, rows):
+    """Replace every FAQ on a product with the supplied ordered rows.
+
+    Existing rows are updated in place when a submitted row carries its
+    ``id``, so public FAQ anchors stay stable across content edits and
+    reorders. Rows omitted from ``rows`` are deleted, and rows without an id
+    are created. The whole write runs in one transaction so a failure cannot
+    leave a product with a partially replaced FAQ list.
+
+    Args:
+        product (Product): the product whose FAQs are replaced.
+        rows (list[dict]): validated rows with question, answer, position,
+            and an optional id.
+
+    Returns:
+        list[ProductFAQ]: the saved ordered FAQ rows.
+    """
+    from apps.catalog.tasks import schedule_storefront_product_revalidation
+
+    with transaction.atomic():
+        existing = {faq.pk: faq for faq in product.faqs.select_for_update().all()}
+        retained_ids = set()
+        for row in rows:
+            row_id = row.get("id")
+            if row_id in existing and row_id not in retained_ids:
+                retained_ids.add(row_id)
+
+        if retained_ids:
+            product.faqs.exclude(pk__in=retained_ids).delete()
+        else:
+            product.faqs.all().delete()
+
+        existing_updates = []
+        used_ids = set()
+        for row in rows:
+            row_id = row.get("id")
+            if row_id in retained_ids and row_id not in used_ids:
+                used_ids.add(row_id)
+                existing_updates.append((existing[row_id], row))
+
+        if existing_updates:
+            now = timezone.now()
+            max_position = max((faq.position for faq in existing.values()), default=0)
+            temp_base = max_position + 1
+            if temp_base + len(existing_updates) - 1 > 32767:
+                # No room above existing positions for a conflict-free swap.
+                ProductFAQ.objects.filter(pk__in=retained_ids).delete()
+                ProductFAQ.objects.bulk_create(
+                    [
+                        ProductFAQ(
+                            id=faq.pk,
+                            product=product,
+                            question=row["question"],
+                            answer=row["answer"],
+                            position=row["position"],
+                        )
+                        for faq, row in existing_updates
+                    ]
+                )
+            else:
+                for offset, (faq, _row) in enumerate(existing_updates):
+                    faq.position = temp_base + offset
+                    faq.question = f"<faq-tmp-{faq.pk}-{uuid4().hex}>"
+                    faq.updated_at = now
+                ProductFAQ.objects.bulk_update(
+                    [faq for faq, _row in existing_updates],
+                    ["position", "question", "updated_at"],
+                )
+
+                for faq, row in existing_updates:
+                    faq.question = row["question"]
+                    faq.answer = row["answer"]
+                    faq.position = row["position"]
+                    faq.updated_at = now
+                ProductFAQ.objects.bulk_update(
+                    [faq for faq, _row in existing_updates],
+                    ["question", "answer", "position", "updated_at"],
+                )
+
+        new_rows = [
+            ProductFAQ(
+                product=product,
+                question=row["question"],
+                answer=row["answer"],
+                position=row["position"],
+            )
+            for row in rows
+            if row.get("id") not in used_ids
+        ]
+        if new_rows:
+            ProductFAQ.objects.bulk_create(new_rows)
+
+    catalog_cache.bump_product_list_generation()
+    schedule_storefront_product_revalidation(product.pk)
+    return list(product.faqs.all())
 
 
 # Facet aggregation

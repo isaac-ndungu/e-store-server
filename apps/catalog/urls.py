@@ -17,6 +17,7 @@ from apps.catalog.views import (
     AdminPricingTierDetailView,
     AdminPricingTierListCreateView,
     AdminProductDetailView,
+    AdminProductFAQView,
     AdminProductImageDeleteView,
     AdminProductImageDetailView,
     AdminProductImageListCreateView,
@@ -30,6 +31,7 @@ from apps.catalog.views import (
     ProductDetailView,
     ProductListView,
     ProductPriceView,
+    ProductSuggestionView,
 )
 
 urlpatterns = [
@@ -41,6 +43,11 @@ urlpatterns = [
     path("brands/", BrandListView.as_view(), name="brand-list"),
     path("brands/<slug:slug>/", BrandDetailView.as_view(), name="brand-detail"),
     path("products/", ProductListView.as_view(), name="product-list"),
+    path(
+        "products/suggestions/",
+        ProductSuggestionView.as_view(),
+        name="product-suggestions",
+    ),
     path("products/<slug:slug>/", ProductDetailView.as_view(), name="product-detail"),
     path(
         "products/<slug:slug>/price/",
@@ -77,6 +84,11 @@ urlpatterns = [
         "catalog/admin/products/<int:pk>/",
         AdminProductDetailView.as_view(),
         name="admin-product-detail",
+    ),
+    path(
+        "catalog/admin/products/<int:product_pk>/faqs/",
+        AdminProductFAQView.as_view(),
+        name="admin-product-faq",
     ),
     path(
         "catalog/admin/products/<int:product_pk>/images/",

@@ -6,6 +6,7 @@ for reference, but storefront image URLs come from the processed variants so
 a full-resolution upload is never served directly to browsers.
 """
 
+import hashlib
 import io
 import os
 
@@ -43,7 +44,8 @@ def generate_variants(storage_name):
 
     Returns:
         list[dict]: one entry per produced variant with keys ``width``,
-            ``format``, and ``url``. Empty if the source cannot be decoded.
+            ``height``, ``format``, and ``url``. Empty if the source cannot be
+            decoded.
     """
     from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -55,18 +57,19 @@ def generate_variants(storage_name):
 
     variants = []
     try:
-        with default_storage.open(storage_name) as handle, Image.open(handle) as img:
+        with default_storage.open(storage_name) as handle:
+            source_bytes = handle.read()
+        source_fingerprint = hashlib.sha256(source_bytes).hexdigest()[:12]
+        with Image.open(io.BytesIO(source_bytes)) as img:
             img = ImageOps.exif_transpose(img)
             img.load()
             for width in PROCESSED_IMAGE_WIDTHS:
                 if width > img.width:
                     continue
+                height = max(1, round(img.height * width / img.width))
                 resized = img
-                if img.width > width:
-                    resized = img.resize(
-                        (width, max(1, round(img.height * width / img.width))),
-                        Image.LANCZOS,
-                    )
+                if img.width != width:
+                    resized = img.resize((width, height), Image.LANCZOS)
                 for image_format in formats:
                     buffer = io.BytesIO()
                     if image_format == "webp":
@@ -77,13 +80,20 @@ def generate_variants(storage_name):
                         resized.save(buffer, format=image_format.upper(), **save_kwargs)
                     except OSError, ValueError:
                         continue
-                    name = default_storage.save(
-                        f"{stem}--{width}w.{image_format}",
-                        ContentFile(buffer.getvalue()),
+                    variant_name = (
+                        f"{stem}--{source_fingerprint}--{width}w.{image_format}"
                     )
+                    if default_storage.exists(variant_name):
+                        name = variant_name
+                    else:
+                        name = default_storage.save(
+                            variant_name,
+                            ContentFile(buffer.getvalue()),
+                        )
                     variants.append(
                         {
                             "width": width,
+                            "height": height,
                             "format": image_format,
                             "url": default_storage.url(name),
                         }
@@ -94,21 +104,30 @@ def generate_variants(storage_name):
 
 
 def delete_image_files(storage_name):
-    """Delete a stored original image and every possible processed variant.
+    """Delete a stored original image and its current processed variants.
 
-    Variant names are derived deterministically from the original's storage
-    path, so cleanup never needs a manifest of generated files. The storage
-    backend suppresses errors for files that do not exist, making this safe to
-    call repeatedly and safe to call for variant formats that were never
-    written.
+    Variant names combine the original's storage path with a fingerprint of its
+    content, so cleanup reads the source to find the generated files instead of
+    keeping a manifest. Legacy unfingerprinted variant names are removed too.
+    The storage backend suppresses errors for files that do not exist, making
+    this safe to call repeatedly and safe for formats that were never written.
 
     Args:
         storage_name (str): the storage key of the original image.
     """
     ext = os.path.splitext(storage_name)[1]
     stem = storage_name[: -len(ext)] if ext else storage_name
+    try:
+        with default_storage.open(storage_name) as handle:
+            fingerprint = hashlib.sha256(handle.read()).hexdigest()[:12]
+    except OSError:
+        fingerprint = None
     for width in PROCESSED_IMAGE_WIDTHS:
         for image_format in PROCESSED_IMAGE_FORMATS:
+            if fingerprint:
+                default_storage.delete(
+                    f"{stem}--{fingerprint}--{width}w.{image_format}"
+                )
             default_storage.delete(f"{stem}--{width}w.{image_format}")
     default_storage.delete(storage_name)
 

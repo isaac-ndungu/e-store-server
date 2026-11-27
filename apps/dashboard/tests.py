@@ -1005,3 +1005,34 @@ class InquiryConversionDashboardTests(_AnalystClient):
         self.assertEqual(
             response.data["funnel"]["contacted_rate_percent"], Decimal("0.00")
         )
+        self.assertEqual(
+            response.data["funnel"]["click_to_message_rate_percent"], Decimal("0.00")
+        )
+        self.assertEqual(response.data["daily_click_to_message"], [])
+
+    def test_daily_click_to_message_excludes_spam(self):
+        """Daily WhatsApp click-to-message rate counts received chats and excludes spam."""
+        from apps.inquiries.models import Inquiry
+
+        Inquiry.objects.create(
+            channel="whatsapp", cart_snapshot=[{"sku": "A"}], status="clicked"
+        )
+        Inquiry.objects.create(
+            channel="whatsapp",
+            cart_snapshot=[{"sku": "B"}],
+            status="message_received",
+        )
+        Inquiry.objects.create(
+            channel="whatsapp", cart_snapshot=[{"sku": "S"}], status="spam"
+        )
+        response = self.client.get(reverse(INQUIRY_CONVERSION_URL))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        funnel = response.data["funnel"]
+        self.assertEqual(funnel["whatsapp_clicked"], 2)
+        self.assertEqual(funnel["whatsapp_received"], 1)
+        self.assertEqual(funnel["click_to_message_rate_percent"], Decimal("50.00"))
+        self.assertEqual(len(response.data["daily_click_to_message"]), 1)
+        self.assertEqual(
+            response.data["daily_click_to_message"][0]["rate_percent"],
+            Decimal("50.00"),
+        )

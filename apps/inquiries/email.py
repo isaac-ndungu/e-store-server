@@ -202,7 +202,17 @@ def _order_intake_body(inquiry):
         f"Reference: {inquiry.reference}",
         f"Channel: {inquiry.get_channel_display()}",
     ]
-    if inquiry.contact_hint:
+    contact_lines = [
+        ("Name", inquiry.customer_name),
+        ("Phone", inquiry.customer_phone),
+        ("Email", inquiry.customer_email),
+        ("Delivery location", inquiry.delivery_location),
+        ("Order notes", inquiry.order_notes),
+    ]
+    for label, value in contact_lines:
+        if value:
+            lines.append(f"{label}: {value}")
+    if inquiry.contact_hint and not any(value for _, value in contact_lines):
         lines.append(f"Customer contact: {inquiry.contact_hint}")
     lines.extend(
         [
