@@ -980,7 +980,7 @@ class ProductDetailBrowseTests(APITestCase):
             product=product, min_quantity=5, unit_price="41000.00"
         )
         url = reverse("api:catalog:product-price", args=[product.slug])
-        with self.assertNumQueries(5):
+        with self.assertNumQueries(4):
             response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
