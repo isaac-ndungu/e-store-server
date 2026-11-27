@@ -8,9 +8,7 @@ the internal-render scope handles storefront render traffic without exhausting
 the public budget.
 """
 
-import json
 from decimal import Decimal
-from unittest import mock
 
 from django.core.cache import cache
 from django.test import override_settings
@@ -18,12 +16,10 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.accounts.models import User
 from apps.catalog.models import (
     Brand,
     Category,
     Product,
-    ProductImage,
     RelatedProduct,
 )
 
@@ -146,7 +142,7 @@ class ProductDetailRelatedProductsTests(APITestCase):
 
     def test_detail_with_no_related_products_returns_empty_list(self):
         """A product without related links returns an empty list, not null."""
-        solo = _make_product(
+        _make_product(
             self.category,
             self.brand,
             name="Solo Appliance",

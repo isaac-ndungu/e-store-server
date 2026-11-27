@@ -392,6 +392,7 @@ class InquiryReferenceTests(APITestCase):
 
     def test_create_response_carries_reference(self):
         """The capture response includes the short VF code for the message text."""
+        self.client.logout()
         response = self.client.post(
             CREATE_URL,
             {"channel": "whatsapp", "cart_snapshot": SNAPSHOT},
@@ -400,7 +401,7 @@ class InquiryReferenceTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         created = Inquiry.objects.get(pk=response.data["id"])
         self.assertEqual(response.data["reference"], created.reference)
-        self.assertRegex(created.reference, r"^VF-[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{4,8}$")
+        self.assertRegex(created.reference, r"^VF-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{4,8}$")
 
     def test_reference_format_uses_unambiguous_alphabet(self):
         """Generated short codes exclude 0, O, 1, I, L and stay unique."""

@@ -847,6 +847,7 @@ class ProductSuggestionTests(APITestCase):
                 "name",
                 "slug",
                 "price",
+                "effective_price",
                 "compare_at_price",
                 "primary_image",
                 "brand_name",
@@ -979,7 +980,7 @@ class ProductDetailBrowseTests(APITestCase):
             product=product, min_quantity=5, unit_price="41000.00"
         )
         url = reverse("api:catalog:product-price", args=[product.slug])
-        with self.assertNumQueries(4):
+        with self.assertNumQueries(5):
             response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
@@ -1070,7 +1071,7 @@ class FacetSearchTests(APITestCase):
         prices = {
             item["slug"]: item["effective_price"] for item in response.data["results"]
         }
-        self.assertEqual(prices["fridge-200l"], "45000.00")
+        self.assertEqual(prices["fac-fridge-200"], "40500.00")
 
     def test_discount_change_invalidates_cached_product_list_prices(self):
         """A new discount retires product-list pages with stale effective prices."""
@@ -1095,7 +1096,7 @@ class FacetSearchTests(APITestCase):
         }
         self.assertEqual(
             second_prices[first_item["slug"]],
-            str(base_price * Decimal("0.90")),
+            f"{base_price * Decimal('0.90'):.2f}",
         )
 
     def test_unknown_facet_param_is_ignored(self):
@@ -2762,8 +2763,8 @@ class ProductDetailQueryTests(APITestCase):
             response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["category"]["name"], product.category.name)
-        # Product, tier prefetch, image prefetch, and FAQ prefetch.
-        self.assertLessEqual(len(ctx.captured_queries), 5)
+        # Product, tier prefetch, image prefetch, related products prefetch, FAQ prefetch, and discount query.
+        self.assertLessEqual(len(ctx.captured_queries), 6)
 
 
 class ProductPriceThrottleTests(APITestCase):

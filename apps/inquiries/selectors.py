@@ -62,12 +62,12 @@ def list_inquiries(
         product_term = product.strip()
         if product_term:
             matching_ids = [
-                row.pk
-                for row in queryset.only("pk", "cart_snapshot")
+                pk
+                for pk, cart_snapshot in queryset.values_list("pk", "cart_snapshot")
                 if any(
                     product_term.lower() in str(line.get("sku", "")).lower()
                     or product_term.lower() in str(line.get("name", "")).lower()
-                    for line in (row.cart_snapshot or [])
+                    for line in (cart_snapshot or [])
                     if isinstance(line, dict)
                 )
             ]

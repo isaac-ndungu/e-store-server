@@ -92,7 +92,12 @@ def get_product_list_queryset():
     )
 
 
-def get_product_by_slug(slug, include_inactive=False, include_faqs=True):
+def get_product_by_slug(
+    slug,
+    include_inactive=False,
+    include_faqs=True,
+    include_related=True,
+):
     """Return a product by slug with all detail prefetches, or ``None``.
 
     For public endpoints, ``include_inactive`` is ``False`` so inactive or
@@ -104,6 +109,8 @@ def get_product_by_slug(slug, include_inactive=False, include_faqs=True):
         include_inactive (bool): whether to include inactive products.
         include_faqs (bool): whether to prefetch the product's FAQs. Callers
             that do not serialize FAQs skip that query.
+        include_related (bool): whether to prefetch related products. Callers
+            that do not serialize related products skip that query.
 
     Returns:
         Product | None: the matching product with prefetched relations.
@@ -115,22 +122,25 @@ def get_product_by_slug(slug, include_inactive=False, include_faqs=True):
     ).prefetch_related(
         "pricing_tiers",
         "images",
-        Prefetch(
-            "related_from",
-            queryset=RelatedProduct.objects.select_related(
-                "related_product__category",
-                "related_product__brand",
-            )
-            .prefetch_related(
-                Prefetch(
-                    "related_product__images",
-                    queryset=ProductImage.objects.filter(is_primary=True),
-                    to_attr="primary_images",
-                )
-            )
-            .order_by("sort_order"),
-        ),
     )
+    if include_related:
+        qs = qs.prefetch_related(
+            Prefetch(
+                "related_from",
+                queryset=RelatedProduct.objects.select_related(
+                    "related_product__category",
+                    "related_product__brand",
+                )
+                .prefetch_related(
+                    Prefetch(
+                        "related_product__images",
+                        queryset=ProductImage.objects.filter(is_primary=True),
+                        to_attr="primary_images",
+                    )
+                )
+                .order_by("sort_order"),
+            )
+        )
     if include_faqs:
         qs = qs.prefetch_related("faqs")
     if not include_inactive:

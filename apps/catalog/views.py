@@ -463,7 +463,12 @@ class ProductPriceView(APIView):
         """
         from apps.promotions.services import get_effective_price
 
-        product = get_product_by_slug(slug, include_inactive=False, include_faqs=False)
+        product = get_product_by_slug(
+            slug,
+            include_inactive=False,
+            include_faqs=False,
+            include_related=False,
+        )
         if product is None:
             from django.http import Http404
 
