@@ -94,7 +94,7 @@ def _check_json_ld(html):
     for match in _JSON_LD_RE.finditer(html):
         try:
             data = json.loads(match.group(1))
-        except (json.JSONDecodeError, ValueError):
+        except json.JSONDecodeError, ValueError:
             continue
         items = data if isinstance(data, list) else [data]
         for item in items:

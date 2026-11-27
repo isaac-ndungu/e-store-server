@@ -759,7 +759,7 @@ class RelatedProductDetailSerializer(serializers.ModelSerializer):
             try:
                 image = primary[0]
                 return preferred_image_url(image.image.name, image.image_sources)
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 return None
         return None
 
@@ -933,9 +933,7 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "backorder": "https://schema.org/BackOrder",
             "discontinued": "https://schema.org/Discontinued",
         }
-        availability = stock_map.get(
-            obj.stock_status, "https://schema.org/InStock"
-        )
+        availability = stock_map.get(obj.stock_status, "https://schema.org/InStock")
 
         ld = {
             "@context": "https://schema.org",

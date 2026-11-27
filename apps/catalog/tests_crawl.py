@@ -149,9 +149,7 @@ class ProductDetailRelatedProductsTests(APITestCase):
             slug="solo-appliance",
             sku="SOLO-001",
         )
-        url = reverse(
-            "api:catalog:product-detail", kwargs={"slug": "solo-appliance"}
-        )
+        url = reverse("api:catalog:product-detail", kwargs={"slug": "solo-appliance"})
         response = self.client.get(url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["related_products"], [])
@@ -184,9 +182,7 @@ class ProductDetailJsonLdTests(APITestCase):
         response = self.client.get(self.detail_url)
         ld = response.data["json_ld"]
         self.assertIn("availability", ld["offers"])
-        self.assertTrue(
-            ld["offers"]["availability"].startswith("https://schema.org/")
-        )
+        self.assertTrue(ld["offers"]["availability"].startswith("https://schema.org/"))
 
     def test_json_ld_price_matches_effective_pricing(self):
         """The JSON-LD price matches the effective_pricing field."""

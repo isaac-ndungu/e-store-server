@@ -65,7 +65,6 @@ def _normalize_phone(value):
     return normalized
 
 
-
 def _validate_snapshot(value):
     """Validate the cart snapshot shape.
 
@@ -140,9 +139,7 @@ class InquiryCreateSerializer(serializers.Serializer):
     page_url = serializers.URLField(
         max_length=500, required=False, allow_blank=True, default=""
     )
-    is_test = serializers.BooleanField(
-        required=False, default=False, write_only=True
-    )
+    is_test = serializers.BooleanField(required=False, default=False, write_only=True)
     company_website = serializers.CharField(
         max_length=255,
         required=False,
@@ -310,9 +307,7 @@ class InquiryRecoveryContactSerializer(serializers.Serializer):
     def validate(self, attrs):
         """Require at least one contact field when submitting the recovery form."""
         if not attrs.get("customer_name") and not attrs.get("customer_phone"):
-            raise serializers.ValidationError(
-                "Provide a name or phone number to save."
-            )
+            raise serializers.ValidationError("Provide a name or phone number to save.")
         return attrs
 
 

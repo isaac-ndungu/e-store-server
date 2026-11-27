@@ -15,9 +15,7 @@ import secrets
 from django.db import models
 
 REFERENCE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
-SHORT_REFERENCE_PATTERN = re.compile(
-    rf"^VF-?([{REFERENCE_ALPHABET}]{{4,8}})$"
-)
+SHORT_REFERENCE_PATTERN = re.compile(rf"^VF-?([{REFERENCE_ALPHABET}]{{4,8}})$")
 
 
 def generate_reference_code():

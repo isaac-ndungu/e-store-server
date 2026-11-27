@@ -401,7 +401,9 @@ class InquiryReferenceTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         created = Inquiry.objects.get(pk=response.data["id"])
         self.assertEqual(response.data["reference"], created.reference)
-        self.assertRegex(created.reference, r"^VF-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{4,8}$")
+        self.assertRegex(
+            created.reference, r"^VF-[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{4,8}$"
+        )
 
     def test_reference_format_uses_unambiguous_alphabet(self):
         """Generated short codes exclude 0, O, 1, I, L and stay unique."""
@@ -598,7 +600,9 @@ class WhatsAppTrackingWorkflowTests(APITestCase):
         )
         ref = created.data["reference"]
         token = created.data["recovery_token"]
-        url = reverse("api:inquiries:inquiry-recovery-contact", kwargs={"reference": ref})
+        url = reverse(
+            "api:inquiries:inquiry-recovery-contact", kwargs={"reference": ref}
+        )
 
         forbidden = self.client.patch(
             url, {"customer_phone": "0712345678"}, format="json"

@@ -235,9 +235,7 @@ def get_effective_prices(products):
     uncached_products = []
 
     for product in products:
-        cached = cache.get_cached_effective_price(
-            product.pk, False, generation
-        )
+        cached = cache.get_cached_effective_price(product.pk, False, generation)
         if cached is None:
             uncached_products.append(product)
             continue
@@ -279,9 +277,7 @@ def get_effective_prices(products):
                 "badge_text": best_discount.badge_text,
                 "price": str(discounted_price),
             }
-        cache.cache_effective_price(
-            product.pk, False, generation, metadata
-        )
+        cache.cache_effective_price(product.pk, False, generation, metadata)
         results[product.pk] = _effective_price_result(
             product, base_price, discounted_price, metadata
         )

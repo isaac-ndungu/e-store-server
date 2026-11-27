@@ -99,7 +99,10 @@ def record_inquiry(
             return existing
 
     normalized_ref = normalize_short_reference(reference_code)
-    if normalized_ref and Inquiry.objects.filter(reference_code=normalized_ref).exists():
+    if (
+        normalized_ref
+        and Inquiry.objects.filter(reference_code=normalized_ref).exists()
+    ):
         normalized_ref = None
 
     hint = contact_hint or build_contact_hint(
@@ -269,9 +272,7 @@ def bulk_mark_inquiries_spam(inquiry_ids):
     """
     unique_ids = list(dict.fromkeys(inquiry_ids))
     with transaction.atomic():
-        rows = list(
-            Inquiry.objects.select_for_update().filter(pk__in=unique_ids)
-        )
+        rows = list(Inquiry.objects.select_for_update().filter(pk__in=unique_ids))
         found_ids = {row.pk for row in rows}
         skipped_ids = [pk for pk in unique_ids if pk not in found_ids]
         updatable_ids = []

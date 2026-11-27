@@ -240,9 +240,7 @@ class SiteConfigUpdateEndpointTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         config = SiteConfig.objects.get()
-        self.assertEqual(
-            config.inquiry_response_promise, "We reply within 30 minutes."
-        )
+        self.assertEqual(config.inquiry_response_promise, "We reply within 30 minutes.")
 
     def test_staff_can_partially_update_contact_facts(self):
         """A PATCH with one field leaves the other fields untouched."""

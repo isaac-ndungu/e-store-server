@@ -204,9 +204,7 @@ class InquiryRecoveryContactView(APIView):
         data = input_serializer.validated_data
 
         supplied_token = (
-            request.headers.get("X-Recovery-Token")
-            or data.get("recovery_token")
-            or ""
+            request.headers.get("X-Recovery-Token") or data.get("recovery_token") or ""
         )
         if (
             not inquiry.recovery_token
@@ -249,13 +247,13 @@ class InquiryListView(APIView):
         Returns:
             Response: the paginated queue.
         """
-        no_message_after_1h = (
-            request.query_params.get("no_message_after_1h", "").lower()
-            in ("1", "true", "yes")
-        )
-        has_phone = (
-            request.query_params.get("has_phone", "").lower()
-            in ("1", "true", "yes")
+        no_message_after_1h = request.query_params.get(
+            "no_message_after_1h", ""
+        ).lower() in ("1", "true", "yes")
+        has_phone = request.query_params.get("has_phone", "").lower() in (
+            "1",
+            "true",
+            "yes",
         )
         queryset = list_inquiries(
             status=request.query_params.get("status") or None,
